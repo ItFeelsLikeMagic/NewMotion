@@ -1,0 +1,31 @@
+# XcodeGen and Xcode output (generated locally by scripts/generate.sh)
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+.build/
+__pycache__/
+*.py[cod]
+build/
+phone-logs/
+*.xcresult/
+
+# SwiftPM/Xcode user state
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+
+# Apple signing and device artifacts
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.ipa
+*.dSYM.zip
+
+# Local developer configuration
+.env
+.env.*
+!.env.example
+
+# macOS metadata
+.DS_Store
