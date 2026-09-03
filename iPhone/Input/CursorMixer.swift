@@ -13,13 +13,20 @@ final class CursorMixer {
 
     var onEvent: ((RemoteInputEvent) -> Void)?
     let travelCoalescer: DeltaCoalescer<CursorDelta>
+    private let scrollCoalescer: DeltaCoalescer<CursorDelta>
 
     init(interval: TimeInterval = defaultInterval) {
         travelCoalescer = DeltaCoalescer(minimumInterval: interval) {
             CursorDelta(x: $0.x + $1.x, y: $0.y + $1.y)
         }
+        scrollCoalescer = DeltaCoalescer(minimumInterval: interval) {
+            CursorDelta(x: $0.x + $1.x, y: $0.y + $1.y)
+        }
         travelCoalescer.onFlush = { [weak self] delta in
             self?.onEvent?(.pointer(delta))
+        }
+        scrollCoalescer.onFlush = { [weak self] delta in
+            self?.onEvent?(.scroll(ScrollDelta(x: 0, y: delta.y)))
         }
     }
 
@@ -28,12 +35,19 @@ final class CursorMixer {
         travelCoalescer.send(delta)
     }
 
+    /// The same travel, sent as scroll because a finger is holding the clutch.
+    /// It gets its own pacer so a 100 Hz sensor cannot outrun the link.
+    func handleScrollTravel(_ delta: CursorDelta) {
+        scrollCoalescer.send(delta)
+    }
+
     func handle(_ events: [RemoteInputEvent]) {
         for event in events {
             if case let .pointer(delta) = event {
                 travelCoalescer.send(delta)
             } else {
                 travelCoalescer.flushNow()
+                scrollCoalescer.flushNow()
                 onEvent?(event)
             }
         }

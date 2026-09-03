@@ -106,11 +106,11 @@ final class InputPipelineTests: XCTestCase {
     func testScrollGlideDialSpansOffToLongCoast() {
         // 0 is off, and the middle of the dial keeps the feel the glide
         // shipped with, so an existing setting is not silently retuned.
-        let none = TrackpadTouchCaptureView.momentumConfiguration(for: 0)
-        let middle = TrackpadTouchCaptureView.momentumConfiguration(
+        let none = ScrollMomentumDriver.configuration(for: 0)
+        let middle = ScrollMomentumDriver.configuration(
             for: TrackpadTouchCaptureView.defaultMomentumStrength
         )
-        let full = TrackpadTouchCaptureView.momentumConfiguration(for: 1)
+        let full = ScrollMomentumDriver.configuration(for: 1)
 
         XCTAssertLessThan(none.retainedPerSecond, middle.retainedPerSecond)
         XCTAssertLessThan(middle.retainedPerSecond, full.retainedPerSecond)

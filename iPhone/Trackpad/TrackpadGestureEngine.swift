@@ -99,6 +99,13 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     public var dragEnabled: Bool
     /// How far three fingers must travel up before the swipe counts.
     public var threeFingerSwipeTravel: Double
+    /// Points in from each side where one finger scrolls instead of moving the
+    /// cursor.  Zero turns the strips off.
+    public var edgeScrollWidth: Double
+    /// How long one finger must rest before its travel becomes scroll.  Zero
+    /// turns the clutch off.  It has to outlast `tapMaximumDuration`, or a
+    /// press long enough to clutch would also still read as a tap.
+    public var holdScrollDelay: TimeInterval
 
     public init(
         pointerSensitivityX: Double = 1.0,
@@ -108,7 +115,9 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         tapMaximumTravel: Double = 6,
         doubleTapInterval: TimeInterval = 0.35,
         dragEnabled: Bool = false,
-        threeFingerSwipeTravel: Double = 45
+        threeFingerSwipeTravel: Double = 45,
+        edgeScrollWidth: Double = 0,
+        holdScrollDelay: TimeInterval = 0
     ) {
         self.pointerSensitivityX = min(max(pointerSensitivityX, 0.05), 10)
         self.pointerSensitivityY = min(max(pointerSensitivityY, 0.05), 10)
@@ -118,6 +127,8 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         self.doubleTapInterval = min(max(doubleTapInterval, 0.1), 1)
         self.dragEnabled = dragEnabled
         self.threeFingerSwipeTravel = min(max(threeFingerSwipeTravel, 10), 400)
+        self.edgeScrollWidth = min(max(edgeScrollWidth, 0), 200)
+        self.holdScrollDelay = holdScrollDelay <= 0 ? 0 : min(max(holdScrollDelay, self.tapMaximumDuration), 2)
     }
 }
 
@@ -133,6 +144,9 @@ public struct TrackpadGestureEngine: Sendable {
     private enum Mode: Sendable {
         case idle
         case oneFinger
+        /// One finger scrolling: it either landed in an edge strip or rested
+        /// long enough to take the clutch.
+        case oneFingerScroll
         case twoFinger
         case threeFinger
         case dragging
@@ -162,12 +176,24 @@ public struct TrackpadGestureEngine: Sendable {
     /// the hand keeps going afterwards.
     private var threeFingerTravel = TrackpadPoint.zero
     private var threeFingerFired = false
+    /// The edge strips are a fraction of the surface, so the engine has to be
+    /// told how wide the glass under it is.
+    private var surfaceWidth: Double = 0
 
     public init(configuration: TrackpadConfiguration = TrackpadConfiguration()) {
         self.configuration = configuration
     }
 
     public var activeTouchCount: Int { active.count }
+
+    /// True while one finger is scrolling.  Other sensors feeding the same
+    /// cursor read this to send their travel as scroll too, which is what lets
+    /// a held finger turn the air mouse into a scroll wheel.
+    public var isScrollClutchEngaged: Bool { mode == .oneFingerScroll }
+
+    public mutating func setSurfaceWidth(_ width: Double) {
+        surfaceWidth = width.isFinite && width > 0 ? width : 0
+    }
 
     public mutating func setSensitivity(pointerX: Double? = nil, pointerY: Double? = nil, scroll: Double? = nil) {
         if let pointerX {
@@ -178,6 +204,19 @@ public struct TrackpadGestureEngine: Sendable {
         }
         if let scroll {
             configuration.scrollSensitivity = min(max(scroll, 0.05), 10)
+        }
+    }
+
+    /// Both experiments are off at zero, which is what the settings toggles
+    /// send when they are switched back off mid-gesture.
+    public mutating func setScrollGestures(edgeScrollWidth: Double, holdScrollDelay: TimeInterval) {
+        configuration.edgeScrollWidth = min(max(edgeScrollWidth, 0), 200)
+        configuration.holdScrollDelay = holdScrollDelay <= 0
+            ? 0
+            : min(max(holdScrollDelay, configuration.tapMaximumDuration), 2)
+        if configuration.edgeScrollWidth == 0, configuration.holdScrollDelay == 0,
+           mode == .oneFingerScroll {
+            mode = .oneFinger
         }
     }
 
@@ -241,7 +280,13 @@ public struct TrackpadGestureEngine: Sendable {
         let beganCount = touches.filter { $0.phase == .began }.count
         if beganCount > 0 {
             if active.count == 1 {
-                mode = shouldBeginDrag(at: timestamp) ? .dragging : .oneFinger
+                if shouldBeginDrag(at: timestamp) {
+                    mode = .dragging
+                } else if isInsideEdgeStrip(active.values.first?.start) {
+                    mode = .oneFingerScroll
+                } else {
+                    mode = .oneFinger
+                }
                 previousCentroid = centroid(of: active)
                 if mode == .dragging {
                     isDragging = true
@@ -276,6 +321,15 @@ public struct TrackpadGestureEngine: Sendable {
             let newCentroid = centroid(of: active)
             let delta = newCentroid - oldCentroid
             previousCentroid = newCentroid
+            // Checked before `gestureMoved` is updated: the clutch is claimed
+            // by the first movement after the rest, not by a later one.
+            if mode == .oneFinger, active.count == 1, !gestureMoved,
+               configuration.holdScrollDelay > 0,
+               let restedSince = active.values.first?.beganAt,
+               timestamp - restedSince >= configuration.holdScrollDelay {
+                mode = .oneFingerScroll
+                pendingPointer = .zero
+            }
             if delta.magnitude > configuration.tapMaximumTravel {
                 gestureMoved = true
             }
@@ -285,6 +339,10 @@ public struct TrackpadGestureEngine: Sendable {
                 outputs.append(contentsOf: emitPointer(scaledPointer(delta)))
             case .oneFinger where active.count == 1:
                 outputs.append(contentsOf: emitPointer(scaledPointer(delta)))
+            case .oneFingerScroll where active.count == 1:
+                outputs.append(contentsOf: emitScroll(
+                    TrackpadPoint(x: 0, y: delta.y * configuration.scrollSensitivity)
+                ))
             case .twoFinger where active.count >= 2:
                 // Vertical scrolling is the only two-finger continuous
                 // gesture in the MVP.  Horizontal movement is intentionally
@@ -401,6 +459,15 @@ public struct TrackpadGestureEngine: Sendable {
             return duration <= configuration.tapMaximumDuration &&
                 (end - item.start).magnitude <= configuration.tapMaximumTravel
         }
+    }
+
+    /// Both strips together must leave a usable middle, so a width set wider
+    /// than the glass can hold turns the strips off rather than swallowing it.
+    private func isInsideEdgeStrip(_ point: TrackpadPoint?) -> Bool {
+        guard let point, configuration.edgeScrollWidth > 0, surfaceWidth > 0,
+              configuration.edgeScrollWidth * 3 <= surfaceWidth else { return false }
+        return point.x <= configuration.edgeScrollWidth
+            || point.x >= surfaceWidth - configuration.edgeScrollWidth
     }
 
     private func centroid(of values: [UInt64: ActiveTouch]) -> TrackpadPoint {
