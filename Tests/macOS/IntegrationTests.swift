@@ -5,7 +5,7 @@ import XCTest
 
 final class IntegrationTests: XCTestCase {
     func testFramedProtocolInputReachesSafetySinkAndDisconnectReleasesIt() throws {
-        let command = RemoteInputCommand.mouseButton(button: .left, isDown: true)
+        let command = RemoteInputCommand.mouseButton(button: .left, isDown: true, clickCount: 1)
         let payload = try SharedInputProtocolAdapter.payload(for: command)
         let sessionID = try SessionID(bytes: Array(repeating: 0x41, count: SessionID.byteCount))
         let envelope = ProtocolEnvelope(sessionID: sessionID, sequence: 1, timestampMs: 100, payload: payload)
@@ -32,12 +32,12 @@ final class IntegrationTests: XCTestCase {
         let sink = MockInputEventSink()
         let injector = SafeInputInjector(policy: InputSafetyStateMachine(state: state), sink: sink)
         XCTAssertEqual(injector.submit(received), .applied)
-        XCTAssertEqual(sink.events, [.mouseButton(button: .left, isDown: true)])
+        XCTAssertEqual(sink.events, [.mouseButton(button: .left, isDown: true, clickCount: 1)])
 
         var disconnected = injector.state
         disconnected.authentication = .unauthenticated
         _ = injector.transition(to: disconnected)
-        XCTAssertEqual(sink.events.last, .mouseButton(button: .left, isDown: false))
+        XCTAssertEqual(sink.events.last, .mouseButton(button: .left, isDown: false, clickCount: 1))
     }
 
     func testMotionPointerDeltaReachesSafetySinkAsPointer() throws {

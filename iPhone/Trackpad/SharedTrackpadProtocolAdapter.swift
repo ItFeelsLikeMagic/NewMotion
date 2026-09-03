@@ -37,8 +37,12 @@ public enum SharedTrackpadProtocolAdapter {
             ]
         case .doubleClick:
             return [.mouseDoubleClick(MouseDoubleClickPayload(button: .left))]
-        case .dragBegan:
-            return [.mouseButton(MouseButtonPayload(button: .left, isDown: true))]
+        case let .dragBegan(clickCount):
+            return [.mouseButton(MouseButtonPayload(
+                button: .left,
+                isDown: true,
+                clickCount: UInt8(clamping: clickCount)
+            ))]
         case .dragEnded:
             return [.mouseButton(MouseButtonPayload(button: .left, isDown: false))]
         case .missionControl:

@@ -10,9 +10,17 @@ import PhoneRemoteShared
 /// the `InputLink` under it and this stage does not change.
 @MainActor
 final class InputUplink {
+    /// One beat, in milliseconds, matching the field the heartbeat carries.
+    /// The Mac waits several of these before it releases, so a beat lost to a
+    /// busy link costs nothing.  Beating faster only buys airtime.
+    static let heartbeatIntervalMs: UInt16 = 250
+
     private let link: InputLink
     private var pointerTravel = CursorTravel()
     private var scrollTravel = CursorTravel()
+    private var held = HeldRemoteInput()
+    /// Runs only while something is held, so an idle remote is silent.
+    private var heartbeatTimer: Timer?
 
     init(link: InputLink) {
         self.link = link
@@ -22,6 +30,10 @@ final class InputUplink {
     }
 
     var isReady: Bool { link.isReady }
+
+    /// What the Mac is currently being asked to hold down.  Read by the debug
+    /// surface; the heartbeat is what the Mac actually acts on.
+    var heldInput: HeldRemoteInput { held }
 
     /// Travel accumulates and leaves on the next flush.  Everything else goes
     /// out behind the travel that preceded it.
@@ -38,9 +50,10 @@ final class InputUplink {
             return true
         case .leftClick, .rightClick, .doubleClick, .dragBegan, .dragEnded, .missionControl, .appExpose:
             flushTravel(ordered: true)
+            defer { syncHeartbeat() }
             do {
                 for payload in try SharedTrackpadProtocolAdapter.payloads(for: event) {
-                    guard send(payload) else { return false }
+                    guard deliver(payload) else { return false }
                 }
                 return true
             } catch {
@@ -51,7 +64,57 @@ final class InputUplink {
 
     @discardableResult
     func send(_ payload: MessagePayload) -> Bool {
-        link.send(.payload(payload), delivery: .ordered) == .sent
+        defer { syncHeartbeat() }
+        return deliver(payload)
+    }
+
+    /// Puts one message on the link and folds it into the held set.  The beat
+    /// is settled by the caller, once, after the whole event has gone out: a
+    /// click is a press and a release together, and nothing is held in between.
+    @discardableResult
+    private func deliver(_ payload: MessagePayload) -> Bool {
+        guard link.send(.payload(payload), delivery: .ordered) == .sent else { return false }
+        // Only a message that reached the link counts as held.  Recording one
+        // that did not would make the next heartbeat press it down on the Mac,
+        // because reconcile repairs a difference in either direction.
+        held.record(payload)
+        return true
+    }
+
+    /// Starts the beat when something is being held and stops it when nothing
+    /// is.  The Mac arms its watchdog on the first beat, so a remote that
+    /// never holds anything never arms anything either.
+    private func syncHeartbeat() {
+        guard !held.isEmpty else {
+            heartbeatTimer?.invalidate()
+            heartbeatTimer = nil
+            return
+        }
+        guard heartbeatTimer == nil else { return }
+        sendHeartbeat()
+        heartbeatTimer = Timer.scheduledTimer(
+            withTimeInterval: Double(Self.heartbeatIntervalMs) / 1_000,
+            repeats: true
+        ) { [weak self] timer in
+            let stillOwned = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return false }
+                self.sendHeartbeat()
+                return true
+            }
+            // The run loop holds a repeating timer even when nothing else
+            // does, so an owner that went away has to stop it from here.
+            if !stillOwned { timer.invalidate() }
+        }
+    }
+
+    /// A beat never queues.  A stale one is worth nothing, and holding up the
+    /// ordered path four times a second would delay real input.  A skipped
+    /// beat is what the Mac's patience is sized for.
+    private func sendHeartbeat() {
+        _ = link.send(
+            .payload(.heartbeat(held.heartbeat(intervalMs: Self.heartbeatIntervalMs))),
+            delivery: .latestWins
+        )
     }
 
     /// Sends the accumulated travel as one compact frame.  When the link has no
@@ -88,8 +151,13 @@ final class InputUplink {
         }
     }
 
+    /// Called when the link has gone.  Nothing can be released over a link
+    /// that is not there, and the Mac releases everything it holds when the
+    /// session drops, so the held set is dropped rather than drained.
     func reset() {
         pointerTravel.clear()
         scrollTravel.clear()
+        held.clear()
+        syncHeartbeat()
     }
 }

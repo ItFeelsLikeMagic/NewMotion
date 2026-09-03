@@ -9,16 +9,18 @@ public final class NemotronServer: TranscriptionSessionFactory, @unchecked Senda
 
     private let queue = DispatchQueue(label: "phoneremote.nemotron.server")
     private let port: Int
+    private let speechContext: SpeechContextProviding?
     private let http = URLSession(configuration: .ephemeral)
     private var process: Process?
     private var ready = false
     private var polling = false
     private var waiters: [(deadline: Date, body: @Sendable (Bool) -> Void)] = []
 
-    public init(port: Int? = nil) {
+    public init(port: Int? = nil, speechContext: SpeechContextProviding? = nil) {
         self.port = port
             ?? ProcessInfo.processInfo.environment["PHONE_REMOTE_NEMO_PORT"].flatMap(Int.init)
             ?? Self.defaultPort
+        self.speechContext = speechContext
     }
 
     var realtimeURL: URL { URL(string: "ws://127.0.0.1:\(port)/v1/realtime")! }
@@ -36,7 +38,12 @@ public final class NemotronServer: TranscriptionSessionFactory, @unchecked Senda
     }
 
     public func makeSession(handlers: TranscriptionSessionHandlers) -> TranscriptionSession {
-        NemotronRealtimeSession(url: realtimeURL, server: self, handlers: handlers)
+        NemotronRealtimeSession(
+            url: realtimeURL,
+            server: self,
+            handlers: handlers,
+            speechContext: speechContext
+        )
     }
 
     /// Runs `body` on this server's queue with `true` once `/health` answers,
@@ -153,6 +160,14 @@ public final class NemotronServer: TranscriptionSessionFactory, @unchecked Senda
 final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionWebSocketDelegate, @unchecked Sendable {
     private static let readyTimeout: TimeInterval = 40
     private static let resultTimeout: TimeInterval = 30
+    /// How long the boost list may take to arrive. Past this the utterance
+    /// goes out unbiased rather than holding on to the start of the sentence.
+    private static let speechContextTimeout: TimeInterval = 0.3
+    static let sampleRate = 16_000
+    /// This recogniser applies one strength to the whole list and clamps it at
+    /// five; three is the documented working value for its cache-aware RNNT
+    /// head (`docs/asr/configuration.md`, word boosting).
+    static let speechContextBoost = 3.0
 
     private let queue = DispatchQueue(label: "phoneremote.nemotron.session")
     private let url: URL
@@ -164,12 +179,28 @@ final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionW
     private var pendingAudio: [Data] = []
     private var committed = false
     private var finished = false
+    /// Nil until the boost list has been decided, one way or the other.
+    private var phrases: [String]?
+    private var configured = false
 
-    init(url: URL, server: NemotronServer, handlers: TranscriptionSessionHandlers) {
+    init(
+        url: URL,
+        server: NemotronServer,
+        handlers: TranscriptionSessionHandlers,
+        speechContext: SpeechContextProviding? = nil
+    ) {
         self.url = url
         self.server = server
         self.handlers = handlers
         super.init()
+        if let speechContext {
+            speechContext.speechContext { phrases in
+                self.queue.async { self.adopt(phrases) }
+            }
+            queue.asyncAfter(deadline: .now() + Self.speechContextTimeout) { self.adopt([]) }
+        } else {
+            phrases = []
+        }
         server.whenReady(timeout: Self.readyTimeout) { ready in
             self.queue.async {
                 guard ready else {
@@ -185,7 +216,7 @@ final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionW
         // Apple platforms are little-endian, which is the wire format.
         let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
         queue.async {
-            if self.isOpen {
+            if self.configured {
                 self.task?.send(.data(data)) { _ in }
             } else {
                 self.pendingAudio.append(data)
@@ -196,8 +227,43 @@ final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionW
     func commit() {
         queue.async {
             self.committed = true
-            if self.isOpen { self.sendCommit() }
+            if self.configured { self.sendCommit() }
         }
+    }
+
+    /// The first list to arrive wins; the timeout and the reader race and only
+    /// one of them can decide the utterance.
+    private func adopt(_ phrases: [String]) {
+        guard self.phrases == nil else { return }
+        self.phrases = phrases
+        configureIfReady()
+    }
+
+    /// The server refuses a session update once audio has started, so the boost
+    /// list and the buffered frames leave in that order or not at all.
+    private func configureIfReady() {
+        guard !finished, isOpen, !configured, let phrases, let task else { return }
+        configured = true
+        task.send(.string(Self.sessionUpdate(phrases: phrases))) { _ in }
+        for data in pendingAudio {
+            task.send(.data(data)) { _ in }
+        }
+        pendingAudio.removeAll()
+        if committed { sendCommit() }
+    }
+
+    static func sessionUpdate(phrases: [String]) -> String {
+        var session: [String: Any] = ["sample_rate": sampleRate]
+        if !phrases.isEmpty {
+            session["speech_contexts"] = [["phrases": phrases, "boost": speechContextBoost]]
+        }
+        guard let data = try? JSONSerialization.data(
+                withJSONObject: ["type": "session.update", "session": session]
+              ),
+              let text = String(data: data, encoding: .utf8) else {
+            return #"{"type":"session.update","session":{"sample_rate":16000}}"#
+        }
+        return text
     }
 
     private func open() {
@@ -263,12 +329,7 @@ final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionW
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         queue.async {
             self.isOpen = true
-            webSocketTask.send(.string(#"{"type":"session.update","session":{"sample_rate":16000}}"#)) { _ in }
-            for data in self.pendingAudio {
-                webSocketTask.send(.data(data)) { _ in }
-            }
-            self.pendingAudio.removeAll()
-            if self.committed { self.sendCommit() }
+            self.configureIfReady()
         }
     }
 

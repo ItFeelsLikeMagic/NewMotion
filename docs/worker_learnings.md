@@ -155,6 +155,20 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
   chat model. Send the trained system prompt, the control line, the empty think block,
   and temperature 0 through the raw endpoint, or it hallucinates. An empty result is a
   real answer for filler-only speech; every failure types the raw transcript instead.
+- Word boosting is the only place keyword context belongs. `speech_contexts` on
+  `session.update` must be sent before the first audio frame; the server refuses a
+  session update once audio has started, and the boost list cannot be changed
+  mid-stream. One strength covers every phrase, so a long noisy list drags ordinary
+  speech toward screen furniture. Keep the list short.
+- The Accessibility walk that gathers those words costs 17 ms in some apps and over two
+  seconds in others (Notes). It runs on its own queue and its result is never waited on:
+  a press is answered from the cache, and the walk it starts pays the next press. Keep it
+  that way; anything added to that walk is paid on the worst app, not the average one.
+- Accessibility reads any running app by process id. Measuring or reading one never
+  requires activating it, and tooling must not move the user's windows to do so.
+- A vocabulary cache hit means the word was spoken, not that it appeared on screen. A
+  sighting only renews the short lease; the hit is what buys three hours and rank. Keep
+  those two apart or the list fills with whatever the window happened to show.
 - Transcript insertion is an explicit local action through the existing safe text-input
   path. Receiving a transcript never injects text by itself.
 - The scanner never stops Bluetooth, and any advertising pause waits for the camera's

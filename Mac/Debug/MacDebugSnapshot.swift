@@ -47,6 +47,12 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     /// Which path the last spoken utterance took into the field.  A label, not
     /// text: the field's contents never reach this snapshot.
     public var audioMerge: String
+    /// Stage times for the last spoken utterance, from the commit that ended
+    /// the speech to the text landing: "asr 174/read 9/norm 380/type 6 = 569ms".
+    public var audioTiming: String
+    /// The last front-window vocabulary walk: "off", or "12ms/430nodes/18words"
+    /// with "+" when the node budget ran out. Counts only, never the words.
+    public var audioVocabulary: String
     public var appPath: String?
     public var pairedDevices: [MacDebugPairedDevice]
 
@@ -74,6 +80,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         audioSamples: UInt64 = 0,
         audioMissingChunks: UInt64 = 0,
         audioMerge: String = "none",
+        audioTiming: String = "none",
+        audioVocabulary: String = "off",
         appPath: String? = nil,
         pairedDevices: [MacDebugPairedDevice] = []
     ) {
@@ -100,6 +108,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.audioSamples = audioSamples
         self.audioMissingChunks = audioMissingChunks
         self.audioMerge = audioMerge
+        self.audioTiming = audioTiming
+        self.audioVocabulary = audioVocabulary
         self.appPath = appPath
         self.pairedDevices = pairedDevices
     }

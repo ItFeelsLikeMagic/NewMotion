@@ -161,7 +161,10 @@ public enum InputCommandDelivery: String, Equatable, Sendable {
 public enum RemoteInputCommand: Equatable, Sendable {
     case pointer(MacPointerDelta)
     case scroll(MacScrollDelta)
-    case mouseButton(button: MacMouseButton, isDown: Bool)
+    /// `clickCount` is which click of a run the press continues.  Two makes a
+    /// Mac widen a text selection by word while the drag goes on, three by
+    /// line.  A release carries the same count as the press it ends.
+    case mouseButton(button: MacMouseButton, isDown: Bool, clickCount: Int)
     /// One atomic press-and-release carrying a click count of two. It holds no
     /// button afterwards, so it needs no release bookkeeping.
     case doubleClick(MacMouseButton)
@@ -311,7 +314,7 @@ public struct InputSafetyStateMachine: Sendable {
         }
 
         switch command {
-        case let .mouseButton(button, isDown):
+        case let .mouseButton(button, isDown, _):
             if isDown {
                 held.buttons.insert(button)
             } else {
@@ -344,7 +347,11 @@ public struct InputSafetyStateMachine: Sendable {
 
         var commands: [RemoteInputCommand] = []
         for button in MacMouseButton.allCases where held.buttons.contains(button) != desired.buttons.contains(button) {
-            commands.append(.mouseButton(button: button, isDown: desired.buttons.contains(button)))
+            commands.append(.mouseButton(
+                button: button,
+                isDown: desired.buttons.contains(button),
+                clickCount: 1
+            ))
         }
         for modifier in MacModifierKey.allCases where held.modifiers.contains(modifier) != desired.modifiers.contains(modifier) {
             commands.append(.modifier(key: modifier, isDown: desired.modifiers.contains(modifier)))

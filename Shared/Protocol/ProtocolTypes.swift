@@ -122,11 +122,83 @@ public struct ProtocolBytes: Codable, Equatable, Sendable {
     }
 }
 
-/// State sent in a heartbeat/current-input-state message.
+/// The buttons a heartbeat reports as held, as they sit on the wire.
+///
+/// Which bit means which button is decided here and nowhere else.  The two
+/// ends would not fail loudly if they disagreed: one would quietly release, or
+/// press, a button the other never meant.
+public struct HeldButtons: OptionSet, Equatable, Sendable {
+    public let rawValue: UInt8
+
+    public init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    /// The only place a button becomes a bit.  A new button needs no other
+    /// change, here or on either side of the link.
+    public init(_ button: MouseButton) {
+        self.init(rawValue: 1 << (button.rawValue - 1))
+    }
+
+    public static let left = HeldButtons(MouseButton.left)
+    public static let right = HeldButtons(MouseButton.right)
+
+    /// Every bit the protocol defines.  A byte with anything else set is
+    /// malformed rather than merely unknown.
+    public static let all = MouseButton.allCases.reduce(into: HeldButtons()) {
+        $0.insert(HeldButtons($1))
+    }
+}
+
+/// The modifier keys a heartbeat can report as held.  The protocol carries no
+/// key codes, so the wire needs its own spelling; each platform maps its own
+/// modifier type onto these in a single table.
+public enum HeldModifier: UInt8, CaseIterable, Equatable, Sendable {
+    case command = 0
+    case option = 1
+    case control = 2
+    case shift = 3
+}
+
+/// The modifier half of the same idea.  See `HeldButtons`.
+public struct HeldModifiers: OptionSet, Equatable, Sendable {
+    public let rawValue: UInt8
+
+    public init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    public init(_ modifier: HeldModifier) {
+        self.init(rawValue: 1 << modifier.rawValue)
+    }
+
+    public static let command = HeldModifiers(HeldModifier.command)
+    public static let option = HeldModifiers(HeldModifier.option)
+    public static let control = HeldModifiers(HeldModifier.control)
+    public static let shift = HeldModifiers(HeldModifier.shift)
+
+    public static let all = HeldModifier.allCases.reduce(into: HeldModifiers()) {
+        $0.insert(HeldModifiers($1))
+    }
+}
+
+/// A periodic "still here, and this is what I am holding down" message.
+///
+/// It does two jobs, and the second is the one worth remembering.  It proves
+/// the sender is alive, so the receiver can let go of held input when it stops
+/// arriving.  It also carries the whole held set rather than a change to it,
+/// so a lost press or release is repaired by the next beat instead of leaving
+/// the two ends disagreeing forever.
+///
+/// Anything the remote learns to hold later belongs in `buttons`/`modifiers`;
+/// nothing else about the mechanism has to change.
 public struct HeartbeatPayload: Codable, Equatable, Sendable {
     public let isActive: Bool
     public let buttons: UInt8
     public let modifiers: UInt8
+    /// How often the sender intends to beat.  The receiver's patience is a
+    /// multiple of this, so a single dropped message is never enough to
+    /// release anything.
     public let heartbeatIntervalMs: UInt16
 
     public init(
@@ -140,6 +212,23 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         self.modifiers = modifiers
         self.heartbeatIntervalMs = heartbeatIntervalMs
     }
+
+    public init(
+        isActive: Bool,
+        buttons: HeldButtons,
+        modifiers: HeldModifiers,
+        heartbeatIntervalMs: UInt16 = 250
+    ) {
+        self.init(
+            isActive: isActive,
+            buttons: buttons.rawValue,
+            modifiers: modifiers.rawValue,
+            heartbeatIntervalMs: heartbeatIntervalMs
+        )
+    }
+
+    public var heldButtons: HeldButtons { HeldButtons(rawValue: buttons) }
+    public var heldModifiers: HeldModifiers { HeldModifiers(rawValue: modifiers) }
 }
 
 /// Relative cursor movement in logical Mac points.
@@ -172,12 +261,29 @@ public enum MouseButton: UInt8, Codable, CaseIterable, Equatable, Sendable {
 /// A single explicit mouse-button transition. It is reliable and idempotent
 /// at the input-injection boundary.
 public struct MouseButtonPayload: Codable, Equatable, Sendable {
+    public static let maximumClickCount: UInt8 = 3
+
     public let button: MouseButton
     public let isDown: Bool
+    /// Which click of a run this press continues. Two makes a Mac widen a text
+    /// selection by word rather than starting a new one, and three by line.
+    /// A message without the field means one, so a build that predates it
+    /// still decodes.
+    public let clickCount: UInt8
 
-    public init(button: MouseButton, isDown: Bool) {
+    public init(button: MouseButton, isDown: Bool, clickCount: UInt8 = 1) {
         self.button = button
         self.isDown = isDown
+        self.clickCount = min(max(clickCount, 1), Self.maximumClickCount)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            button: try container.decode(MouseButton.self, forKey: .button),
+            isDown: try container.decode(Bool.self, forKey: .isDown),
+            clickCount: try container.decodeIfPresent(UInt8.self, forKey: .clickCount) ?? 1
+        )
     }
 }
 
@@ -526,10 +632,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     public func validate() throws {
         switch self {
         case .heartbeat(let value):
-            guard value.buttons & ~0b0000_0011 == 0 else {
+            guard value.buttons & ~HeldButtons.all.rawValue == 0 else {
                 throw ProtocolError.invalidField("heartbeat_buttons")
             }
-            guard value.modifiers & ~0b0000_1111 == 0 else {
+            guard value.modifiers & ~HeldModifiers.all.rawValue == 0 else {
                 throw ProtocolError.invalidField("heartbeat_modifiers")
             }
             guard (100...1_000).contains(Int(value.heartbeatIntervalMs)) else {

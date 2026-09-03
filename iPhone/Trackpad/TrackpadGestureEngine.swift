@@ -77,7 +77,9 @@ public enum RemoteInputEvent: Equatable, Sendable {
     case leftClick
     case rightClick
     case doubleClick
-    case dragBegan
+    /// The press that starts a drag. `clickCount` is which click of a run it
+    /// continues: two extends a text selection by word, three by line.
+    case dragBegan(clickCount: Int)
     case dragEnded
     case missionControl
     case appExpose
@@ -96,7 +98,10 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     public var tapMaximumDuration: TimeInterval
     public var tapMaximumTravel: Double
     public var doubleTapInterval: TimeInterval
-    public var dragEnabled: Bool
+    /// How long the button stays down after the finger leaves during a drag.
+    /// The glass is small, so a long selection needs more than one pass; a
+    /// finger back down inside this window carries on where it left off.
+    public var dragLiftGrace: TimeInterval
     /// How far three fingers must travel up before the swipe counts.
     public var threeFingerSwipeTravel: Double
     /// Points in from each side where one finger scrolls instead of moving the
@@ -114,7 +119,7 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         tapMaximumDuration: TimeInterval = 0.30,
         tapMaximumTravel: Double = 6,
         doubleTapInterval: TimeInterval = 0.35,
-        dragEnabled: Bool = false,
+        dragLiftGrace: TimeInterval = 0.25,
         threeFingerSwipeTravel: Double = 45,
         edgeScrollWidth: Double = 0,
         holdScrollDelay: TimeInterval = 0
@@ -125,7 +130,7 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         self.tapMaximumDuration = min(max(tapMaximumDuration, 0.05), 1)
         self.tapMaximumTravel = min(max(tapMaximumTravel, 1), 100)
         self.doubleTapInterval = min(max(doubleTapInterval, 0.1), 1)
-        self.dragEnabled = dragEnabled
+        self.dragLiftGrace = min(max(dragLiftGrace, 0), 1)
         self.threeFingerSwipeTravel = min(max(threeFingerSwipeTravel, 10), 400)
         self.edgeScrollWidth = min(max(edgeScrollWidth, 0), 200)
         self.holdScrollDelay = holdScrollDelay <= 0 ? 0 : min(max(holdScrollDelay, self.tapMaximumDuration), 2)
@@ -149,7 +154,14 @@ public struct TrackpadGestureEngine: Sendable {
         case oneFingerScroll
         case twoFinger
         case threeFinger
+        /// A press that chained onto the tap before it.  Nothing has been sent
+        /// yet: it is still a double click until it travels far enough to be a
+        /// drag instead.
+        case dragArmed
         case dragging
+        /// The finger left mid-drag and the button is still down, waiting out
+        /// `dragLiftGrace` for it to come back.
+        case dragSuspended
     }
 
     public private(set) var configuration: TrackpadConfiguration
@@ -176,6 +188,10 @@ public struct TrackpadGestureEngine: Sendable {
     /// the hand keeps going afterwards.
     private var threeFingerTravel = TrackpadPoint.zero
     private var threeFingerFired = false
+    /// Which click of a run an armed or running drag continues.
+    private var dragClickCount = 2
+    /// When the finger left mid-drag, while the button is still down.
+    private var dragSuspendedAt: TimeInterval?
     /// The edge strips are a fraction of the surface, so the engine has to be
     /// told how wide the glass under it is.
     private var surfaceWidth: Double = 0
@@ -190,6 +206,11 @@ public struct TrackpadGestureEngine: Sendable {
     /// cursor read this to send their travel as scroll too, which is what lets
     /// a held finger turn the air mouse into a scroll wheel.
     public var isScrollClutchEngaged: Bool { mode == .oneFingerScroll }
+
+    /// True while a drag is holding the button down with no finger on the
+    /// glass.  The caller drives `flushSuspendedDrag(at:)` on a timer for as
+    /// long as this is set: nothing else will arrive to end the drag.
+    public var isDragSuspended: Bool { mode == .dragSuspended }
 
     public mutating func setSurfaceWidth(_ width: Double) {
         surfaceWidth = width.isFinite && width > 0 ? width : 0
@@ -220,14 +241,14 @@ public struct TrackpadGestureEngine: Sendable {
         }
     }
 
-    /// Drag is a separately guarded capability and defaults to disabled.  The
-    /// caller should only enable it after forced-disconnect safety tests pass.
-    public mutating func setDragEnabled(_ enabled: Bool) {
-        configuration.dragEnabled = enabled
-        if !enabled, isDragging {
-            isDragging = false
-            mode = active.isEmpty ? .idle : .oneFinger
-        }
+    /// Ends a suspended drag once the grace window has run out.  Safe to call
+    /// at any time: it is quiet unless a drag is actually waiting.
+    @discardableResult
+    public mutating func flushSuspendedDrag(at timestamp: TimeInterval) -> [RemoteInputEvent] {
+        guard mode == .dragSuspended, let dragSuspendedAt,
+              timestamp - dragSuspendedAt >= configuration.dragLiftGrace else { return [] }
+        resetTouches()
+        return [.dragEnded]
     }
 
     @discardableResult
@@ -280,23 +301,29 @@ public struct TrackpadGestureEngine: Sendable {
         let beganCount = touches.filter { $0.phase == .began }.count
         if beganCount > 0 {
             if active.count == 1 {
-                if shouldBeginDrag(at: timestamp) {
+                if resumesSuspendedDrag(at: timestamp) {
+                    // The button never came up, so this is the same drag: no
+                    // new press, only a fresh baseline to measure from.
                     mode = .dragging
+                    dragSuspendedAt = nil
+                } else if isChainedTap(at: timestamp, location: active.values.first?.current) {
+                    // Chaining onto the tap before it is the whole guard on a
+                    // drag.  What it is stays ambiguous: a quick lift makes it
+                    // the second click, travel makes it the press of a drag.
+                    mode = .dragArmed
+                    dragClickCount = min(tapCount + 1, 3)
                 } else if isInsideEdgeStrip(active.values.first?.start) {
                     mode = .oneFingerScroll
                 } else {
                     mode = .oneFinger
                 }
                 previousCentroid = centroid(of: active)
-                if mode == .dragging {
-                    isDragging = true
-                    outputs.append(.dragBegan)
-                }
             } else if active.count >= 2 {
                 // Adding a finger must not jump the cursor/scroll position.
                 // Start a new centroid baseline.
                 if isDragging {
                     isDragging = false
+                    dragSuspendedAt = nil
                     outputs.append(.dragEnded)
                 }
                 mode = active.count >= 3 ? .threeFinger : .twoFinger
@@ -335,6 +362,8 @@ public struct TrackpadGestureEngine: Sendable {
             }
 
             switch mode {
+            case .dragArmed where active.count == 1:
+                outputs.append(contentsOf: promoteArmedDrag())
             case .dragging:
                 outputs.append(contentsOf: emitPointer(scaledPointer(delta)))
             case .oneFinger where active.count == 1:
@@ -373,6 +402,16 @@ public struct TrackpadGestureEngine: Sendable {
                 active.removeValue(forKey: touch.id)
             }
             if isDragging {
+                if active.isEmpty {
+                    // The glass is small, so one pass rarely covers a whole
+                    // selection.  The button stays down for the grace window
+                    // and a finger back down inside it carries on.
+                    mode = .dragSuspended
+                    dragSuspendedAt = timestamp
+                    previousCentroid = nil
+                    pendingPointer = .zero
+                    return outputs
+                }
                 outputs.append(.dragEnded)
                 isDragging = false
             } else if active.isEmpty && tap {
@@ -436,14 +475,27 @@ public struct TrackpadGestureEngine: Sendable {
         return (location - lastTapLocation).magnitude <= configuration.tapMaximumTravel
     }
 
-    private func shouldBeginDrag(at timestamp: TimeInterval) -> Bool {
-        guard configuration.dragEnabled,
-              let lastTapTime,
-              timestamp >= lastTapTime,
-              timestamp - lastTapTime <= configuration.doubleTapInterval,
-              let lastTapLocation,
-              let first = active.values.first else { return false }
-        return (first.current - lastTapLocation).magnitude <= configuration.tapMaximumTravel
+    private func resumesSuspendedDrag(at timestamp: TimeInterval) -> Bool {
+        guard mode == .dragSuspended, let dragSuspendedAt, timestamp >= dragSuspendedAt else { return false }
+        return timestamp - dragSuspendedAt < configuration.dragLiftGrace
+    }
+
+    /// Turns an armed press into a drag once it has travelled far enough to
+    /// stop looking like the second half of a double tap.  The travel since
+    /// the press belongs to the drag, so it goes out with it rather than
+    /// being spent on deciding.
+    private mutating func promoteArmedDrag() -> [RemoteInputEvent] {
+        guard let touch = active.values.first else { return [] }
+        let travel = touch.current - touch.start
+        guard travel.magnitude > configuration.tapMaximumTravel else { return [] }
+        mode = .dragging
+        isDragging = true
+        // The press replaces the click this tap would have sent, so the run
+        // must not chain any further.
+        tapCount = 0
+        lastTapTime = nil
+        lastTapLocation = nil
+        return [.dragBegan(clickCount: dragClickCount)] + emitPointer(scaledPointer(travel))
     }
 
     private func isTap(
@@ -541,6 +593,7 @@ public struct TrackpadGestureEngine: Sendable {
         gestureMaxTouches = 0
         threeFingerTravel = .zero
         threeFingerFired = false
+        dragSuspendedAt = nil
     }
 }
 

@@ -8,6 +8,7 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     /// Answers `/focus`.  Runs on the main thread because it reads the live UI
     /// tree, and gives up rather than holding a connection open.
     public var focusProbe: (@Sendable () -> [String: String])?
+    public var vocabularyProbe: (@Sendable (String?) -> [String: String])?
 
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
@@ -95,7 +96,8 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
             let response = MacDebugHTTP.handle(
                 request: request,
                 snapshot: self.box.current(),
-                focus: { self.probeFocus() }
+                focus: { self.probeFocus() },
+                vocabulary: { self.probeVocabulary(app: $0) }
             )
             connection.send(content: response.httpData, completion: .contentProcessed { _ in
                 connection.cancel()
@@ -105,12 +107,26 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
 
     private static let probeTimeout: TimeInterval = 2
 
+    /// The walk runs off the main thread, so this one is answered here. It
+    /// does hold this server's queue for the length of the walk, which is the
+    /// point: the number it reports is that walk's real cost.
+    private func probeVocabulary(app: String?) -> [String: String] {
+        guard let vocabularyProbe else { return ["error": "no probe"] }
+        return vocabularyProbe(app)
+    }
+
     private func probeFocus() -> [String: String] {
         guard let focusProbe else { return ["error": "no probe"] }
+        return onMainThread(focusProbe)
+    }
+
+    /// Reading the focused field walks the live UI tree from the main thread,
+    /// the way the typing does.
+    private func onMainThread(_ probe: @escaping @Sendable () -> [String: String]) -> [String: String] {
         let box = MainThreadResultBox()
         let ready = DispatchSemaphore(value: 0)
         DispatchQueue.main.async {
-            box.value = focusProbe()
+            box.value = probe()
             ready.signal()
         }
         guard ready.wait(timeout: .now() + Self.probeTimeout) == .success else {

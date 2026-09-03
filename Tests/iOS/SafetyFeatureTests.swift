@@ -48,21 +48,122 @@ final class SafetyFeatureTests: XCTestCase {
         ]), [.rightClick])
     }
 
-    func testDragIsOffByDefaultAndReleasesWhenEnabled() {
+    /// The press after a tap is ambiguous until it either lifts or travels.
+    /// Lifting keeps it a double click; travelling makes it a drag.
+    func testChainedPressStaysADoubleClickUntilItTravels() {
         var engine = TrackpadGestureEngine()
-        // First tap.
         _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
         XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.1)]), [.leftClick])
-        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.2)])
-        XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .moved, timestamp: 0.21)]), [])
-        XCTAssertFalse(engine.isDragging)
-        // With drag off, a second quick tap in the same spot is a double click.
-        XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.22)]), [.doubleClick])
 
-        engine.setDragEnabled(true)
-        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.3)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.2)])
+        XCTAssertFalse(engine.isDragging)
+        // A wobble under the tap threshold is not yet a drag.
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 2, y: 0), phase: .moved, timestamp: 0.21)]), [])
+        XCTAssertFalse(engine.isDragging)
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 2, y: 0), phase: .ended, timestamp: 0.22)]), [.doubleClick])
+    }
+
+    func testTapAndAHalfDragsWithTheSecondClickCount() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.1)]), [.leftClick])
+
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.2)])
+        // The travel spent deciding belongs to the drag, so it goes out with it.
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 20, y: 0), phase: .moved, timestamp: 0.25)]),
+            [.dragBegan(clickCount: 2), .pointer(CursorDelta(x: 20, y: 0))]
+        )
         XCTAssertTrue(engine.isDragging)
-        XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 3, y: 0), phase: .ended, timestamp: 0.31)]), [.dragEnded])
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 30, y: 0), phase: .moved, timestamp: 0.3)]),
+            [.pointer(CursorDelta(x: 10, y: 0))]
+        )
+    }
+
+    /// Three taps in a run make the drag a line selection, the way a Mac reads
+    /// a triple click.
+    func testThirdPressInARunDragsByLine() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.05)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.1)])
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.15)]), [.doubleClick])
+
+        _ = engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.2)])
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 20, y: 0), phase: .moved, timestamp: 0.25)]).first,
+            .dragBegan(clickCount: 3)
+        )
+    }
+
+    /// The glass runs out before a long selection does, so a finger back down
+    /// inside the grace window continues the same drag rather than starting a
+    /// new one.
+    func testDragSurvivesAQuickLiftAndEndsWhenTheGraceRunsOut() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.05)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.1)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 40, y: 0), phase: .moved, timestamp: 0.15)])
+        XCTAssertTrue(engine.isDragging)
+
+        // The lift holds the button down instead of releasing it.
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 40, y: 0), phase: .ended, timestamp: 0.2)]), [])
+        XCTAssertTrue(engine.isDragSuspended)
+        XCTAssertEqual(engine.flushSuspendedDrag(at: 0.3), [])
+
+        // Back down inside the window: no second press, and travel resumes.
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.35)]), [])
+        XCTAssertFalse(engine.isDragSuspended)
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 15, y: 0), phase: .moved, timestamp: 0.4)]),
+            [.pointer(CursorDelta(x: 15, y: 0))]
+        )
+
+        // This time nothing comes back, so the button is released.
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 15, y: 0), phase: .ended, timestamp: 0.45)]), [])
+        XCTAssertEqual(engine.flushSuspendedDrag(at: 0.75), [.dragEnded])
+        XCTAssertFalse(engine.isDragging)
+        XCTAssertEqual(engine.flushSuspendedDrag(at: 1.0), [])
+    }
+
+    func testSuspendedDragIsReleasedByBackgroundAndCancel() {
+        for lifecycle in [TrackpadLifecycle.background, .cancel] {
+            var engine = TrackpadGestureEngine()
+            _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+            _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.05)])
+            _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.1)])
+            _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 40, y: 0), phase: .moved, timestamp: 0.15)])
+            _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 40, y: 0), phase: .ended, timestamp: 0.2)])
+            XCTAssertTrue(engine.isDragSuspended)
+            XCTAssertEqual(engine.handle(lifecycle), [.dragEnded])
+            XCTAssertFalse(engine.isDragging)
+        }
+    }
+
+    func testSecondFingerDuringADragReleasesTheButton() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.05)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.1)])
+        _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 40, y: 0), phase: .moved, timestamp: 0.15)])
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 3, location: TrackpadPoint(x: 80, y: 0), phase: .began, timestamp: 0.2)]),
+            [.dragEnded]
+        )
+        XCTAssertFalse(engine.isDragging)
+    }
+
+    /// A press that is not chained to a tap moves the cursor, exactly as before.
+    func testAPressOnItsOwnStillMovesTheCursor() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)])
+        XCTAssertEqual(
+            engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 20, y: 0), phase: .moved, timestamp: 0.05)]),
+            [.pointer(CursorDelta(x: 20, y: 0))]
+        )
+        XCTAssertFalse(engine.isDragging)
     }
 
     func testTwoFingerTapSurvivesAnUnevenLift() {

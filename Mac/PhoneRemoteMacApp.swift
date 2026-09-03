@@ -45,7 +45,20 @@ enum MacHostRuntime {
 final class MacRemoteAppModel: ObservableObject {
     private static let trustedDeviceService = "com.example.phoneremote.macos.trusted-devices"
 
+    /// One beat is 250 ms, so the watchdog tolerates three lost in a row.  A
+    /// held button that outlives the phone is a nuisance for this long; a
+    /// selection dropped mid-drag by an impatient watchdog is worse.
+    private static let heartbeatTimeout: TimeInterval = 1.0
+    /// How often the watchdog is asked whether its window has passed.  It only
+    /// decides the delay between the window closing and the release.
+    private static let watchdogPollInterval: TimeInterval = 0.25
+
     private let injector: SafeInputInjector
+    private let reliableInput: ReliableInputCoordinator
+    /// Runs only while a phone is authenticated.  The watchdog itself stays
+    /// disarmed until a heartbeat arrives, so a remote that holds nothing is
+    /// never at risk of a release it did not need.
+    private var watchdogTimer: Timer?
     private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
@@ -58,7 +71,22 @@ final class MacRemoteAppModel: ObservableObject {
     private var pairingServer: PairingHandshakeServer?
     private var pairingID: UUID?
     private var pairingDeviceName: String?
-    private var authenticatedSession: PairingSession?
+    private var authenticatedSession: PairingSession? {
+        didSet {
+            // A link can end in several places; it can only be authenticated
+            // in one.  Following the session keeps the watchdog from having to
+            // be started and stopped at each of them.
+            if authenticatedSession == nil {
+                stopWatchdog()
+                // Releases anything still held.  This runs before the
+                // lifecycle transition, so the button comes up immediately
+                // rather than on the way through the unsafe state.
+                reliableInput.disconnect()
+            } else if oldValue == nil {
+                startWatchdog()
+            }
+        }
+    }
     private var nextHandshakeMessageID: UInt32 = 1
     private var nextApplicationSequence: UInt64 = 1
 
@@ -76,6 +104,7 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
     @Published var smoothCursor = UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true
     @Published var smoothScroll = UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
+    @Published var screenVocabulary = UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true
     @Published var smoothingMinimum = UserDefaults.standard.object(forKey: "smoothingMinimumDelta") as? Double
         ?? SmoothedTravelSink.defaultMinimumSmoothed
     /// Cursor traffic is counted, not narrated.  Publishing a label per packet
@@ -84,13 +113,21 @@ final class MacRemoteAppModel: ObservableObject {
     private var cursorEvents: UInt64 = 0
     private var lastCursorPublish: TimeInterval = 0
     private let voiceCoordinator: VoicePTTCoordinator
-    private let speechServer = NemotronServer()
+    private let speechServer: NemotronServer
+    private let screenVocabularyReader: AXScreenVocabularyReader
     private let normalizer = S1MiniNormalizer()
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
     private let focusedTextReader = AXFocusedTextReader()
 
     init() {
+        let vocabularyCache = VocabularyCache()
+        let screenVocabularyReader = AXScreenVocabularyReader(
+            isEnabled: UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true,
+            cache: vocabularyCache
+        )
+        self.screenVocabularyReader = screenVocabularyReader
+        self.speechServer = NemotronServer(speechContext: screenVocabularyReader)
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust)
         self.inputSink = sink
@@ -117,12 +154,17 @@ final class MacRemoteAppModel: ObservableObject {
             offerController: pairingOffer
         )
         self.injector = injector
+        self.reliableInput = ReliableInputCoordinator(
+            injector: injector,
+            heartbeatTimeout: Self.heartbeatTimeout
+        )
         self.lifecycle = MacLifecycleCoordinator(injector: injector)
         let voiceCoordinator = VoicePTTCoordinator(
             sessions: speechServer,
             insertionSink: injector,
             normalizer: normalizer,
-            focusedText: focusedTextReader
+            focusedText: focusedTextReader,
+            vocabulary: vocabularyCache
         )
         self.voiceCoordinator = voiceCoordinator
         self.central = central
@@ -202,6 +244,7 @@ final class MacRemoteAppModel: ObservableObject {
         if !inert {
             speechServer.start()
             normalizer.warmUp()
+            screenVocabularyReader.warmUp()
         }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
@@ -241,6 +284,15 @@ final class MacRemoteAppModel: ObservableObject {
         smoothScroll = on
         UserDefaults.standard.set(on, forKey: "scrollSmoothing")
         pointerSmoothing.smoothsScroll = on
+    }
+
+    /// Applies to the next press; an utterance already under way keeps the
+    /// list it opened with, because the recogniser will not be re-biased
+    /// mid-stream.
+    func setScreenVocabulary(_ on: Bool) {
+        screenVocabulary = on
+        UserDefaults.standard.set(on, forKey: "screenVocabulary")
+        screenVocabularyReader.isEnabled = on
     }
 
     func togglePause() {
@@ -545,6 +597,15 @@ final class MacRemoteAppModel: ObservableObject {
 
     private func dispatchApplication(_ payload: MessagePayload) throws {
         switch payload {
+        case let .heartbeat(value):
+            // Not a command: it says what the phone believes it is holding.
+            // Reconcile posts only the difference, so a press or release lost
+            // on the way is repaired here rather than stranding the button.
+            // Deliberately silent on `lastApplicationMessage`; four of these a
+            // second would bury everything else.
+            reliableInput.receive(heartbeat: InputHeartbeat(
+                held: SharedInputProtocolAdapter.held(from: value)
+            ))
         case .ping:
             try sendApplication(.pong(PongPayload()))
             lastApplicationMessage = "Pong sent"
@@ -574,6 +635,34 @@ final class MacRemoteAppModel: ObservableObject {
                 lastApplicationMessage = String(describing: payload.messageType)
             }
         }
+    }
+
+    /// The watchdog needs a clock of its own: a phone that has stopped talking
+    /// sends nothing to notice, which is the whole point of it.
+    private func startWatchdog() {
+        stopWatchdog()
+        watchdogTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.watchdogPollInterval,
+            repeats: true
+        ) { [weak self] timer in
+            let stillOwned = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return false }
+                self.pollWatchdog()
+                return true
+            }
+            if !stillOwned { timer.invalidate() }
+        }
+    }
+
+    private func stopWatchdog() {
+        watchdogTimer?.invalidate()
+        watchdogTimer = nil
+    }
+
+    private func pollWatchdog() {
+        guard reliableInput.poll().contains(.watchdogExpired) else { return }
+        lastApplicationMessage = "held input released: no heartbeat"
+        publishDebugState()
     }
 
     private func sendApplication(_ payload: MessagePayload) throws {
@@ -618,6 +707,8 @@ final class MacRemoteAppModel: ObservableObject {
         let server = MacDebugHTTPServer(box: debugSnapshotBox)
         let reader = focusedTextReader
         server.focusProbe = { reader.diagnostics() }
+        let vocabulary = screenVocabularyReader
+        server.vocabularyProbe = { vocabulary.probe(bundleID: $0) }
         server.start()
         debugServer = server
     }
@@ -633,6 +724,13 @@ final class MacRemoteAppModel: ObservableObject {
         cursorEvents &+= 1
         guard ProcessInfo.processInfo.systemUptime - lastCursorPublish >= 0.5 else { return }
         publishDebugState()
+    }
+
+    private var vocabularyLabel: String {
+        guard screenVocabulary else { return "off" }
+        let walk = screenVocabularyReader.lastWalk
+        guard walk.nodes > 0 else { return "on" }
+        return "\(walk.milliseconds)ms/\(walk.nodes)nodes\(walk.truncated ? "+" : "")/\(walk.phrases)words"
     }
 
     private func makeDebugSnapshot() -> MacDebugSnapshot {
@@ -665,6 +763,8 @@ final class MacRemoteAppModel: ObservableObject {
             audioSamples: voice.health.receivedSamples,
             audioMissingChunks: voice.health.missingChunks,
             audioMerge: voice.merge,
+            audioTiming: voice.timing,
+            audioVocabulary: vocabularyLabel,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
                 MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)
@@ -733,6 +833,13 @@ struct MacRemoteStatusView: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Toggle("Boost words on screen", isOn: Binding(
+                get: { model.screenVocabulary },
+                set: { model.setScreenVocabulary($0) }
+            ))
+            .font(.caption)
+            .help("Experimental. Reads names and jargon from the front window and nudges voice typing toward them. Skipped while a password field is focused.")
 
             Toggle("Smooth cursor", isOn: Binding(
                 get: { model.smoothCursor },
