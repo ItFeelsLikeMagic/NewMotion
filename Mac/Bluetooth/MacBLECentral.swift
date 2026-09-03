@@ -110,10 +110,7 @@ public final class MacBLECentralTransport {
         subscribed.removeAll()
         transition(to: .scanning)
         adapter.scan(for: serviceUUID)
-        for peripheral in adapter.connectedPeripherals(for: serviceUUID) {
-            handleDiscover(peripheral)
-            if state != .scanning { break }
-        }
+        adoptSystemConnectedPeripheral()
     }
 
     public func stop() {
@@ -125,11 +122,25 @@ public final class MacBLECentralTransport {
         transition(to: .stopped)
     }
 
-    /// Tests and callers with an injectable clock invoke this periodically to
-    /// enforce the bounded discovery/connection timeout.
+    /// Called about once a second. Enforces the connection timeout, and while
+    /// scanning keeps polling for a phone the system already holds a link to.
     public func tick() {
-        guard let deadline = pendingDeadline, now() >= deadline else { return }
-        failLink(error: nil, resumeScan: true)
+        if let deadline = pendingDeadline, now() >= deadline {
+            failLink(error: nil, resumeScan: true)
+            return
+        }
+        if state == .scanning { adoptSystemConnectedPeripheral() }
+    }
+
+    /// macOS keeps the BLE link to a paired iPhone alive after the phone app
+    /// quits, and a peripheral the system is connected to never shows up in a
+    /// scan; it only appears here once the relaunched app republishes the
+    /// service.
+    private func adoptSystemConnectedPeripheral() {
+        for peripheral in adapter.connectedPeripherals(for: serviceUUID) {
+            handleDiscover(peripheral)
+            if state != .scanning { break }
+        }
     }
 
     @discardableResult

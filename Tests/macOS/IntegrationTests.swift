@@ -60,7 +60,10 @@ final class IntegrationTests: XCTestCase {
         for command in [
             RemoteInputCommand.text("hello"),
             RemoteInputCommand.hotkey(.copy),
-            RemoteInputCommand.hotkey(.arrowRight)
+            RemoteInputCommand.hotkey(.arrowRight),
+            RemoteInputCommand.hotkey(.deleteBackward),
+            RemoteInputCommand.hotkey(.shiftTab),
+            RemoteInputCommand.doubleClick(.left)
         ] {
             let payload = try SharedInputProtocolAdapter.payload(for: command)
             XCTAssertEqual(try SharedInputProtocolAdapter.command(for: payload), command)

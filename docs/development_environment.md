@@ -49,6 +49,19 @@ PHONE_REMOTE_RUN_IOS_TESTS=1 ./scripts/test.sh
 `test.sh` picks the first available iPhone simulator. Set
 `PHONE_REMOTE_IOS_DESTINATION='platform=iOS Simulator,id=<uuid>'` to choose one.
 
+The macOS tests are hosted by the real Mac app, so every run launches it. Under
+XCTest the host is inert: an `InertCentralManagerAdapter` instead of Core
+Bluetooth, an in-memory trust store instead of the login Keychain, and no
+speech server or debug server. Unsigned rebuilds change the binary hash, so
+those two subsystems would otherwise raise a system approval dialog on every
+run. `PHONE_REMOTE_INERT_HOST=1` forces the same behaviour outside tests.
+
+The two tests that use the real Keychain are opt-in:
+
+```bash
+PHONE_REMOTE_KEYCHAIN_TESTS=1 ./scripts/test.sh
+```
+
 Phone install. The repo lives in iCloud Documents, so codesign fails on Finder
 metadata there. Build outside the repo.
 
@@ -92,9 +105,25 @@ Voice typing talks straight to a local `nemo-speech serve` WebSocket
 (`~/.local/bin/nemo-speech`, Nemotron 0.6b GGUF from the Hugging Face hub cache).
 At launch the Mac app checks `GET /health` on `PHONE_REMOTE_NEMO_PORT` (default
 18766) and spawns the server itself when nothing answers; its output goes to
-`/tmp/phoneremote-nemo-speech.log` and the child is stopped on quit. Punctuation
-comes from Nemotron; there is no LLM cleanup step.
+`/tmp/phoneremote-nemo-speech.log` and the child is stopped on quit.
 `PHONE_REMOTE_DEBUG_SERVER=0` disables the Mac debug server.
+
+Each final transcript then goes through "S1-mini" by "Superwhisper", a 0.6B
+normalizer that removes fillers, resolves false starts, and writes out numbers,
+dates and addresses. It is served by the local Ollama on
+`PHONE_REMOTE_S1_PORT` (default 11434) as model `PHONE_REMOTE_S1_MODEL`
+(default `s1-mini`). Register it once:
+
+```bash
+./scripts/install-s1-mini.sh
+```
+
+The script builds the Ollama model from whichever `s1-mini-*.gguf` is in the
+Hugging Face hub cache, preferring Q4_K_M. Ollama is not spawned by the app: if
+it is not running, or the model is missing, the raw transcript is typed instead.
+The app sends the trained prompt itself through `/api/generate` with `raw` set,
+so no Ollama chat template is involved. Keep Ollama's own debug logging off; the
+request body carries the transcript.
 
 ## CLI versus GUI
 

@@ -141,6 +141,11 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
   measures gaps and duplicates, and never hides them.
 - Transcription runs locally through `NemotronRealtime.swift`, a Swift WebSocket client
   for `nemo-speech serve`. Neither side prints transcripts or audio bytes to logs.
+- Cleanup runs locally too: `S1MiniNormalizer.swift` sends each final transcript to
+  "S1-mini" by "Superwhisper" on the local Ollama before it is typed. The model is not a
+  chat model. Send the trained system prompt, the control line, the empty think block,
+  and temperature 0 through the raw endpoint, or it hallucinates. An empty result is a
+  real answer for filler-only speech; every failure types the raw transcript instead.
 - Transcript insertion is an explicit local action through the existing safe text-input
   path. Receiving a transcript never injects text by itself.
 - The scanner never stops Bluetooth, and any advertising pause waits for the camera's

@@ -84,6 +84,7 @@ public enum RemoteHotkey: String, CaseIterable, Equatable, Hashable, Sendable {
     case arrowDown
     case arrowLeft
     case arrowRight
+    case deleteBackward
 }
 
 public enum KeyboardOutput: Equatable, Sendable {
@@ -95,12 +96,11 @@ public protocol KeyboardOutputSink: AnyObject {
     func send(_ output: KeyboardOutput)
 }
 
-/// Local keyboard controller.  It retains text only until submit/cancel and
-/// never writes a history or diagnostic entry.
+/// Local keyboard controller.  Characters leave as they are typed and are
+/// never retained, so there is no draft, history, or diagnostic entry.
 public final class KeyboardInputController {
     private let chunker: UnicodeTextEntryChunker
     private let sink: KeyboardOutputSink
-    private var draft = ""
 
     public init(
         chunker: UnicodeTextEntryChunker = UnicodeTextEntryChunker(),
@@ -110,27 +110,31 @@ public final class KeyboardInputController {
         self.sink = sink
     }
 
-    public var draftText: String { draft }
-
-    public func updateDraft(_ value: String) {
-        draft = value
-    }
-
     @discardableResult
-    public func submitDraft() -> TextEntryResult {
-        let result = chunker.chunk(draft)
+    public func type(_ text: String) -> TextEntryResult {
+        let result = chunker.chunk(text)
         if case let .chunks(chunks) = result {
             chunks.forEach { sink.send(.text($0)) }
-            draft.removeAll(keepingCapacity: true)
         }
         return result
     }
 
-    public func cancelDraft() {
-        draft.removeAll(keepingCapacity: true)
-    }
-
     public func send(_ hotkey: RemoteHotkey) {
         sink.send(.hotkey(hotkey))
+    }
+}
+
+/// Mirrors TrackpadOutputForwarder so the feature model can receive keyboard
+/// output without the controller knowing about the transport.
+public final class KeyboardOutputForwarder: KeyboardOutputSink {
+    public typealias Handler = (KeyboardOutput) -> Void
+    private let handler: Handler
+
+    public init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    public func send(_ output: KeyboardOutput) {
+        handler(output)
     }
 }

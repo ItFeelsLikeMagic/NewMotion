@@ -9,7 +9,7 @@ Tap Scan Mac QR Code. A black camera box appeared with Cancel under it. No live 
 
 ## Root cause
 
-The phone itself had stopped delivering camera frames. The built-in iPhone Camera app was black too. A phone restart fixed both apps at once. No app code change was the fix. The Bluetooth work that landed at the same time was a coincidence.
+The phone itself had stopped delivering camera frames. The built-in iPhone Camera app was black too. A phone restart fixed both apps at once. No app code change was the fix. The Bluetooth work that landed at the same time was a coincidence. Confirmed later the same day when the microphone went silent the same way (push-to-talk streamed all-zero audio, Voice Memos was silent too): the owner's debug mode mirrors the iPhone screen onto the Mac, and iOS blocks the camera and microphone system-wide while the screen is captured. The app logs this as `screenCaptured=yes` at launch and on every push-to-talk press. Stopping the mirror or restarting the phone frees both.
 
 The proof, from the app's debug log during one Scan:
 
@@ -23,7 +23,7 @@ That combination, live sensor plus black pixels plus no interruption, means iOS 
 
 ## Rule for next time
 
-When a camera or microphone feed looks dead: open the matching built-in Apple app first. If it is dead there too, restart the phone. Only dig into app code if the system app works.
+When a camera or microphone feed looks dead: check `screenCaptured` in the phone log and ask whether the phone screen is being mirrored to the Mac. Open the matching built-in Apple app next. If it is dead there too, stop the mirror or restart the phone. Only dig into app code if the system app works.
 
 Session health flags (`running`, `previewing`, permission granted, connection active) all read fine while the OS mutes the feed. They cannot distinguish "app bug" from "phone bug". Pixel brightness plus sensor exposure numbers can.
 

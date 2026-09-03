@@ -76,6 +76,7 @@ public enum TrackpadOutput: Equatable, Sendable {
     case scroll(TrackpadScrollDelta)
     case leftClick
     case rightClick
+    case doubleClick
     case dragBegan
     case dragEnded
 }
@@ -90,7 +91,6 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     public var pointerSensitivityX: Double
     public var pointerSensitivityY: Double
     public var scrollSensitivity: Double
-    public var displayCadenceLimitHz: Double
     public var tapMaximumDuration: TimeInterval
     public var tapMaximumTravel: Double
     public var doubleTapInterval: TimeInterval
@@ -100,7 +100,6 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         pointerSensitivityX: Double = 1.0,
         pointerSensitivityY: Double = 1.0,
         scrollSensitivity: Double = 1.0,
-        displayCadenceLimitHz: Double = 100,
         tapMaximumDuration: TimeInterval = 0.30,
         tapMaximumTravel: Double = 6,
         doubleTapInterval: TimeInterval = 0.35,
@@ -109,7 +108,6 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         self.pointerSensitivityX = min(max(pointerSensitivityX, 0.05), 10)
         self.pointerSensitivityY = min(max(pointerSensitivityY, 0.05), 10)
         self.scrollSensitivity = min(max(scrollSensitivity, 0.05), 10)
-        self.displayCadenceLimitHz = min(max(displayCadenceLimitHz, 1), 100)
         self.tapMaximumDuration = min(max(tapMaximumDuration, 0.05), 1)
         self.tapMaximumTravel = min(max(tapMaximumTravel, 1), 100)
         self.doubleTapInterval = min(max(doubleTapInterval, 0.1), 1)
@@ -140,12 +138,18 @@ public struct TrackpadGestureEngine: Sendable {
     private var active: [UInt64: ActiveTouch] = [:]
     private var mode: Mode = .idle
     private var previousCentroid: TrackpadPoint?
-    private var lastEmissionTime: TimeInterval?
     private var pendingPointer = TrackpadPoint.zero
     private var pendingScroll = TrackpadPoint.zero
     private var lastTapTime: TimeInterval?
     private var lastTapLocation: TrackpadPoint?
+    /// Taps chained inside `doubleTapInterval`.  The second one is the double
+    /// click; a third starts counting again instead of chaining forever.
+    private var tapCount = 0
     private var gestureMoved = false
+    /// Two fingers rarely leave the glass in the same touch batch.  Remembering
+    /// the widest the gesture ever got keeps a staggered lift a right click
+    /// instead of the left click the remaining finger would look like.
+    private var gestureMaxTouches = 0
 
     public init(configuration: TrackpadConfiguration = TrackpadConfiguration()) {
         self.configuration = configuration
@@ -219,6 +223,8 @@ public struct TrackpadGestureEngine: Sendable {
             }
         }
 
+        gestureMaxTouches = max(gestureMaxTouches, active.count)
+
         var outputs: [TrackpadOutput] = []
         let beganCount = touches.filter { $0.phase == .began }.count
         if beganCount > 0 {
@@ -256,16 +262,15 @@ public struct TrackpadGestureEngine: Sendable {
 
             switch mode {
             case .dragging:
-                outputs.append(contentsOf: emitPointer(scaledPointer(delta), at: timestamp))
+                outputs.append(contentsOf: emitPointer(scaledPointer(delta)))
             case .oneFinger where active.count == 1:
-                outputs.append(contentsOf: emitPointer(scaledPointer(delta), at: timestamp))
+                outputs.append(contentsOf: emitPointer(scaledPointer(delta)))
             case .twoFinger where active.count >= 2:
                 // Vertical scrolling is the only two-finger continuous
                 // gesture in the MVP.  Horizontal movement is intentionally
                 // discarded here.
                 outputs.append(contentsOf: emitScroll(
-                    TrackpadPoint(x: 0, y: delta.y * configuration.scrollSensitivity),
-                    at: timestamp
+                    TrackpadPoint(x: 0, y: delta.y * configuration.scrollSensitivity)
                 ))
             default:
                 break
@@ -281,7 +286,7 @@ public struct TrackpadGestureEngine: Sendable {
         }
 
         if !ended.isEmpty {
-            let wasTwoFinger = activeBefore.count >= 2 || modeBefore == .twoFinger
+            let multiFinger = gestureMaxTouches >= 2
             let tap = isTap(activeBefore, ended: ended, at: timestamp)
             for touch in ended {
                 active.removeValue(forKey: touch.id)
@@ -289,28 +294,49 @@ public struct TrackpadGestureEngine: Sendable {
             if isDragging {
                 outputs.append(.dragEnded)
                 isDragging = false
-            } else if wasTwoFinger && active.isEmpty && tap {
+            } else if multiFinger && active.isEmpty && tap {
                 outputs.append(.rightClick)
+                tapCount = 0
                 lastTapTime = nil
                 lastTapLocation = nil
-            } else if active.isEmpty && !wasTwoFinger && tap {
-                outputs.append(.leftClick)
+            } else if active.isEmpty && !multiFinger && tap {
+                let location = ended.first?.location
+                tapCount = isChainedTap(at: timestamp, location: location) ? tapCount + 1 : 1
+                if tapCount == 2 {
+                    outputs.append(.doubleClick)
+                } else {
+                    if tapCount > 2 { tapCount = 1 }
+                    outputs.append(.leftClick)
+                }
+                // The time and place are kept even for the double click, so a
+                // press that follows it can still start a drag.
                 lastTapTime = timestamp
-                lastTapLocation = ended.first?.location
+                lastTapLocation = location
             }
 
             if active.isEmpty {
                 resetTouches()
-            } else if active.count >= 2 {
-                mode = .twoFinger
-                previousCentroid = centroid(of: active)
             } else {
-                mode = .oneFinger
+                // A gesture that ever held two fingers stays a scroll until the
+                // glass is clear.  Otherwise the finger left behind after an
+                // uneven lift drags the cursor a few points.
+                mode = (active.count >= 2 || gestureMaxTouches >= 2) ? .twoFinger : .oneFinger
                 previousCentroid = centroid(of: active)
             }
         }
 
         return outputs
+    }
+
+    /// True when this tap lands close enough, soon enough, to continue the run
+    /// of taps that came before it.
+    private func isChainedTap(at timestamp: TimeInterval, location: TrackpadPoint?) -> Bool {
+        guard let lastTapTime,
+              timestamp >= lastTapTime,
+              timestamp - lastTapTime <= configuration.doubleTapInterval,
+              let lastTapLocation,
+              let location else { return false }
+        return (location - lastTapLocation).magnitude <= configuration.tapMaximumTravel
     }
 
     private func shouldBeginDrag(at timestamp: TimeInterval) -> Bool {
@@ -351,36 +377,32 @@ public struct TrackpadGestureEngine: Sendable {
         )
     }
 
-    private mutating func emitPointer(_ delta: TrackpadPoint, at timestamp: TimeInterval) -> [TrackpadOutput] {
+    /// Emission is not rate limited here.  `TrackpadOutputCoalescer` is the
+    /// single pacer for the link; a second gate on this side only delayed the
+    /// tail of a gesture without saving a packet.
+    private mutating func emitPointer(_ delta: TrackpadPoint) -> [TrackpadOutput] {
         guard delta.x != 0 || delta.y != 0 else { return [] }
         pendingPointer = pendingPointer + delta
-        guard canEmit(at: timestamp) else { return [] }
-        let output = TrackpadOutput.pointer(TrackpadPointerDelta(
-            x: clamp(pendingPointer.x),
-            y: clamp(pendingPointer.y)
-        ))
-        pendingPointer = .zero
-        lastEmissionTime = timestamp
-        return [output]
+        // The wire carries whole points, so quantize here and keep the
+        // remainder for the next packet.  Rounding each packet independently
+        // discards a slow 0.3 point/sample drag entirely instead of moving it
+        // 3 points every ten packets.  `resetTouches` clears the carry on lift.
+        let x = clamp(pendingPointer.x).rounded()
+        let y = clamp(pendingPointer.y).rounded()
+        guard x != 0 || y != 0 else { return [] }
+        pendingPointer = TrackpadPoint(x: pendingPointer.x - x, y: pendingPointer.y - y)
+        return [.pointer(TrackpadPointerDelta(x: x, y: y))]
     }
 
-    private mutating func emitScroll(_ delta: TrackpadPoint, at timestamp: TimeInterval) -> [TrackpadOutput] {
+    private mutating func emitScroll(_ delta: TrackpadPoint) -> [TrackpadOutput] {
         guard delta.x != 0 || delta.y != 0 else { return [] }
         pendingScroll = pendingScroll + delta
-        guard canEmit(at: timestamp) else { return [] }
         let output = TrackpadOutput.scroll(TrackpadScrollDelta(
             x: clamp(pendingScroll.x),
             y: clamp(pendingScroll.y)
         ))
         pendingScroll = .zero
-        lastEmissionTime = timestamp
         return [output]
-    }
-
-    private func canEmit(at timestamp: TimeInterval) -> Bool {
-        guard timestamp.isFinite else { return false }
-        guard let lastEmissionTime else { return true }
-        return timestamp - lastEmissionTime >= 1 / configuration.displayCadenceLimitHz
     }
 
     private func clamp(_ value: Double) -> Double {
@@ -396,6 +418,7 @@ public struct TrackpadGestureEngine: Sendable {
         pendingScroll = .zero
         isDragging = false
         gestureMoved = false
+        gestureMaxTouches = 0
     }
 }
 

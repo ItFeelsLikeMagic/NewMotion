@@ -111,14 +111,14 @@ public final class SafeInputInjector {
             try sink.send(.scroll(delta: delta))
         case let .mouseButton(button, isDown):
             try sink.send(.mouseButton(button: button, isDown: isDown))
+        case let .doubleClick(button):
+            try sink.send(.mouseDoubleClick(button: button))
         case let .modifier(key, isDown):
             try sink.send(.modifier(key: key, isDown: isDown))
         case let .text(value):
             try sink.send(.unicodeText(value))
         case let .hotkey(hotkey):
-            for transition in HotkeyPhysicalSequence.transitions(for: hotkey) {
-                try sink.send(.physicalKey(keyCode: transition.keyCode, isDown: transition.isDown))
-            }
+            try sink.send(.hotkey(HotkeyPhysicalSequence.transitions(for: hotkey)))
         }
     }
 
@@ -168,6 +168,8 @@ public enum HotkeyPhysicalSequence {
         case .arrowDown: key = 125; modifiers = []
         case .arrowLeft: key = 123; modifiers = []
         case .arrowRight: key = 124; modifiers = []
+        case .deleteBackward: key = 51; modifiers = []
+        case .shiftTab: key = 48; modifiers = [56]
         }
 
         var result = modifiers.map { PhysicalKeyTransition(keyCode: $0, isDown: true) }

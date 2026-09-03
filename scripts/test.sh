@@ -15,6 +15,11 @@ macOS app smoke tests. The iOS test bundle is compiled by build.sh; execution
 requires an installed iOS simulator and can be requested with
 PHONE_REMOTE_RUN_IOS_TESTS=1. Set PHONE_REMOTE_IOS_DESTINATION to override the
 automatically selected available iPhone simulator.
+
+The macOS test host runs inert: no Bluetooth, no login Keychain, no speech
+server, so a run never raises a system approval dialog. The tests that use the
+real Keychain need someone to approve the prompts and run only with
+PHONE_REMOTE_KEYCHAIN_TESTS=1.
 HELP
     exit 0
 fi
@@ -28,6 +33,10 @@ command -v xcodebuild >/dev/null 2>&1 || {
 echo "Running shared protocol/transport/observability tests on macOS"
 xcodebuild test -project "$PROJECT" -scheme PhoneRemoteSharedTests -destination 'platform=macOS' -derivedDataPath "$DERIVED_DATA" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 echo "Running macOS app smoke tests"
+if [ "${PHONE_REMOTE_KEYCHAIN_TESTS:-0}" = "1" ]; then
+    echo "Keychain tests enabled; macOS will ask you to approve Keychain access"
+    export TEST_RUNNER_PHONE_REMOTE_KEYCHAIN_TESTS=1
+fi
 xcodebuild test -project "$PROJECT" -scheme PhoneRemote-macOSTests -destination 'platform=macOS' -derivedDataPath "$DERIVED_DATA" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
 if [ "${PHONE_REMOTE_RUN_IOS_TESTS:-0}" = "1" ]; then

@@ -32,7 +32,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     @Published var latestAction = "Not paired"
     @Published var isPaired = false
-    @Published var microphoneStatus = "Microphone permission not requested"
     @Published var airMouseStatus = "Air mouse idle"
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
@@ -42,7 +41,27 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var trustedMacName: String?
 
     private let audioController: LocalPushToTalkAudioController
-    private let motionSink: FeatureMotionSink
+    private(set) lazy var pushToTalk = PushToTalkController(
+        audio: audioController,
+        activity: { [weak self] in self?.latestAction = $0 },
+        logContext: { [weak self] in
+            [
+                "ble": self?.bluetoothState.label ?? "unknown",
+                "auth": self?.authenticatedSession != nil ? "yes" : "no"
+            ]
+        }
+    )
+    private let motionSink: DeltaCoalescer<MotionPointerDelta>
+    private let trackpadOutputs = TrackpadOutputCoalescer()
+    /// Cursor travel the radio has not taken yet, in whole points.
+    private var pendingPointerX = 0
+    private var pendingPointerY = 0
+    private var pendingScrollX = 0
+    private var pendingScrollY = 0
+    private lazy var keyboardForwarder = KeyboardOutputForwarder { [weak self] output in
+        self?.sendKeyboardOutput(output)
+    }
+    private lazy var keyboard = KeyboardInputController(sink: keyboardForwarder)
     private let motionSession: MotionPointerSession
     private let peripheral: IPhoneBLEPeripheralTransport
     private let lifecycle: PhoneLifecycleCoordinator
@@ -69,14 +88,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private let voiceUplink: VoiceUplink
     private var voiceMessagesSent = 0
     private var voiceMessagesDropped = 0
-    private var pushToTalkHeld = false
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     init() {
-        let audioController = LocalPushToTalkAudioController(microphone: AVAudioMicrophoneInput())
+        let audioController = LocalPushToTalkAudioController(
+            microphone: AVAudioMicrophoneInput(),
+            permissionGranted: AVAudioApplication.shared.recordPermission == .granted
+        )
         self.audioController = audioController
         voiceUplink = VoiceUplink(queue: audioController.queue)
-        let motionSink = FeatureMotionSink()
+        let motionSink = DeltaCoalescer<MotionPointerDelta>.motionPointer()
         self.motionSink = motionSink
         motionSession = MotionPointerSession(
             provider: CoreMotionDeviceProvider(),
@@ -116,6 +137,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         peripheral.onFrameReceived = { [weak self] channel, data in
             Task { @MainActor [weak self] in self?.handleIncomingFrame(channel: channel, data: data) }
         }
+        peripheral.onReadyToSend = { [weak self] in
+            MainActor.assumeIsolated { self?.flushCursorStream() }
+        }
 
         pairingScanner.onStateChange = { [weak self] state in
             Task { @MainActor in
@@ -149,12 +173,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         trustedMacName = pairingCoordinator?.trustedDevices.first?.displayName
         IPhoneDebugLog.emit("trust", ["count": "\(pairingCoordinator?.trustedDevices.count ?? 0)"])
         beginTrustedReconnect()
-        motionSink.onDelta = { [weak self] delta in
-            // Already on the main queue from FeatureMotionSink. A second
-            // Task hop queued every sample and the cursor lagged more the
-            // longer the clutch was held.
+        motionSink.onFlush = { [weak self] delta in
+            // Already on the main queue from the coalescer. A second Task hop
+            // queued every sample and the cursor lagged more the longer the
+            // clutch was held.
             MainActor.assumeIsolated {
                 self?.handleMotionDelta(delta)
+            }
+        }
+        trackpadOutputs.onOutput = { [weak self] output in
+            MainActor.assumeIsolated {
+                self?.sendTrackpadOutput(output)
             }
         }
         let uplink = voiceUplink
@@ -280,68 +309,13 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    func requestMicrophonePermission() {
-        microphoneStatus = "Requesting microphone permission…"
-        audioController.requestPermission { [weak self] granted in
-            Task { @MainActor in
-                self?.microphoneStatus = granted ? "Microphone permission granted" : "Microphone permission denied"
-            }
-        }
-    }
-
-    func pushToTalkPressed() {
-        pushToTalkHeld = true
-        startHeldPushToTalk()
-    }
-
-    func pushToTalkReleased() {
-        pushToTalkHeld = false
-        audioController.pushToTalkReleased()
-        latestAction = "Push to talk released"
-    }
-
-    private func startHeldPushToTalk() {
-        guard pushToTalkHeld else { return }
-        voiceMessagesSent = 0
-        voiceMessagesDropped = 0
-        audioController.pushToTalkPressed { [weak self] result in
-            Task { @MainActor [weak self] in self?.handlePushToTalkStart(result) }
-        }
-    }
-
-    private func handlePushToTalkStart(_ result: AudioCaptureStartResult) {
-        let resultName: String
-        switch result {
-        case .started:
-            resultName = "started"
-            latestAction = "Push to talk active"
-        case .permissionDenied:
-            resultName = "permissionDenied"
-            microphoneStatus = "Allow microphone access, then try again"
-            audioController.requestPermission { [weak self] granted in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.microphoneStatus = granted ? "Microphone permission granted" : "Microphone permission denied"
-                    if granted { self.startHeldPushToTalk() }
-                }
-            }
-        case .notForeground:
-            resultName = "notForeground"
-            latestAction = "Push to talk unavailable while backgrounded"
-        case .failed:
-            resultName = "failed"
-            latestAction = "Microphone could not start"
-        }
-        IPhoneDebugLog.emit("ptt_press", [
-            "result": resultName,
-            "ble": bluetoothState.label,
-            "auth": authenticatedSession != nil ? "yes" : "no"
-        ])
-    }
-
     /// A message whose fragments would not all fit is dropped whole; its
     /// sequence number was already advanced on the voice queue.
     private func deliverVoiceFragments(_ fragments: [Data], flags: VoiceStreamFlags) {
+        if flags.contains(.start) {
+            voiceMessagesSent = 0
+            voiceMessagesDropped = 0
+        }
         if peripheral.queueCapacity(on: .data) >= fragments.count {
             for fragment in fragments { peripheral.send(fragment, on: .data) }
             voiceMessagesSent += 1
@@ -388,6 +362,15 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .advertising:
             handshakeHelloSent = false
             _ = lifecycle.handle(.bluetoothPoweredOn)
+            if authenticatedSession != nil {
+                // The Mac dropped the link (typically its app restarted), and
+                // its side of the session went with it; handshake again.
+                authenticatedSession = nil
+                pairingClient = nil
+                inboundReassembler?.reset()
+                IPhoneDebugLog.emit("session_lost", ["ble": bluetoothState.label])
+                beginTrustedReconnect()
+            }
             if pairingConfirmed, authenticatedSession == nil {
                 latestAction = trustedMacName.map { "Reconnecting to \($0)" } ?? "Waiting for Mac to connect"
             }
@@ -688,110 +671,172 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
 
     func handleTrackpadOutputs(_ outputs: [TrackpadOutput]) {
-        guard authenticatedSession != nil, peripheral.state == .ready else { return }
-        for output in outputs {
+        guard isControllable else { return }
+        trackpadOutputs.handle(outputs)
+    }
+
+    /// Characters are forwarded as they are typed and never stored or logged.
+    func typeText(_ text: String) {
+        guard isControllable else {
+            latestAction = "Pair before typing"
+            return
+        }
+        keyboard.type(text)
+    }
+
+    /// The switcher holds Command open on the Mac between begin and commit, so
+    /// a dropped phase would strand it.  These go reliable like every other
+    /// input message, and the Mac releases Command on disconnect regardless.
+    func sendAppSwitcher(_ phase: AppSwitcherPhase) {
+        guard isControllable else {
+            latestAction = "Pair before switching apps"
+            return
+        }
+        do {
+            try sendApplication(.appSwitcher(AppSwitcherPayload(phase: phase)))
+            latestAction = "App switcher \(phase)"
+            IPhoneDebugLog.emit("app_switcher", ["phase": "\(phase)"])
+        } catch {
+            latestAction = "App switcher send failed"
+        }
+    }
+
+    func sendHotkey(_ hotkey: RemoteHotkey) {
+        guard isControllable else {
+            latestAction = "Pair before using hotkeys"
+            return
+        }
+        keyboard.send(hotkey)
+    }
+
+    private func sendKeyboardOutput(_ output: KeyboardOutput) {
+        do {
+            try sendApplication(try SharedKeyboardProtocolAdapter.payload(for: output))
             switch output {
-            case .pointer:
-                latestAction = "Trackpad pointer"
-            case .scroll:
-                latestAction = "Trackpad scroll"
-            case .leftClick:
-                latestAction = "Left click"
-            case .rightClick:
-                latestAction = "Right click"
-            case .dragBegan:
-                latestAction = "Drag began"
-            case .dragEnded:
-                latestAction = "Drag ended"
+            case .text:
+                latestAction = "Typing"
+            case let .hotkey(hotkey):
+                latestAction = "Sent \(hotkey.buttonTitle)"
+                IPhoneDebugLog.emit("hotkey", ["name": hotkey.rawValue])
             }
+        } catch {
+            latestAction = "Keyboard send failed"
+        }
+    }
+
+    private var isControllable: Bool {
+        authenticatedSession != nil && peripheral.state == .ready
+    }
+
+    private func sendTrackpadOutput(_ output: TrackpadOutput) {
+        let label: String
+        switch output {
+        case .pointer: label = "Trackpad pointer"
+        case .scroll: label = "Trackpad scroll"
+        case .leftClick: label = "Left click"
+        case .rightClick: label = "Right click"
+        case .doubleClick: label = "Double click"
+        case .dragBegan: label = "Drag began"
+        case .dragEnded: label = "Drag ended"
+        }
+        // Republishing the same label re-rendered the surface on every packet.
+        if latestAction != label { latestAction = label }
+
+        switch output {
+        case let .pointer(delta):
+            pendingPointerX += Int(delta.x)
+            pendingPointerY += Int(delta.y)
+            flushCursorStream()
+        case let .scroll(delta):
+            pendingScrollX += Int(delta.x.rounded())
+            pendingScrollY += Int(delta.y.rounded())
+            flushCursorStream()
+        case .leftClick, .rightClick, .doubleClick, .dragBegan, .dragEnded:
+            // A button must never land ahead of the travel that preceded it.
+            flushCursorStream(force: true)
             do {
                 for payload in try SharedTrackpadProtocolAdapter.payloads(for: output) {
                     try sendApplication(payload)
                 }
             } catch {
                 latestAction = "Trackpad send failed"
-                return
             }
         }
+    }
+
+    /// Sends the accumulated cursor travel as one compact binary frame.  When
+    /// the radio has no room the sum is kept rather than dropped, so the cursor
+    /// ends up where the finger is instead of undershooting and then catching
+    /// up when the backlog drains.  `force` queues the frame so a click that
+    /// follows it cannot overtake it.
+    private func flushCursorStream(force: Bool = false) {
+        var items: [PointerStreamItem] = []
+        if pendingPointerX != 0 || pendingPointerY != 0 {
+            items.append(PointerStreamItem(
+                kind: .pointer,
+                deltaX: clampedInt16(pendingPointerX),
+                deltaY: clampedInt16(pendingPointerY)
+            ))
+        }
+        if pendingScrollX != 0 || pendingScrollY != 0 {
+            items.append(PointerStreamItem(
+                kind: .scroll,
+                deltaX: clampedInt16(pendingScrollX),
+                deltaY: clampedInt16(pendingScrollY)
+            ))
+        }
+        guard !items.isEmpty else { return }
+        guard let session = authenticatedSession, peripheral.state == .ready else {
+            clearPendingCursor()
+            return
+        }
+        do {
+            let messageID = nextHandshakeMessageID
+            nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
+            let frames = try session.wrapBinary(
+                try PointerStreamFrame(items: items).encode(),
+                messageType: MessageType.pointerDelta.rawValue,
+                messageID: messageID,
+                maximumValueLength: peripheral.maximumUpdateValueLength,
+                reliable: false
+            )
+            // A message that does not fit one notification must go whole or not
+            // at all, so it queues; only the single-frame case can be retried.
+            let mustQueue = force || frames.count > 1
+            for (index, frame) in frames.enumerated() {
+                let deliver = mustQueue || index > 0
+                switch peripheral.send(frame, on: .data, enqueue: deliver) {
+                case .sent, .queued:
+                    continue
+                case .queueFull where !deliver:
+                    return
+                case .queueFull, .notReady, .unsupportedChannel:
+                    clearPendingCursor()
+                    return
+                }
+            }
+            clearPendingCursor()
+        } catch {
+            clearPendingCursor()
+            latestAction = "Trackpad send failed"
+        }
+    }
+
+    private func clearPendingCursor() {
+        pendingPointerX = 0
+        pendingPointerY = 0
+        pendingScrollX = 0
+        pendingScrollY = 0
+    }
+
+    private func clampedInt16(_ value: Int) -> Int16 {
+        Int16(min(max(value, Int(Int16.min)), Int(Int16.max)))
     }
 }
 
 /// Lets lifecycle reconnect hooks read pairing state without capturing `self` in `init`.
 private final class PairingConfirmFlag {
     var value = false
-}
-
-final class FeatureMotionSink: MotionPointerOutputSink, @unchecked Sendable {
-    var onDelta: ((MotionPointerDelta) -> Void)?
-    var minimumInterval: TimeInterval = 0.04
-    var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
-    var execute: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
-        if delay <= 0 {
-            DispatchQueue.main.async(execute: work)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-        }
-    }
-
-    private let lock = NSLock()
-    private var latest: MotionPointerDelta?
-    private var scheduled = false
-    private var lastFlush: TimeInterval = -.infinity
-
-    func send(_ delta: MotionPointerDelta) {
-        lock.lock()
-        latest = Self.add(latest, delta)
-        let alreadyScheduled = scheduled
-        scheduled = true
-        lock.unlock()
-        guard alreadyScheduled == false else { return }
-        scheduleFlush(delay: 0)
-    }
-
-    private func scheduleFlush(delay: TimeInterval) {
-        execute(delay) { [weak self] in
-            self?.flush()
-        }
-    }
-
-    private func flush() {
-        lock.lock()
-        let pending = latest
-        latest = nil
-        let interval = minimumInterval
-        let elapsed = now() - lastFlush
-        lock.unlock()
-
-        if let pending {
-            let wait = interval - elapsed
-            if wait > 0 {
-                lock.lock()
-                latest = Self.add(latest, pending)
-                lock.unlock()
-                scheduleFlush(delay: wait)
-                return
-            }
-            lock.lock()
-            lastFlush = now()
-            lock.unlock()
-            onDelta?(pending)
-        }
-
-        lock.lock()
-        if latest != nil {
-            let wait = max(0, interval - (now() - lastFlush))
-            lock.unlock()
-            scheduleFlush(delay: wait)
-        } else {
-            scheduled = false
-            lock.unlock()
-        }
-    }
-
-    private static func add(_ current: MotionPointerDelta?, _ delta: MotionPointerDelta) -> MotionPointerDelta {
-        guard let current else { return delta }
-        return MotionPointerDelta(x: current.x + delta.x, y: current.y + delta.y)
-    }
 }
 
 private struct PairingCameraPreview: UIViewRepresentable {
@@ -826,22 +871,242 @@ private struct TrackpadSurface: UIViewRepresentable {
     }
 }
 
+private struct RemoteKeyboardSurface: UIViewRepresentable {
+    let onText: (String) -> Void
+    let onHotkey: (RemoteHotkey) -> Void
+
+    func makeUIView(context: Context) -> RemoteKeyboardCaptureView {
+        let view = RemoteKeyboardCaptureView(frame: .zero)
+        apply(to: view)
+        return view
+    }
+
+    func updateUIView(_ view: RemoteKeyboardCaptureView, context: Context) {
+        apply(to: view)
+    }
+
+    private func apply(to view: RemoteKeyboardCaptureView) {
+        view.onText = onText
+        view.onReturn = { onHotkey(.return) }
+        view.onDeleteBackward = { onHotkey(.deleteBackward) }
+    }
+}
+
+extension RemoteHotkey {
+    var buttonTitle: String {
+        switch self {
+        case .escape: return "esc"
+        case .return: return "return"
+        case .deleteBackward: return "delete"
+        case .copy: return "copy"
+        case .paste: return "paste"
+        case .undo: return "undo"
+        case .redo: return "redo"
+        case .selectAll: return "all"
+        case .tab: return "tab"
+        case .arrowUp: return "up"
+        case .arrowDown: return "down"
+        case .arrowLeft: return "left"
+        case .arrowRight: return "right"
+        }
+    }
+
+    var spokenName: String {
+        switch self {
+        case .escape: return "Escape"
+        case .return: return "Return"
+        default: return buttonTitle
+        }
+    }
+}
+
+/// The hotkeys that sit beside the trackpad.  They are the same allowlisted
+/// atomic actions the protocol already carries; no key script is possible.
+private struct HotkeyBar: View {
+    let send: (RemoteHotkey) -> Void
+    let switcher: (AppSwitcherPhase) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            key(.escape) { Text(RemoteHotkey.escape.buttonTitle) }
+            AppSwitcherButton(send: switcher)
+            key(.return) { Image(systemName: "return") }
+        }
+    }
+
+    private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
+        Button(action: { send(hotkey) }, label: label)
+            .buttonStyle(.bordered)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityLabel(hotkey.spokenName)
+    }
+}
+
+/// Hold to open the Mac's app switcher, slide to walk along it, lift to pick.
+/// A plain tap is the ordinary flip to the last app, because begin already
+/// highlights it.
+private struct AppSwitcherButton: View {
+    /// Roughly a thumb's width of travel per app, so a small wobble while
+    /// holding does not step.
+    private static let stepWidth: Double = 44
+
+    let send: (AppSwitcherPhase) -> Void
+    @State private var isHeld = false
+    @State private var steps = 0
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Text("⌘⇥")
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+            .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
+            .foregroundStyle(isHeld ? Color.white : Color.primary)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isHeld {
+                            isHeld = true
+                            steps = 0
+                            send(.begin)
+                        }
+                        step(to: Int((value.translation.width / Self.stepWidth).rounded(.towardZero)))
+                    }
+                    .onEnded { _ in finish(.commit) }
+            )
+            // A system interruption cancels the gesture without an end, and the
+            // Mac would be left holding Command until the watchdog fires.
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { finish(.cancel) }
+            }
+            .accessibilityLabel("App switcher. Hold and slide to choose.")
+    }
+
+    private func step(to target: Int) {
+        while steps < target {
+            steps += 1
+            send(.next)
+        }
+        while steps > target {
+            steps -= 1
+            send(.previous)
+        }
+    }
+
+    private func finish(_ phase: AppSwitcherPhase) {
+        guard isHeld else { return }
+        isHeld = false
+        steps = 0
+        send(phase)
+    }
+}
+
 struct PhoneRemoteControlView: View {
+    @StateObject private var model = PhoneRemoteFeatureModel()
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        TabView {
+            RemoteControlTab(model: model)
+                .tabItem { Label("Control", systemImage: "cursorarrow.rays") }
+            RemoteSettingsTab(model: model)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+        }
+        .onAppear { model.scenePhaseChanged(.active) }
+        .onChange(of: scenePhase) { _, phase in
+            model.scenePhaseChanged(phase)
+        }
+        .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
+            model.pulseAdvertisingIfNeeded()
+        }
+    }
+}
+
+private struct RemoteControlTab: View {
     private enum Mode: String, CaseIterable, Identifiable {
         case trackpad = "Trackpad"
         case airMouse = "Air Mouse"
+        case keyboard = "Keyboard"
 
         var id: Self { self }
     }
 
-    @StateObject private var model = PhoneRemoteFeatureModel()
-    @ObservedObject private var debugLog = IPhoneDebugLog.shared
+    @ObservedObject var model: PhoneRemoteFeatureModel
     @State private var mode: Mode = .trackpad
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
+                Picker("Control mode", selection: $mode) {
+                    ForEach(Mode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if mode == .trackpad {
+                    TrackpadSurface(
+                        pointerSensitivityX: model.trackpadSensitivityX,
+                        pointerSensitivityY: model.trackpadSensitivityY
+                    ) { outputs in
+                        model.handleTrackpadOutputs(outputs)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
+                    .overlay {
+                        Text("Tap, two-finger tap, double tap")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .allowsHitTesting(false)
+                    }
+
+                    HotkeyBar(
+                        send: { model.sendHotkey($0) },
+                        switcher: { model.sendAppSwitcher($0) }
+                    )
+                } else if mode == .keyboard {
+                    RemoteKeyboardSurface(
+                        onText: { model.typeText($0) },
+                        onHotkey: { model.sendHotkey($0) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
+                    .overlay {
+                        Text("Type here. Keys go straight to the Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .allowsHitTesting(false)
+                    }
+
+                    HotkeyBar(
+                        send: { model.sendHotkey($0) },
+                        switcher: { model.sendAppSwitcher($0) }
+                    )
+                } else {
+                    AirMouseClutchButton { held in
+                        model.airMouseChanged(held)
+                    }
+                    Text(model.airMouseStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+
+                PushToTalkButton(controller: model.pushToTalk)
+            }
+            .padding()
+        }
+    }
+}
+
+private struct RemoteSettingsTab: View {
+    @ObservedObject var model: PhoneRemoteFeatureModel
+    @ObservedObject private var debugLog = IPhoneDebugLog.shared
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Pairing") {
                     if model.isPairingVisible {
                         PairingCameraPreview(capture: model.pairingCapture)
                             .frame(maxWidth: .infinity)
@@ -855,6 +1120,7 @@ struct PhoneRemoteControlView: View {
                                     .foregroundStyle(.white)
                                     .padding(.top, 8)
                             }
+                            .listRowInsets(EdgeInsets())
 
                         if case let .awaitingConfirmation(name, expiry) = model.pairingState {
                             VStack(spacing: 8) {
@@ -870,44 +1136,31 @@ struct PhoneRemoteControlView: View {
                                         .buttonStyle(.bordered)
                                 }
                             }
+                            .frame(maxWidth: .infinity)
                         } else {
                             Button("Cancel scanner") { model.cancelPairing() }
-                                .buttonStyle(.bordered)
                         }
                     } else {
-                        Button("Scan Mac QR Code") {
-                            model.startPairing()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    if !model.isPairingVisible {
-                    Button(model.isPaired ? "Ping Mac" : "Ping Mac (waiting)") {
-                        model.sendPing()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Picker("Control mode", selection: $mode) {
-                        ForEach(Mode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                        Button("Scan Mac QR Code") { model.startPairing() }
+                        Button(model.isPaired ? "Ping Mac" : "Ping Mac (waiting)") {
+                            model.sendPing()
                         }
                     }
-                    .pickerStyle(.segmented)
 
-                    if mode == .trackpad {
-                        TrackpadSurface(
-                            pointerSensitivityX: model.trackpadSensitivityX,
-                            pointerSensitivityY: model.trackpadSensitivityY
-                        ) { outputs in
-                            model.handleTrackpadOutputs(outputs)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
-                        .overlay {
-                            Text("Swipe, scroll, tap")
-                                .foregroundStyle(.secondary)
-                                .allowsHitTesting(false)
-                        }
+                    LabeledContent("Bluetooth", value: model.bluetoothState.label)
+                    if let trustedMacName = model.trustedMacName {
+                        LabeledContent("Trusted Mac", value: trustedMacName)
+                    }
+                    Text(model.latestAction)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Trackpad sensitivity") {
+                    VStack(alignment: .leading) {
+                        Text("Horizontal \(model.trackpadSensitivityX.formatted(.number.precision(.fractionLength(1))))x")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Slider(
                             value: Binding(
                                 get: { model.trackpadSensitivityX },
@@ -916,7 +1169,9 @@ struct PhoneRemoteControlView: View {
                             in: 0.5...6,
                             step: 0.1
                         )
-                        Text("Horizontal \(model.trackpadSensitivityX.formatted(.number.precision(.fractionLength(1))))x")
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Vertical \(model.trackpadSensitivityY.formatted(.number.precision(.fractionLength(1))))x")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
@@ -927,14 +1182,12 @@ struct PhoneRemoteControlView: View {
                             in: 0.5...6,
                             step: 0.1
                         )
-                        Text("Vertical \(model.trackpadSensitivityY.formatted(.number.precision(.fractionLength(1))))x")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        AirMouseClutchButton { held in
-                            model.airMouseChanged(held)
-                        }
-                        Text(model.airMouseStatus)
+                    }
+                }
+
+                Section("Air mouse sensitivity") {
+                    VStack(alignment: .leading) {
+                        Text("Pointer speed \(Int(model.airMouseSensitivity))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
@@ -945,48 +1198,27 @@ struct PhoneRemoteControlView: View {
                             in: 500...6_000,
                             step: 100
                         )
-                        Text("Pointer speed \(Int(model.airMouseSensitivity))")
+                    }
+                }
+
+                Section("Debug log") {
+                    if debugLog.lines.isEmpty {
+                        Text("No events yet")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
+                    } else {
+                        ScrollView {
+                            Text(debugLog.lines.joined(separator: "\n"))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(height: 220)
                     }
-                    }
-
-                    if !model.isPairingVisible {
-                    PushToTalkButton(
-                        onPress: { model.pushToTalkPressed() },
-                        onRelease: { model.pushToTalkReleased() }
-                    )
-
-                    Button("Request microphone access") {
-                        model.requestMicrophonePermission()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Text(model.microphoneStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(debugLog.onScreen)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    Text(model.latestAction)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("Bluetooth: \(model.bluetoothState.label)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                }
             }
-            .padding()
-            .onAppear { model.scenePhaseChanged(.active) }
-            .onChange(of: scenePhase) { _, phase in
-                model.scenePhaseChanged(phase)
-            }
-            .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
-                model.pulseAdvertisingIfNeeded()
-            }
+            .navigationTitle("Settings")
         }
     }
 }

@@ -20,7 +20,9 @@ final class ProtocolTests: XCTestCase {
             .connectionStatus(ConnectionStatusPayload(state: .authenticated)),
             .error(ErrorPayload(code: .unsafeState, retryable: false)),
             .ping(PingPayload()),
-            .pong(PongPayload())
+            .pong(PongPayload()),
+            .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
+            .appSwitcher(AppSwitcherPayload(phase: .begin))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)

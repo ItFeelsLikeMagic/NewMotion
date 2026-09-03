@@ -44,10 +44,7 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(injector.submit(.hotkey(.copy)), .applied)
         XCTAssertEqual(sink.events, [
             .mouseButton(button: .left, isDown: true),
-            .physicalKey(keyCode: 55, isDown: true),
-            .physicalKey(keyCode: 8, isDown: true),
-            .physicalKey(keyCode: 8, isDown: false),
-            .physicalKey(keyCode: 55, isDown: false)
+            .hotkey(HotkeyPhysicalSequence.transitions(for: .copy))
         ])
 
         var paused = injector.state
@@ -55,6 +52,63 @@ final class SafetyFeatureTests: XCTestCase {
         _ = injector.transition(to: paused)
         XCTAssertEqual(injector.submit(.pointer(MacPointerDelta(x: 1, y: 1))), .denied(.paused))
         XCTAssertEqual(sink.events.last, .mouseButton(button: .left, isDown: false))
+    }
+
+    func testDoubleClickIsOneAtomicEventAndHoldsNoButton() {
+        var state = InputControlState()
+        state.authentication = .authenticated
+        state.accessibility = .granted
+        let sink = MockInputEventSink()
+        let injector = SafeInputInjector(policy: InputSafetyStateMachine(state: state), sink: sink)
+
+        XCTAssertEqual(injector.submit(.doubleClick(.left)), .applied)
+        XCTAssertEqual(sink.events, [.mouseDoubleClick(button: .left)])
+        XCTAssertTrue(injector.held.isEmpty)
+    }
+
+    func testAppSwitcherHoldsCommandUntilCommitAndReleasesItOnDisconnect() {
+        var state = InputControlState()
+        state.authentication = .authenticated
+        state.accessibility = .granted
+        let sink = MockInputEventSink()
+        let injector = SafeInputInjector(policy: InputSafetyStateMachine(state: state), sink: sink)
+
+        for command in SharedInputProtocolAdapter.commands(for: .begin) {
+            XCTAssertEqual(injector.submit(command), .applied)
+        }
+        XCTAssertEqual(sink.events, [
+            .modifier(key: .command, isDown: true),
+            .hotkey(HotkeyPhysicalSequence.transitions(for: .tab))
+        ])
+        XCTAssertTrue(injector.held.modifiers.contains(.command))
+
+        for command in SharedInputProtocolAdapter.commands(for: .previous) {
+            XCTAssertEqual(injector.submit(command), .applied)
+        }
+        XCTAssertEqual(sink.events.last, .hotkey(HotkeyPhysicalSequence.transitions(for: .shiftTab)))
+
+        // Losing the phone mid-hold must not strand the Command key.
+        var disconnected = injector.state
+        disconnected.authentication = .unauthenticated
+        _ = injector.transition(to: disconnected)
+        XCTAssertEqual(sink.events.last, .modifier(key: .command, isDown: false))
+        XCTAssertTrue(injector.held.isEmpty)
+    }
+
+    func testCommitAndCancelBothReleaseCommand() {
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: .commit), [
+            .modifier(key: .command, isDown: false)
+        ])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: .cancel), [
+            .hotkey(.escape),
+            .modifier(key: .command, isDown: false)
+        ])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .shiftTab), [
+            PhysicalKeyTransition(keyCode: 56, isDown: true),
+            PhysicalKeyTransition(keyCode: 48, isDown: true),
+            PhysicalKeyTransition(keyCode: 48, isDown: false),
+            PhysicalKeyTransition(keyCode: 56, isDown: false)
+        ])
     }
 
     func testReliableDuplicatesAreAcknowledgedAndWatchdogReleases() {

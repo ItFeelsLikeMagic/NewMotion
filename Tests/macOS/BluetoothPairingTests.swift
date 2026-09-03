@@ -142,6 +142,7 @@ final class BluetoothPairingTests: XCTestCase {
     }
 
     func testKeychainStoreEnumeratesRecordsOnMacOS() throws {
+        try skipUnlessKeychainTestsRequested()
         let service = "com.example.phoneremote.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
@@ -172,6 +173,7 @@ final class BluetoothPairingTests: XCTestCase {
     }
 
     func testMacPairingCoordinatorStartsWithEmptyKeychain() throws {
+        try skipUnlessKeychainTestsRequested()
         let service = "com.example.phoneremote.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
@@ -266,6 +268,22 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(transport.visiblePeripheral, peripheral)
         XCTAssertEqual(adapter.connectCount, 1)
     }
+
+    func testCentralTickAdoptsPeripheralTheSystemConnectedWhileScanning() {
+        let adapter = FakeCentralAdapter()
+        let transport = MacBLECentralTransport(adapter: adapter)
+        transport.start()
+        XCTAssertEqual(transport.state, .scanning)
+        transport.tick()
+        XCTAssertEqual(adapter.connectCount, 0)
+
+        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
+        adapter.preconnected = [peripheral]
+        transport.tick()
+        XCTAssertEqual(transport.state, .connecting)
+        XCTAssertEqual(transport.visiblePeripheral, peripheral)
+        XCTAssertEqual(adapter.connectCount, 1)
+    }
 }
 
 private final class MutablePairingClock: PairingClock {
@@ -314,4 +332,20 @@ private final class FakeCentralAdapter: MacCentralManagerAdapter {
     func emitNotification(_ id: UUID, characteristicUUID: UUID) { onNotificationState?(id, characteristicUUID, true, nil) }
     func emitDisconnected(_ id: UUID) { onDisconnected?(id, nil) }
     func emitWriteComplete(error: Error? = nil) { onWriteComplete?(error) }
+}
+
+/// Login-Keychain reads and writes make macOS prompt the user on every
+/// unsigned rebuild, so the tests that hit the real Keychain run only when
+/// somebody is at the machine to approve them.
+extension XCTestCase {
+    func skipUnlessKeychainTestsRequested() throws {
+        let environment = ProcessInfo.processInfo.environment
+        // xcodebuild forwards TEST_RUNNER_-prefixed variables to the test host.
+        let requested = environment["PHONE_REMOTE_KEYCHAIN_TESTS"] == "1"
+            || environment["TEST_RUNNER_PHONE_REMOTE_KEYCHAIN_TESTS"] == "1"
+        try XCTSkipUnless(
+            requested,
+            "Set PHONE_REMOTE_KEYCHAIN_TESTS=1 to run Keychain tests; they need manual approval."
+        )
+    }
 }
