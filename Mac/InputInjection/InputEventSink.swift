@@ -96,6 +96,9 @@ private final class KeyPostState: @unchecked Sendable {
 
     /// Only touched on the posting queue.
     var lastPostWasModifier = false
+    /// Monotonic time of the last post, so a gap already served by an idle
+    /// queue is not served again.
+    var lastPostAt: TimeInterval?
 
     var lastBurstMilliseconds: Double? {
         lock.lock()
@@ -107,6 +110,50 @@ private final class KeyPostState: @unchecked Sendable {
         lock.lock()
         burstMilliseconds = burst
         lock.unlock()
+    }
+}
+
+/// Keeps a synthetic cursor inside the displays it is actually on.
+///
+/// The window server pins the real cursor at the screen edge no matter what
+/// position an event carries, but the event keeps the position it was built
+/// with. A position past the edge is not inside the few-point strip the Dock
+/// and the hot corners watch, so pushing into the bottom of the screen used to
+/// pin the cursor there and still never reveal the Dock. A physical mouse
+/// never produces one of these: its driver clamps first, and so does this.
+private final class DisplayGeometry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cached: [CGRect] = []
+
+    /// Clamps into the display `origin` sits on. A target that lands on some
+    /// other display is left alone, so the cursor can still cross screens.
+    func clamp(_ target: CGPoint, startingFrom origin: CGPoint) -> CGPoint {
+        let bounds = rects(covering: origin)
+        guard let home = bounds.first(where: { $0.contains(origin) }) else { return target }
+        guard !bounds.contains(where: { $0.contains(target) }) else { return target }
+        return CGPoint(
+            x: min(max(target.x, home.minX), home.maxX - 1),
+            y: min(max(target.y, home.minY), home.maxY - 1)
+        )
+    }
+
+    /// Re-reads the arrangement only when the cursor turns up somewhere none
+    /// of the cached displays cover, which is exactly when it went stale.
+    private func rects(covering point: CGPoint) -> [CGRect] {
+        lock.lock()
+        defer { lock.unlock() }
+        if !cached.contains(where: { $0.contains(point) }) {
+            cached = Self.read()
+        }
+        return cached
+    }
+
+    private static func read() -> [CGRect] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map(CGDisplayBounds)
     }
 }
 
@@ -143,9 +190,22 @@ public final class CGEventInputSink: InputEventSink {
         63: .maskSecondaryFn
     ]
 
-    /// A flags change needs a moment to settle before the key it modifies, or
-    /// the Dock sees a bare Tab and never opens the switcher.
-    private static let modifierSettle: TimeInterval = 0.025
+    /// Flags a real keyboard reports as part of the key itself rather than as
+    /// a modifier the hand is holding.  The arrow keys carry both, and macOS
+    /// records Mission Control's shortcut as Control+Function+Up, so an arrow
+    /// event built without them never matches the system hotkey.
+    private static let intrinsicFlagForKeyCode: [UInt16: CGEventFlags] = [
+        123: [.maskSecondaryFn, .maskNumericPad],
+        124: [.maskSecondaryFn, .maskNumericPad],
+        125: [.maskSecondaryFn, .maskNumericPad],
+        126: [.maskSecondaryFn, .maskNumericPad]
+    ]
+
+    /// A modifier goes out as a flags change rather than a key press, so the
+    /// Dock can in principle read the Tab that follows before it has taken the
+    /// Command in.  This is the gap that guards against that; at zero the two
+    /// go out back to back, which is what a real keyboard chord looks like.
+    private static let modifierSettle: TimeInterval = 0
     /// Ordinary keys only need to be distinguishable from each other.
     private static let keyGap: TimeInterval = 0.010
 
@@ -153,6 +213,7 @@ public final class CGEventInputSink: InputEventSink {
     private let source: CGEventSource?
     private let queue = DispatchQueue(label: "phoneremote.input.hotkey")
     private let postState = KeyPostState()
+    private let displays = DisplayGeometry()
     private var activeFlags: CGEventFlags = []
 
     public init(trust: AccessibilityTrustProviding = SystemAccessibilityTrust()) {
@@ -172,7 +233,13 @@ public final class CGEventInputSink: InputEventSink {
         switch event {
         case let .pointer(delta):
             let current = CGEvent(source: nil)?.location ?? .zero
-            let next = CGPoint(x: current.x + delta.x, y: current.y + delta.y)
+            // The delta fields keep the full requested travel even when the
+            // position is pinned, the way a real mouse still reports a push
+            // into the edge it cannot cross.
+            let next = displays.clamp(
+                CGPoint(x: current.x + delta.x, y: current.y + delta.y),
+                startingFrom: current
+            )
             guard let cgEvent = CGEvent(
                 mouseEventSource: source,
                 mouseType: .mouseMoved,
@@ -280,12 +347,17 @@ public final class CGEventInputSink: InputEventSink {
         let start = Date()
         queue.async {
             for item in events {
-                if paced {
+                // The gap separates one event from the one before it, so only
+                // the part not already elapsed is worth waiting out.  A queue
+                // that has been idle since the last press waits for nothing.
+                if paced, let last = state.lastPostAt {
                     let gap = state.lastPostWasModifier ? Self.modifierSettle : Self.keyGap
-                    Thread.sleep(forTimeInterval: gap)
+                    let remaining = gap - (ProcessInfo.processInfo.systemUptime - last)
+                    if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
                 }
                 item.event.post(tap: .cghidEventTap)
                 state.lastPostWasModifier = item.isModifier
+                state.lastPostAt = ProcessInfo.processInfo.systemUptime
             }
             state.record(burst: Date().timeIntervalSince(start) * 1_000)
         }
@@ -301,7 +373,7 @@ public final class CGEventInputSink: InputEventSink {
             keyDown: isDown
         ) else { return nil }
         if isModifier { event.type = .flagsChanged }
-        event.flags = flags
+        event.flags = flags.union(Self.intrinsicFlagForKeyCode[keyCode] ?? [])
         return event
     }
 

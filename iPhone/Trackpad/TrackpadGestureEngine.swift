@@ -51,7 +51,7 @@ public struct TrackpadTouch: Equatable, Sendable {
     }
 }
 
-public struct TrackpadPointerDelta: Equatable, Sendable {
+public struct CursorDelta: Equatable, Sendable {
     public let x: Double
     public let y: Double
 
@@ -61,7 +61,7 @@ public struct TrackpadPointerDelta: Equatable, Sendable {
     }
 }
 
-public struct TrackpadScrollDelta: Equatable, Sendable {
+public struct ScrollDelta: Equatable, Sendable {
     public let x: Double
     public let y: Double
 
@@ -71,14 +71,16 @@ public struct TrackpadScrollDelta: Equatable, Sendable {
     }
 }
 
-public enum TrackpadOutput: Equatable, Sendable {
-    case pointer(TrackpadPointerDelta)
-    case scroll(TrackpadScrollDelta)
+public enum RemoteInputEvent: Equatable, Sendable {
+    case pointer(CursorDelta)
+    case scroll(ScrollDelta)
     case leftClick
     case rightClick
     case doubleClick
     case dragBegan
     case dragEnded
+    case missionControl
+    case appExpose
 }
 
 public enum TrackpadLifecycle: Equatable, Sendable {
@@ -95,6 +97,8 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     public var tapMaximumTravel: Double
     public var doubleTapInterval: TimeInterval
     public var dragEnabled: Bool
+    /// How far three fingers must travel up before the swipe counts.
+    public var threeFingerSwipeTravel: Double
 
     public init(
         pointerSensitivityX: Double = 1.0,
@@ -103,7 +107,8 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         tapMaximumDuration: TimeInterval = 0.30,
         tapMaximumTravel: Double = 6,
         doubleTapInterval: TimeInterval = 0.35,
-        dragEnabled: Bool = false
+        dragEnabled: Bool = false,
+        threeFingerSwipeTravel: Double = 45
     ) {
         self.pointerSensitivityX = min(max(pointerSensitivityX, 0.05), 10)
         self.pointerSensitivityY = min(max(pointerSensitivityY, 0.05), 10)
@@ -112,6 +117,7 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         self.tapMaximumTravel = min(max(tapMaximumTravel, 1), 100)
         self.doubleTapInterval = min(max(doubleTapInterval, 0.1), 1)
         self.dragEnabled = dragEnabled
+        self.threeFingerSwipeTravel = min(max(threeFingerSwipeTravel, 10), 400)
     }
 }
 
@@ -128,6 +134,7 @@ public struct TrackpadGestureEngine: Sendable {
         case idle
         case oneFinger
         case twoFinger
+        case threeFinger
         case dragging
     }
 
@@ -150,6 +157,11 @@ public struct TrackpadGestureEngine: Sendable {
     /// the widest the gesture ever got keeps a staggered lift a right click
     /// instead of the left click the remaining finger would look like.
     private var gestureMaxTouches = 0
+    /// Three-finger travel since the third finger landed, and whether this
+    /// gesture already fired.  One swipe is one Mission Control, however far
+    /// the hand keeps going afterwards.
+    private var threeFingerTravel = TrackpadPoint.zero
+    private var threeFingerFired = false
 
     public init(configuration: TrackpadConfiguration = TrackpadConfiguration()) {
         self.configuration = configuration
@@ -180,14 +192,14 @@ public struct TrackpadGestureEngine: Sendable {
     }
 
     @discardableResult
-    public mutating func handle(_ lifecycle: TrackpadLifecycle) -> [TrackpadOutput] {
+    public mutating func handle(_ lifecycle: TrackpadLifecycle) -> [RemoteInputEvent] {
         switch lifecycle {
         case .foreground:
             isForeground = true
             return []
         case .background, .cancel:
             if lifecycle == .background { isForeground = false }
-            let result: [TrackpadOutput] = isDragging ? [.dragEnded] : []
+            let result: [RemoteInputEvent] = isDragging ? [.dragEnded] : []
             resetTouches()
             return result
         }
@@ -196,7 +208,7 @@ public struct TrackpadGestureEngine: Sendable {
     /// Processes a batch of changed touches.  The batch may contain one or
     /// more touches; unchanged touches remain in the internal active set.
     @discardableResult
-    public mutating func handle(_ touches: [TrackpadTouch]) -> [TrackpadOutput] {
+    public mutating func handle(_ touches: [TrackpadTouch]) -> [RemoteInputEvent] {
         guard isForeground, !touches.isEmpty else { return [] }
         let timestamp = touches.map(\.timestamp).max() ?? 0
         let activeBefore = active
@@ -225,7 +237,7 @@ public struct TrackpadGestureEngine: Sendable {
 
         gestureMaxTouches = max(gestureMaxTouches, active.count)
 
-        var outputs: [TrackpadOutput] = []
+        var outputs: [RemoteInputEvent] = []
         let beganCount = touches.filter { $0.phase == .began }.count
         if beganCount > 0 {
             if active.count == 1 {
@@ -236,21 +248,29 @@ public struct TrackpadGestureEngine: Sendable {
                     outputs.append(.dragBegan)
                 }
             } else if active.count >= 2 {
-                // Adding a second finger must not jump the cursor/scroll
-                // position.  Start a new centroid baseline.
+                // Adding a finger must not jump the cursor/scroll position.
+                // Start a new centroid baseline.
                 if isDragging {
                     isDragging = false
                     outputs.append(.dragEnded)
                 }
-                mode = .twoFinger
+                mode = active.count >= 3 ? .threeFinger : .twoFinger
                 previousCentroid = centroid(of: active)
                 pendingPointer = .zero
+                if mode == .threeFinger {
+                    pendingScroll = .zero
+                    threeFingerTravel = .zero
+                }
             }
         }
 
         if touches.contains(where: { $0.phase == .moved }) {
             if modeBefore == .idle, mode == .idle {
-                mode = active.count >= 2 ? .twoFinger : .oneFinger
+                switch active.count {
+                case 0, 1: mode = .oneFinger
+                case 2: mode = .twoFinger
+                default: mode = .threeFinger
+                }
             }
             let oldCentroid = previousCentroid ?? centroid(of: activeBefore)
             let newCentroid = centroid(of: active)
@@ -272,6 +292,10 @@ public struct TrackpadGestureEngine: Sendable {
                 outputs.append(contentsOf: emitScroll(
                     TrackpadPoint(x: 0, y: delta.y * configuration.scrollSensitivity)
                 ))
+            case .threeFinger:
+                // Raw travel, not scaled: the threshold is a distance on the
+                // glass, not a cursor speed.
+                outputs.append(contentsOf: emitThreeFingerSwipe(delta))
             default:
                 break
             }
@@ -286,7 +310,6 @@ public struct TrackpadGestureEngine: Sendable {
         }
 
         if !ended.isEmpty {
-            let multiFinger = gestureMaxTouches >= 2
             let tap = isTap(activeBefore, ended: ended, at: timestamp)
             for touch in ended {
                 active.removeValue(forKey: touch.id)
@@ -294,33 +317,49 @@ public struct TrackpadGestureEngine: Sendable {
             if isDragging {
                 outputs.append(.dragEnded)
                 isDragging = false
-            } else if multiFinger && active.isEmpty && tap {
-                outputs.append(.rightClick)
-                tapCount = 0
-                lastTapTime = nil
-                lastTapLocation = nil
-            } else if active.isEmpty && !multiFinger && tap {
-                let location = ended.first?.location
-                tapCount = isChainedTap(at: timestamp, location: location) ? tapCount + 1 : 1
-                if tapCount == 2 {
-                    outputs.append(.doubleClick)
-                } else {
-                    if tapCount > 2 { tapCount = 1 }
-                    outputs.append(.leftClick)
+            } else if active.isEmpty && tap {
+                // The gesture's widest moment picks the click.  Three fingers
+                // are not a click at all, so they make no event rather than
+                // falling through to the one-finger case.
+                switch gestureMaxTouches {
+                case 0, 1:
+                    let location = ended.first?.location
+                    tapCount = isChainedTap(at: timestamp, location: location) ? tapCount + 1 : 1
+                    if tapCount == 2 {
+                        outputs.append(.doubleClick)
+                    } else {
+                        if tapCount > 2 { tapCount = 1 }
+                        outputs.append(.leftClick)
+                    }
+                    // The time and place are kept even for the double click,
+                    // so a press that follows it can still start a drag.
+                    lastTapTime = timestamp
+                    lastTapLocation = location
+                case 2:
+                    outputs.append(.rightClick)
+                    tapCount = 0
+                    lastTapTime = nil
+                    lastTapLocation = nil
+                default:
+                    tapCount = 0
+                    lastTapTime = nil
+                    lastTapLocation = nil
                 }
-                // The time and place are kept even for the double click, so a
-                // press that follows it can still start a drag.
-                lastTapTime = timestamp
-                lastTapLocation = location
             }
 
             if active.isEmpty {
                 resetTouches()
             } else {
-                // A gesture that ever held two fingers stays a scroll until the
-                // glass is clear.  Otherwise the finger left behind after an
-                // uneven lift drags the cursor a few points.
-                mode = (active.count >= 2 || gestureMaxTouches >= 2) ? .twoFinger : .oneFinger
+                // A gesture stays in the mode its widest moment earned until
+                // the glass is clear.  Otherwise the finger left behind after
+                // an uneven lift drags the cursor a few points.
+                if max(active.count, gestureMaxTouches) >= 3 {
+                    mode = .threeFinger
+                } else if max(active.count, gestureMaxTouches) >= 2 {
+                    mode = .twoFinger
+                } else {
+                    mode = .oneFinger
+                }
                 previousCentroid = centroid(of: active)
             }
         }
@@ -377,10 +416,10 @@ public struct TrackpadGestureEngine: Sendable {
         )
     }
 
-    /// Emission is not rate limited here.  `TrackpadOutputCoalescer` is the
+    /// Emission is not rate limited here.  `CursorMixer` is the
     /// single pacer for the link; a second gate on this side only delayed the
     /// tail of a gesture without saving a packet.
-    private mutating func emitPointer(_ delta: TrackpadPoint) -> [TrackpadOutput] {
+    private mutating func emitPointer(_ delta: TrackpadPoint) -> [RemoteInputEvent] {
         guard delta.x != 0 || delta.y != 0 else { return [] }
         pendingPointer = pendingPointer + delta
         // The wire carries whole points, so quantize here and keep the
@@ -391,13 +430,27 @@ public struct TrackpadGestureEngine: Sendable {
         let y = clamp(pendingPointer.y).rounded()
         guard x != 0 || y != 0 else { return [] }
         pendingPointer = TrackpadPoint(x: pendingPointer.x - x, y: pendingPointer.y - y)
-        return [.pointer(TrackpadPointerDelta(x: x, y: y))]
+        return [.pointer(CursorDelta(x: x, y: y))]
     }
 
-    private mutating func emitScroll(_ delta: TrackpadPoint) -> [TrackpadOutput] {
+    /// Up opens Mission Control, down opens the app's windows, matching a Mac
+    /// trackpad.  The dominance check keeps a sideways three-finger swipe,
+    /// which means something else on a Mac, from claiming either one.
+    private mutating func emitThreeFingerSwipe(_ delta: TrackpadPoint) -> [RemoteInputEvent] {
+        guard !threeFingerFired else { return [] }
+        threeFingerTravel = threeFingerTravel + delta
+        let vertical = threeFingerTravel.y
+        guard abs(vertical) >= configuration.threeFingerSwipeTravel,
+              abs(vertical) > abs(threeFingerTravel.x) else { return [] }
+        threeFingerFired = true
+        // Up is negative on the glass.
+        return [vertical < 0 ? .missionControl : .appExpose]
+    }
+
+    private mutating func emitScroll(_ delta: TrackpadPoint) -> [RemoteInputEvent] {
         guard delta.x != 0 || delta.y != 0 else { return [] }
         pendingScroll = pendingScroll + delta
-        let output = TrackpadOutput.scroll(TrackpadScrollDelta(
+        let output = RemoteInputEvent.scroll(ScrollDelta(
             x: clamp(pendingScroll.x),
             y: clamp(pendingScroll.y)
         ))
@@ -419,24 +472,26 @@ public struct TrackpadGestureEngine: Sendable {
         isDragging = false
         gestureMoved = false
         gestureMaxTouches = 0
+        threeFingerTravel = .zero
+        threeFingerFired = false
     }
 }
 
-public protocol TrackpadOutputSink: AnyObject {
-    func send(_ output: TrackpadOutput)
+public protocol RemoteInputEventSink: AnyObject {
+    func send(_ output: RemoteInputEvent)
 }
 
 /// Small adapter that lets the iPhone feature feed the shared pointer/scroll
 /// protocol without putting protocol definitions in this UI module.
-public final class TrackpadOutputForwarder: TrackpadOutputSink {
-    public typealias Handler = (TrackpadOutput) -> Void
+public final class RemoteInputEventForwarder: RemoteInputEventSink {
+    public typealias Handler = (RemoteInputEvent) -> Void
     private let handler: Handler
 
     public init(handler: @escaping Handler) {
         self.handler = handler
     }
 
-    public func send(_ output: TrackpadOutput) {
+    public func send(_ output: RemoteInputEvent) {
         handler(output)
     }
 }

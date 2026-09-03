@@ -35,7 +35,7 @@ numeric/format bound fails.
 | scroll delta | 3 | unreliable | signed X/Y scroll units, each within ±8192 |
 | mouse button | 4 | reliable | left/right button and explicit up/down transition |
 | text input | 5 | reliable | non-empty valid UTF-8, maximum 2048 bytes |
-| hotkey | 6 | reliable | copy, paste, undo, redo, select all, escape, return, tab, or arrow action |
+| hotkey | 6 | reliable | copy, paste, undo, redo, select all, escape, return, tab, arrow, Mission Control, or app-windows action |
 | motion pointer delta | 7 | unreliable | signed X/Y logical points ±8192, sample rate 1–100 Hz |
 | audio chunk | 8 | unreliable | Live voice uses a binary PRA1 frame (IMA ADPCM) encrypted as this type. JSON audio chunks remain valid for tests. |
 | acknowledgement | 9 | reliable | positive acknowledged sequence and accepted/duplicate/rejected status |

@@ -55,12 +55,12 @@ public struct ScrollMomentum: Sendable {
 
     /// Advances the glide by `elapsed` seconds and returns the scroll for that
     /// frame, or nil once the glide has ended.
-    public mutating func step(elapsed: TimeInterval) -> TrackpadScrollDelta? {
+    public mutating func step(elapsed: TimeInterval) -> ScrollDelta? {
         guard isActive, elapsed.isFinite, elapsed > 0 else { return nil }
         let travel = velocity * elapsed
         velocity *= pow(configuration.retainedPerSecond, elapsed)
         if abs(velocity) < configuration.minimumVelocity { velocity = 0 }
         guard travel != 0 else { return nil }
-        return TrackpadScrollDelta(x: 0, y: travel)
+        return ScrollDelta(x: 0, y: travel)
     }
 }

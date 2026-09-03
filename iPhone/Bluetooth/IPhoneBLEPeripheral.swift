@@ -91,15 +91,26 @@ public final class IPhoneBLEPeripheralTransport {
     }
 
     /// Advertising is deliberately gated by both foreground state and
-    /// powered-on Bluetooth. A background transition immediately removes the
-    /// service and clears subscribers/queued frames.
+    /// powered-on Bluetooth. A background transition only takes the beacon
+    /// down; see `suspend()` for why the service stays published.
     public func setForeground(_ foreground: Bool) {
         isForeground = foreground
         if foreground {
             startIfAllowed()
         } else {
-            stop(reason: .stopped)
+            suspend()
         }
+    }
+
+    /// Backgrounding stops the beacon but leaves the GATT table published and
+    /// the Mac's subscriptions intact. A peripheral cannot hang up on a
+    /// central, so removing the service would leave the Mac holding dead
+    /// characteristic handles on a link no scan can replace.
+    public func suspend() {
+        adapter.stopAdvertising()
+        outbound[.data]?.removeAll(keepingCapacity: true)
+        outbound[.control]?.removeAll(keepingCapacity: true)
+        transition(to: .stopped)
     }
 
     public func startIfAllowed() {
@@ -116,13 +127,20 @@ public final class IPhoneBLEPeripheralTransport {
         case .idle, .waitingForBluetooth, .stopped:
             break
         }
-        if hasPublishedService {
-            transition(to: .advertising)
-            adapter.startAdvertising(localName: localName, serviceUUID: serviceUUID)
-        } else {
+        guard hasPublishedService else {
             transition(to: .publishing)
             adapter.publish(serviceUUID: serviceUUID, characteristics: PhoneRemoteGATT.characteristics)
+            return
         }
+        // A link that outlived the background trip resumes where it left off.
+        // Advertising again would be pointless; the Mac is already subscribed.
+        guard subscriberIDs.isEmpty else {
+            transition(to: subscriptionState)
+            flushAll()
+            return
+        }
+        transition(to: .advertising)
+        adapter.startAdvertising(localName: localName, serviceUUID: serviceUUID)
     }
 
     /// Refreshes advertising so a Mac that began scanning late still sees us.
@@ -211,19 +229,51 @@ public final class IPhoneBLEPeripheralTransport {
 
     private func handleSubscribe(subscriber: String, uuid: UUID) {
         guard PhoneRemoteGATT.allCharacteristicUUIDs.contains(uuid) else { return }
+        // Only one Mac is ever subscribed, so a different central means the
+        // old link is gone whether or not iOS delivered its unsubscribe. The
+        // trip through `.advertising` is what tells the app to handshake again.
+        if !subscriberIDs.isEmpty, !subscriberIDs.contains(subscriber) {
+            subscriberIDs.removeAll()
+            subscribedCharacteristicUUIDs.removeAll()
+            outbound[.data]?.removeAll(keepingCapacity: true)
+            outbound[.control]?.removeAll(keepingCapacity: true)
+            transition(to: .advertising)
+        }
         subscriberIDs.insert(subscriber)
         subscribedCharacteristicUUIDs.insert(uuid)
-        transition(to: subscribedCharacteristicUUIDs.isSuperset(of: [
-            PhoneRemoteGATT.phoneToMacDataUUID,
-            PhoneRemoteGATT.phoneToMacControlUUID
-        ]) ? .ready : .connected)
+        transition(to: subscriptionState)
         flushAll()
     }
 
     private func handleUnsubscribe(subscriber: String, uuid: UUID) {
+        guard subscriberIDs.contains(subscriber) else { return }
         subscriberIDs.remove(subscriber)
         subscribedCharacteristicUUIDs.remove(uuid)
-        transition(to: subscriberIDs.isEmpty ? .advertising : .connected)
+        guard subscriberIDs.isEmpty else {
+            transition(to: .connected)
+            return
+        }
+        subscribedCharacteristicUUIDs.removeAll()
+        outbound[.data]?.removeAll(keepingCapacity: true)
+        outbound[.control]?.removeAll(keepingCapacity: true)
+        // The state has to say whether the beacon is really lit. A Mac that
+        // leaves while this app is suspended finds it off, and claiming
+        // `.advertising` would make the next foreground skip relighting it.
+        guard isForeground, adapter.state == .poweredOn else {
+            transition(to: .stopped)
+            return
+        }
+        transition(to: .advertising)
+        adapter.startAdvertising(localName: localName, serviceUUID: serviceUUID)
+    }
+
+    /// Only meaningful with a subscriber present: one notify channel is a
+    /// half-built link, both are a usable one.
+    private var subscriptionState: BLEPeripheralLifecycleState {
+        subscribedCharacteristicUUIDs.isSuperset(of: [
+            PhoneRemoteGATT.phoneToMacDataUUID,
+            PhoneRemoteGATT.phoneToMacControlUUID
+        ]) ? .ready : .connected
     }
 
     private func handleWrite(_ write: BLEPeripheralWrite) {

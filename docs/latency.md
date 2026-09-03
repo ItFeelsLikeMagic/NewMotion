@@ -97,6 +97,13 @@ Changed 2026-09-03:
 
 Physical feel after these changes is not measured yet.
 
+## Where the stages live
+
+The input path was pulled out of the view model on 2026-09-03. Sensors, mixer,
+uplink, and link are now separate stages, and the link is a protocol so the
+transport can be replaced without touching anything above it. See
+`docs/input_pipeline.md`.
+
 ## How to measure
 
 **Bluetooth round trip.** Settings tab, tap Ping Mac. It sends five pings 250 ms

@@ -4,7 +4,7 @@ import XCTest
 @testable import PhoneRemoteShared
 
 final class IntegrationTests: XCTestCase {
-    func testTrackpadOutputTravelsThroughProtocolAndBLEFraming() throws {
+    func testRemoteInputEventTravelsThroughProtocolAndBLEFraming() throws {
         var engine = TrackpadGestureEngine()
         _ = engine.handle([
             TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)
@@ -45,7 +45,7 @@ final class IntegrationTests: XCTestCase {
         XCTAssertFalse(up.isDown)
 
         let scroll = try SharedTrackpadProtocolAdapter.payloads(
-            for: .scroll(TrackpadScrollDelta(x: 0, y: 12))
+            for: .scroll(ScrollDelta(x: 0, y: 12))
         )
         XCTAssertEqual(scroll.count, 1)
         guard case let .scrollDelta(payload) = scroll[0] else {

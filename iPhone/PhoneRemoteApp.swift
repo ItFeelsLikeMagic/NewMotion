@@ -38,6 +38,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var appSwitcherSensitivity = UserDefaults.standard.object(forKey: "appSwitcherSensitivity") as? Double ?? 2.0
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
     @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
+    @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
+    @Published var scrollMomentum = UserDefaults.standard.object(forKey: "scrollMomentum") as? Double ?? TrackpadTouchCaptureView.defaultMomentumStrength
     @Published var pairingState: IPhonePairingScannerState = .idle
     @Published var bluetoothState: BLEPeripheralLifecycleState = .idle
     @Published var trustedMacName: String?
@@ -61,11 +63,11 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     )
     private let motionSink: DeltaCoalescer<MotionPointerDelta>
-    private let trackpadOutputs = TrackpadOutputCoalescer()
+    private let cursorMixer = CursorMixer()
+    private let inputLink: BLEInputLink
+    private let inputUplink: InputUplink
     /// The trackpad surface is the only screen the air mouse runs on.
     private var trackpadVisible = false
-    private var pointerTravel = CursorTravel()
-    private var scrollTravel = CursorTravel()
     private lazy var keyboardForwarder = KeyboardOutputForwarder { [weak self] output in
         self?.sendKeyboardOutput(output)
     }
@@ -81,13 +83,14 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var authenticatedSession: PairingSession? {
         didSet {
             voiceUplink.setSession(authenticatedSession, maximumValueLength: peripheral.maximumUpdateValueLength)
+            inputLink.setSession(authenticatedSession)
+            if authenticatedSession == nil { inputUplink.reset() }
             refreshAirMouse()
         }
     }
     private var inboundReassembler: BLEReassembler?
     private var controlReassembler: BLEReassembler?
     private var nextHandshakeMessageID: UInt32 = 1
-    private var nextApplicationSequence: UInt64 = 1
     private var handshakeHelloSent = false
     private let pairingConfirmFlag = PairingConfirmFlag()
     private var pairingConfirmed: Bool {
@@ -118,6 +121,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             adapter: CoreBluetoothPeripheralManagerAdapter()
         )
         self.peripheral = peripheral
+        let inputLink = BLEInputLink(peripheral: peripheral)
+        self.inputLink = inputLink
+        inputUplink = InputUplink(link: inputLink)
         let confirmFlag = pairingConfirmFlag
         self.lifecycle = PhoneLifecycleCoordinator(
             motion: motionSession,
@@ -148,10 +154,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         peripheral.onFrameReceived = { [weak self] channel, data in
             Task { @MainActor [weak self] in self?.handleIncomingFrame(channel: channel, data: data) }
         }
-        peripheral.onReadyToSend = { [weak self] in
-            MainActor.assumeIsolated { self?.flushCursorStream() }
-        }
-
         pairingScanner.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.pairingState = state
@@ -185,16 +187,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         IPhoneDebugLog.emit("trust", ["count": "\(pairingCoordinator?.trustedDevices.count ?? 0)"])
         beginTrustedReconnect()
         motionSink.onFlush = { [weak self] delta in
-            // Already on the main queue from the coalescer. A second Task hop
-            // queued every sample and the cursor lagged more the longer the
-            // clutch was held.
+            // The coalescer is the hop from the Core Motion queue to this one,
+            // and it already lands here. A second Task hop queued every sample
+            // and the cursor lagged more the longer the air mouse ran.
             MainActor.assumeIsolated {
                 self?.handleMotionDelta(delta)
             }
         }
-        trackpadOutputs.onOutput = { [weak self] output in
+        cursorMixer.onEvent = { [weak self] event in
             MainActor.assumeIsolated {
-                self?.sendTrackpadOutput(output)
+                self?.sendInputEvent(event)
             }
         }
         let uplink = voiceUplink
@@ -536,14 +538,13 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     private func sendOnePing() {
         guard isControllable else { return }
-        do {
-            pingSentAt.append(ProcessInfo.processInfo.systemUptime)
-            try sendApplication(.ping(PingPayload()))
-            IPhoneDebugLog.emit("ping_sent", ["ble": bluetoothState.label])
-        } catch {
+        pingSentAt.append(ProcessInfo.processInfo.systemUptime)
+        guard inputUplink.send(.ping(PingPayload())) else {
             pingSentAt.removeLast()
             latestAction = "Ping failed"
+            return
         }
+        IPhoneDebugLog.emit("ping_sent", ["ble": bluetoothState.label])
     }
 
     private func recordPong() {
@@ -603,7 +604,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         authenticatedSession = result.result.session
         isPaired = true
         reconnectFailures = 0
-        nextApplicationSequence = 1
         inboundReassembler?.reset()
         controlReassembler?.reset()
         _ = lifecycle.handle(.trustAdded)
@@ -640,37 +640,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             }
         } catch {
             latestAction = "Link check failed"
-        }
-    }
-
-    private func sendApplication(_ payload: MessagePayload) throws {
-        guard let session = authenticatedSession else { throw PairingError.invalidHandshake }
-        let envelope = ProtocolEnvelope(
-            sessionID: try SessionID(bytes: Array(session.sessionID)),
-            sequence: nextApplicationSequence,
-            timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
-            payload: payload
-        )
-        nextApplicationSequence = nextApplicationSequence == UInt64.max ? 1 : nextApplicationSequence &+ 1
-        let messageID = nextHandshakeMessageID
-        nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-        let frames = try session.wrapApplication(
-            envelope,
-            messageID: messageID,
-            maximumValueLength: peripheral.maximumUpdateValueLength
-        )
-        let enqueue = envelope.messageType.deliveryClass == .reliable
-        for (index, frame) in frames.enumerated() {
-            let deliver = enqueue || index > 0
-            switch peripheral.send(frame, on: .data, enqueue: deliver) {
-            case .sent, .queued:
-                continue
-            case .notReady, .unsupportedChannel:
-                throw PairingError.invalidHandshake
-            case .queueFull:
-                if deliver { throw PairingError.invalidHandshake }
-                return
-            }
         }
     }
 
@@ -732,19 +701,19 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         latestAction = "Pairing failed; scan a new Mac QR code"
     }
 
-    /// The air mouse shares the trackpad's compact frame, its busy-link retry,
-    /// and now its pacer as well: two sensors moving one cursor must not each
-    /// spend a full packet budget.  Travel stays fractional this far in.
+    /// Air-mouse travel enters the pipeline at the mixer, the same door the
+    /// trackpad uses.  Everything after that point is shared, so the two
+    /// sensors cannot each spend a full packet budget.
     func handleMotionDelta(_ delta: MotionPointerDelta) {
         guard isControllable else { return }
         guard delta.x.isFinite, delta.y.isFinite else {
             airMouseStatus = "Air mouse send failed"
             return
         }
-        trackpadOutputs.handlePointer(TrackpadPointerDelta(x: delta.x, y: delta.y))
+        cursorMixer.handleTravel(CursorDelta(x: delta.x, y: delta.y))
     }
 
-    func setTrackpadSensitivity(x: Double? = nil, y: Double? = nil) {
+    func setTrackpadSensitivity(x: Double? = nil, y: Double? = nil, scroll: Double? = nil) {
         if let x {
             trackpadSensitivityX = x
             UserDefaults.standard.set(x, forKey: "trackpadSensitivityX")
@@ -753,11 +722,20 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             trackpadSensitivityY = y
             UserDefaults.standard.set(y, forKey: "trackpadSensitivityY")
         }
+        if let scroll {
+            trackpadScrollSensitivity = scroll
+            UserDefaults.standard.set(scroll, forKey: "trackpadScrollSensitivity")
+        }
     }
 
-    func handleTrackpadOutputs(_ outputs: [TrackpadOutput]) {
+    func setScrollMomentum(_ value: Double) {
+        scrollMomentum = value
+        UserDefaults.standard.set(value, forKey: "scrollMomentum")
+    }
+
+    func handleRemoteInputEvents(_ events: [RemoteInputEvent]) {
         guard isControllable else { return }
-        trackpadOutputs.handle(outputs)
+        cursorMixer.handle(events)
     }
 
     /// Characters are forwarded as they are typed and never stored or logged.
@@ -777,13 +755,12 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             latestAction = "Pair before switching apps"
             return
         }
-        do {
-            try sendApplication(.appSwitcher(AppSwitcherPayload(phase: phase)))
-            latestAction = "App switcher \(phase)"
-            IPhoneDebugLog.emit("app_switcher", ["phase": "\(phase)"])
-        } catch {
+        guard inputUplink.send(.appSwitcher(AppSwitcherPayload(phase: phase))) else {
             latestAction = "App switcher send failed"
+            return
         }
+        latestAction = "App switcher \(phase)"
+        IPhoneDebugLog.emit("app_switcher", ["phase": "\(phase)"])
     }
 
     func sendHotkey(_ hotkey: RemoteHotkey) {
@@ -795,27 +772,27 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
 
     private func sendKeyboardOutput(_ output: KeyboardOutput) {
-        do {
-            try sendApplication(try SharedKeyboardProtocolAdapter.payload(for: output))
-            switch output {
-            case .text:
-                latestAction = "Typing"
-            case let .hotkey(hotkey):
-                latestAction = "Sent \(hotkey.buttonTitle)"
-                IPhoneDebugLog.emit("hotkey", ["name": hotkey.rawValue])
-            }
-        } catch {
+        guard let payload = try? SharedKeyboardProtocolAdapter.payload(for: output),
+              inputUplink.send(payload) else {
             latestAction = "Keyboard send failed"
+            return
+        }
+        switch output {
+        case .text:
+            latestAction = "Typing"
+        case let .hotkey(hotkey):
+            latestAction = "Sent \(hotkey.buttonTitle)"
+            IPhoneDebugLog.emit("hotkey", ["name": hotkey.rawValue])
         }
     }
 
-    private var isControllable: Bool {
-        authenticatedSession != nil && peripheral.state == .ready
-    }
+    private var isControllable: Bool { inputUplink.isReady }
 
-    private func sendTrackpadOutput(_ output: TrackpadOutput) {
+    /// The label is the only part of an input event the model still cares
+    /// about.  Packing, ordering, and the busy link belong to the uplink.
+    private func sendInputEvent(_ event: RemoteInputEvent) {
         let label: String
-        switch output {
+        switch event {
         case .pointer: label = "Cursor move"
         case .scroll: label = "Trackpad scroll"
         case .leftClick: label = "Left click"
@@ -823,88 +800,18 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .doubleClick: label = "Double click"
         case .dragBegan: label = "Drag began"
         case .dragEnded: label = "Drag ended"
+        case .missionControl: label = "Mission Control"
+        case .appExpose: label = "App windows"
         }
         // Republishing the same label re-rendered the surface on every packet.
         if latestAction != label { latestAction = label }
-
-        switch output {
-        case let .pointer(delta):
-            pointerTravel.add(x: delta.x, y: delta.y)
-            flushCursorStream()
-        case let .scroll(delta):
-            scrollTravel.add(x: delta.x, y: delta.y)
-            flushCursorStream()
-        case .leftClick, .rightClick, .doubleClick, .dragBegan, .dragEnded:
-            // A button must never land ahead of the travel that preceded it.
-            flushCursorStream(force: true)
-            do {
-                for payload in try SharedTrackpadProtocolAdapter.payloads(for: output) {
-                    try sendApplication(payload)
-                }
-            } catch {
-                latestAction = "Trackpad send failed"
-            }
+        let sent = inputUplink.send(event)
+        if !sent { latestAction = "Cursor send failed" }
+        switch event {
+        case .missionControl: IPhoneDebugLog.emit("mission_control", ["sent": "\(sent)"])
+        case .appExpose: IPhoneDebugLog.emit("app_expose", ["sent": "\(sent)"])
+        default: break
         }
-    }
-
-    /// Sends the accumulated cursor travel as one compact binary frame.  When
-    /// the radio has no room the sum is kept rather than dropped, so the cursor
-    /// ends up where the finger is instead of undershooting and then catching
-    /// up when the backlog drains.  `force` queues the frame so a click that
-    /// follows it cannot overtake it.
-    private func flushCursorStream(force: Bool = false) {
-        var items: [PointerStreamItem] = []
-        let pointer = pointerTravel.wholePoints
-        if pointer.x != 0 || pointer.y != 0 {
-            items.append(PointerStreamItem(kind: .pointer, deltaX: pointer.x, deltaY: pointer.y))
-        }
-        let scroll = scrollTravel.wholePoints
-        if scroll.x != 0 || scroll.y != 0 {
-            items.append(PointerStreamItem(kind: .scroll, deltaX: scroll.x, deltaY: scroll.y))
-        }
-        // Travel under half a point is not dropped; it stays pending and rides
-        // out with a later packet once it adds up to a whole one.
-        guard !items.isEmpty else { return }
-        guard let session = authenticatedSession, peripheral.state == .ready else {
-            clearPendingCursor()
-            return
-        }
-        do {
-            let messageID = nextHandshakeMessageID
-            nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-            let frames = try session.wrapBinary(
-                try PointerStreamFrame(items: items).encode(),
-                messageType: MessageType.pointerDelta.rawValue,
-                messageID: messageID,
-                maximumValueLength: peripheral.maximumUpdateValueLength,
-                reliable: false
-            )
-            // A message that does not fit one notification must go whole or not
-            // at all, so it queues; only the single-frame case can be retried.
-            let mustQueue = force || frames.count > 1
-            for (index, frame) in frames.enumerated() {
-                let deliver = mustQueue || index > 0
-                switch peripheral.send(frame, on: .data, enqueue: deliver) {
-                case .sent, .queued:
-                    continue
-                case .queueFull where !deliver:
-                    return
-                case .queueFull, .notReady, .unsupportedChannel:
-                    clearPendingCursor()
-                    return
-                }
-            }
-            pointerTravel.take(x: pointer.x, y: pointer.y)
-            scrollTravel.take(x: scroll.x, y: scroll.y)
-        } catch {
-            clearPendingCursor()
-            latestAction = "Cursor send failed"
-        }
-    }
-
-    private func clearPendingCursor() {
-        pointerTravel.clear()
-        scrollTravel.clear()
     }
 }
 
@@ -927,21 +834,47 @@ private struct PairingCameraPreview: UIViewRepresentable {
     }
 }
 
+private struct AppSwitcherTouchSurface: UIViewRepresentable {
+    let onPhase: (HoldSlidePhase) -> Void
+
+    func makeUIView(context: Context) -> HoldSlideCaptureView {
+        let view = HoldSlideCaptureView(frame: .zero)
+        view.label = "app_switcher"
+        view.onPhase = onPhase
+        return view
+    }
+
+    func updateUIView(_ uiView: HoldSlideCaptureView, context: Context) {
+        uiView.onPhase = onPhase
+    }
+}
+
 private struct TrackpadSurface: UIViewRepresentable {
     let pointerSensitivityX: Double
     let pointerSensitivityY: Double
-    let onOutputs: ([TrackpadOutput]) -> Void
+    let scrollSensitivity: Double
+    let momentumStrength: Double
+    let onOutputs: ([RemoteInputEvent]) -> Void
 
     func makeUIView(context: Context) -> TrackpadTouchCaptureView {
         let view = TrackpadTouchCaptureView(frame: .zero)
         view.onOutputs = onOutputs
-        view.engine.setSensitivity(pointerX: pointerSensitivityX, pointerY: pointerSensitivityY)
+        apply(to: view)
         return view
     }
 
     func updateUIView(_ uiView: TrackpadTouchCaptureView, context: Context) {
         uiView.onOutputs = onOutputs
-        uiView.engine.setSensitivity(pointerX: pointerSensitivityX, pointerY: pointerSensitivityY)
+        apply(to: uiView)
+    }
+
+    private func apply(to view: TrackpadTouchCaptureView) {
+        view.engine.setSensitivity(
+            pointerX: pointerSensitivityX,
+            pointerY: pointerSensitivityY,
+            scroll: scrollSensitivity
+        )
+        view.momentumStrength = momentumStrength
     }
 }
 
@@ -1063,22 +996,13 @@ private struct AppSwitcherButton: View {
     var body: some View {
         Text("⌘⇥")
             .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(Rectangle())
             .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
             .foregroundStyle(isHeld ? Color.white : Color.primary)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isHeld {
-                            isHeld = true
-                            steps = 0
-                            send(.begin)
-                        }
-                        step(to: Int((value.translation.width / stepWidth).rounded(.towardZero)))
-                    }
-                    .onEnded { _ in finish(.commit) }
-            )
+            // Touches come from UIKit, not from a SwiftUI gesture.  The
+            // gesture sat on a press for 100 ms at best and 780 ms after an
+            // idle spell, which was most of what this button felt like.
+            .overlay(AppSwitcherTouchSurface(onPhase: handle))
             // A system interruption cancels the gesture without an end, and the
             // Mac would be left holding Command until the watchdog fires.
             .onChange(of: scenePhase) { _, phase in
@@ -1089,6 +1013,23 @@ private struct AppSwitcherButton: View {
 
     private var stepWidth: Double {
         Self.baseStepWidth / min(max(sensitivity, 0.5), 4)
+    }
+
+    private func handle(_ phase: HoldSlidePhase) {
+        switch phase {
+        case .began:
+            guard !isHeld else { return }
+            isHeld = true
+            steps = 0
+            send(.begin)
+        case let .moved(translationX):
+            guard isHeld else { return }
+            step(to: Int((translationX / stepWidth).rounded(.towardZero)))
+        case .ended:
+            finish(.commit)
+        case .cancelled:
+            finish(.cancel)
+        }
     }
 
     private func step(to target: Int) {
@@ -1140,9 +1081,11 @@ private struct RemoteControlTab: View {
             VStack(spacing: 12) {
                 TrackpadSurface(
                     pointerSensitivityX: model.trackpadSensitivityX,
-                    pointerSensitivityY: model.trackpadSensitivityY
+                    pointerSensitivityY: model.trackpadSensitivityY,
+                    scrollSensitivity: model.trackpadScrollSensitivity,
+                    momentumStrength: model.scrollMomentum
                 ) { outputs in
-                    model.handleTrackpadOutputs(outputs)
+                    model.handleRemoteInputEvents(outputs)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
@@ -1313,6 +1256,37 @@ private struct RemoteSettingsTab: View {
                     Text("App switcher")
                 } footer: {
                     Text("How far you slide sideways, holding the app switcher button, to move one app.")
+                }
+
+                Section("Scrolling") {
+                    VStack(alignment: .leading) {
+                        Text("Scroll speed \(model.trackpadScrollSensitivity.formatted(.number.precision(.fractionLength(1))))x")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { model.trackpadScrollSensitivity },
+                                set: { model.setTrackpadSensitivity(scroll: $0) }
+                            ),
+                            in: 0.5...6,
+                            step: 0.1
+                        )
+                    }
+                    VStack(alignment: .leading) {
+                        Text(model.scrollMomentum == 0
+                             ? "Glide after a flick: off"
+                             : "Glide after a flick \(Int(model.scrollMomentum * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { model.scrollMomentum },
+                                set: { model.setScrollMomentum($0) }
+                            ),
+                            in: 0...1,
+                            step: 0.05
+                        )
+                    }
                 }
 
                 Section {

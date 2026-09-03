@@ -172,6 +172,11 @@ public enum HotkeyPhysicalSequence {
         case .deleteWordBackward: key = 51; modifiers = [58] // Option + Delete
         case .deleteLineBackward: key = 51; modifiers = [commandKey]
         case .shiftTab: key = 48; modifiers = [56]
+        // Control + Up is the stock Mission Control shortcut. If it has been
+        // remapped in System Settings, the swipe does what that keyboard
+        // shortcut now does, exactly as the keys themselves would.
+        case .missionControl: key = 126; modifiers = [59]
+        case .appExpose: key = 125; modifiers = [59]
         }
 
         var result = modifiers.map { PhysicalKeyTransition(keyCode: $0, isDown: true) }

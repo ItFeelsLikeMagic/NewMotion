@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import PhoneRemote_macOS
+@testable import PhoneRemoteShared
 
 final class SafetyFeatureTests: XCTestCase {
     func testPolicyDeniesUntilEveryControlPreconditionIsSatisfied() {
@@ -109,6 +110,33 @@ final class SafetyFeatureTests: XCTestCase {
             PhysicalKeyTransition(keyCode: 48, isDown: false),
             PhysicalKeyTransition(keyCode: 56, isDown: false)
         ])
+    }
+
+    func testMissionControlIsControlUpBothWays() {
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .missionControl), [
+            PhysicalKeyTransition(keyCode: 59, isDown: true),
+            PhysicalKeyTransition(keyCode: 126, isDown: true),
+            PhysicalKeyTransition(keyCode: 126, isDown: false),
+            PhysicalKeyTransition(keyCode: 59, isDown: false)
+        ])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .appExpose), [
+            PhysicalKeyTransition(keyCode: 59, isDown: true),
+            PhysicalKeyTransition(keyCode: 125, isDown: true),
+            PhysicalKeyTransition(keyCode: 125, isDown: false),
+            PhysicalKeyTransition(keyCode: 59, isDown: false)
+        ])
+        XCTAssertEqual(
+            try? SharedInputProtocolAdapter.command(for: .hotkey(HotkeyPayload(action: .appExpose))),
+            .hotkey(.appExpose)
+        )
+        XCTAssertEqual(
+            try? SharedInputProtocolAdapter.command(for: .hotkey(HotkeyPayload(action: .missionControl))),
+            .hotkey(.missionControl)
+        )
+        XCTAssertEqual(
+            try? SharedInputProtocolAdapter.payload(for: .hotkey(.missionControl)),
+            .hotkey(HotkeyPayload(action: .missionControl))
+        )
     }
 
     func testReliableDuplicatesAreAcknowledgedAndWatchdogReleases() {

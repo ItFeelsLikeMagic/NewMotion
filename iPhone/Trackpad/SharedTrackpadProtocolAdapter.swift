@@ -13,7 +13,7 @@ public enum TrackpadProtocolAdapterError: Error, Equatable, Sendable {
 public enum SharedTrackpadProtocolAdapter {
     /// A click expands to a complete down/up pair.  Callers should enqueue all
     /// returned payloads under one action ID when using reliable transport.
-    public static func payloads(for output: TrackpadOutput) throws -> [MessagePayload] {
+    public static func payloads(for output: RemoteInputEvent) throws -> [MessagePayload] {
         switch output {
         case let .pointer(delta):
             return [.pointerDelta(PointerDeltaPayload(
@@ -41,10 +41,14 @@ public enum SharedTrackpadProtocolAdapter {
             return [.mouseButton(MouseButtonPayload(button: .left, isDown: true))]
         case .dragEnded:
             return [.mouseButton(MouseButtonPayload(button: .left, isDown: false))]
+        case .missionControl:
+            return [.hotkey(HotkeyPayload(action: .missionControl))]
+        case .appExpose:
+            return [.hotkey(HotkeyPayload(action: .appExpose))]
         }
     }
 
-    public static func payload(for output: TrackpadOutput) throws -> MessagePayload {
+    public static func payload(for output: RemoteInputEvent) throws -> MessagePayload {
         guard let first = try payloads(for: output).first else {
             throw TrackpadProtocolAdapterError.unsupportedOutput
         }

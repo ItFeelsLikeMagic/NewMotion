@@ -46,6 +46,7 @@ final class MacRemoteAppModel: ObservableObject {
     private static let trustedDeviceService = "com.example.phoneremote.macos.trusted-devices"
 
     private let injector: SafeInputInjector
+    private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
     private let central: MacBLECentralTransport
@@ -73,6 +74,10 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
     @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
+    @Published var smoothCursor = UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true
+    @Published var smoothScroll = UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
+    @Published var smoothingMinimum = UserDefaults.standard.object(forKey: "smoothingMinimumDelta") as? Double
+        ?? SmoothedTravelSink.defaultMinimumSmoothed
     /// Cursor traffic is counted, not narrated.  Publishing a label per packet
     /// rebuilt the whole debug snapshot and invalidated the SwiftUI surface
     /// sixty times a second, on the same actor that applies the packets.
@@ -88,7 +93,15 @@ final class MacRemoteAppModel: ObservableObject {
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust)
         self.inputSink = sink
-        let injector = SafeInputInjector(sink: sink, accessibility: trust)
+        let smoothing = SmoothedTravelSink(
+            wrapping: sink,
+            cursor: UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true,
+            scroll: UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false,
+            minimumSmoothed: UserDefaults.standard.object(forKey: "smoothingMinimumDelta") as? Double
+                ?? SmoothedTravelSink.defaultMinimumSmoothed
+        )
+        self.pointerSmoothing = smoothing
+        let injector = SafeInputInjector(sink: smoothing, accessibility: trust)
         let inert = MacHostRuntime.isInert
         let adapter: MacCentralManagerAdapter = inert
             ? InertCentralManagerAdapter()
@@ -202,6 +215,30 @@ final class MacRemoteAppModel: ObservableObject {
     var isPaused: Bool {
         if case .paused = status { return true }
         return false
+    }
+
+    /// Smoothing is a feel setting, so it applies at once and survives a
+    /// restart. Turning it off posts whatever was mid-glide.  The stored key
+    /// still says pointer; it predates scrolling and renaming it would reset a
+    /// choice already made.
+    func setSmoothCursor(_ on: Bool) {
+        smoothCursor = on
+        UserDefaults.standard.set(on, forKey: "pointerSmoothing")
+        pointerSmoothing.smoothsCursor = on
+    }
+
+    /// Below this, a move is posted whole. Raising it keeps smoothing for
+    /// sweeps while slow aiming stays as direct as it was.
+    func setSmoothingMinimum(_ points: Double) {
+        smoothingMinimum = points
+        UserDefaults.standard.set(points, forKey: "smoothingMinimumDelta")
+        pointerSmoothing.minimumSmoothedDelta = points
+    }
+
+    func setSmoothScroll(_ on: Bool) {
+        smoothScroll = on
+        UserDefaults.standard.set(on, forKey: "scrollSmoothing")
+        pointerSmoothing.smoothsScroll = on
     }
 
     func togglePause() {
@@ -382,6 +419,7 @@ final class MacRemoteAppModel: ObservableObject {
         )
         pairedDevices = pairingCoordinator.trustedDevices
         authenticatedSession = result.session
+        central.setLinkAuthenticated(true)
         pairingServer = nil
         pairingError = nil
         lastPairingFailure = nil
@@ -565,6 +603,7 @@ final class MacRemoteAppModel: ObservableObject {
         pairingID = nil
         pairingDeviceName = nil
         authenticatedSession = nil
+        central.setLinkAuthenticated(false)
         lastApplicationMessage = nil
         inboundReassembler?.reset()
         controlReassembler?.reset()
@@ -689,6 +728,38 @@ struct MacRemoteStatusView: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Toggle("Smooth cursor", isOn: Binding(
+                get: { model.smoothCursor },
+                set: { model.setSmoothCursor($0) }
+            ))
+            .font(.caption)
+            .help("Spreads each packet of movement over the next few frames. Smoother, with about one packet more lag.")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.smoothingMinimum == 0
+                     ? "Smooth every move"
+                     : "Skip moves under \(Int(model.smoothingMinimum)) points")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: Binding(
+                        get: { model.smoothingMinimum },
+                        set: { model.setSmoothingMinimum($0) }
+                    ),
+                    in: 0...30,
+                    step: 1
+                )
+            }
+            .disabled(!model.smoothCursor)
+            .help("Small moves are slow, careful aiming. Posting those whole keeps them lag free, while fast sweeps still glide.")
+
+            Toggle("Smooth scroll", isOn: Binding(
+                get: { model.smoothScroll },
+                set: { model.setSmoothScroll($0) }
+            ))
+            .font(.caption)
+            .help("Off by default: splitting a scroll makes apps accelerate it less, so the page moves a shorter distance for the same flick.")
 
             Button(model.isPaused ? "Resume Remote Control" : "Pause Remote Control") {
                 model.togglePause()
