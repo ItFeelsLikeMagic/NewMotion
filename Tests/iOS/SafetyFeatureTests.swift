@@ -364,16 +364,14 @@ final class SafetyFeatureTests: XCTestCase {
         log: EventLog,
         samplesPerChunk: Int = 640,
         permissionGranted: Bool = true,
-        releaseGrace: TimeInterval = 0,
-        idleRelease: TimeInterval = 10
+        releaseGrace: TimeInterval = 0
     ) -> LocalPushToTalkAudioController {
         let controller = LocalPushToTalkAudioController(
             microphone: microphone,
             queue: voiceQueue,
             chunker: PCM16Chunker(samplesPerChunk: samplesPerChunk),
             permissionGranted: permissionGranted,
-            releaseGrace: releaseGrace,
-            idleRelease: idleRelease
+            releaseGrace: releaseGrace
         )
         controller.onUtteranceStart = { log.events.append("start") }
         controller.onChunk = { log.events.append("chunk(\($0.count))") }
@@ -407,23 +405,47 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
     }
 
-    func testIdleReleaseHandsTheSessionBackUnlessRepressed() {
+    func testMicrophoneStaysWarmBetweenUtterancesAndIsHandedBackOnBackground() {
         let log = EventLog()
         let microphone = TestMicrophone(log: log)
-        let controller = makeController(microphone: microphone, log: log, idleRelease: 0.05)
+        let controller = makeController(microphone: microphone, log: log)
 
         XCTAssertEqual(press(controller), .started)
         controller.pushToTalkReleased()
         voiceQueue.sync {}
         XCTAssertEqual(press(controller), .started)
-        Thread.sleep(forTimeInterval: 0.1)
-        voiceQueue.sync {}
-        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "start", "mic_start"])
-
         controller.pushToTalkReleased()
-        Thread.sleep(forTimeInterval: 0.1)
         voiceQueue.sync {}
-        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "start", "mic_start", "end", "mic_stop", "mic_suspend"])
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "start", "mic_start", "end", "mic_stop"])
+
+        controller.applicationDidEnterBackground()
+        XCTAssertEqual(log.events.last, "mic_suspend")
+    }
+
+    func testForegroundPrewarmsTheMicrophoneWithoutOpeningAnUtterance() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log)
+
+        controller.applicationWillEnterForeground()
+        voiceQueue.sync {}
+        XCTAssertGreaterThan(microphone.prewarmCount, 0)
+        XCTAssertTrue(log.events.isEmpty)
+        XCTAssertFalse(microphone.running)
+    }
+
+    func testMicrophoneIsNotPrewarmedBeforePermissionIsGranted() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, permissionGranted: false)
+
+        controller.applicationWillEnterForeground()
+        voiceQueue.sync {}
+        XCTAssertEqual(microphone.prewarmCount, 0)
+
+        controller.setPermissionGranted(true)
+        voiceQueue.sync {}
+        XCTAssertGreaterThan(microphone.prewarmCount, 0)
     }
 
     func testBackgroundStopsInsideTheGraceWindowAndSuspendsTheMicrophone() {
@@ -575,6 +597,7 @@ private final class DeliveryLog: @unchecked Sendable {
 private final class TestMicrophone: MicrophoneInputProviding, @unchecked Sendable {
     private let log: EventLog
     private(set) var running = false
+    private(set) var prewarmCount = 0
     private var callback: (([Int16]) -> Void)?
 
     init(log: EventLog) {
@@ -582,6 +605,8 @@ private final class TestMicrophone: MicrophoneInputProviding, @unchecked Sendabl
     }
 
     func requestPermission(completion: @escaping (Bool) -> Void) { completion(true) }
+    // Counted rather than logged so the utterance event assertions stay exact.
+    func prewarm() { prewarmCount += 1 }
     func start(samples: @escaping ([Int16]) -> Void) throws {
         log.events.append("mic_start")
         running = true

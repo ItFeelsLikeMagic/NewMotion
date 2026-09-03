@@ -2,11 +2,18 @@ import Foundation
 
 public protocol MicrophoneInputProviding: AnyObject {
     func requestPermission(completion: @Sendable @escaping (Bool) -> Void)
+    /// Brings the audio path up ahead of any press, so `start` only has to
+    /// attach the sample handler.  Idempotent and best effort.
+    func prewarm()
     func start(samples: @Sendable @escaping ([Int16]) -> Void) throws
     /// Stops delivering samples but keeps the audio path warm for the next press.
     func stop()
     /// Gives the audio session back to the system; the app is leaving the foreground.
     func suspend()
+}
+
+public extension MicrophoneInputProviding {
+    func prewarm() {}
 }
 
 public enum AudioCaptureStartResult: Equatable, Sendable {
@@ -24,11 +31,9 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public let queue: DispatchQueue
     private let microphone: MicrophoneInputProviding
     private let releaseGrace: TimeInterval
-    private let idleRelease: TimeInterval
     private var stateMachine: AudioCaptureStateMachine
     private var chunker: PCM16Chunker
     private var pendingRelease: DispatchWorkItem?
-    private var pendingSuspend: DispatchWorkItem?
 
     public var onUtteranceStart: (@Sendable () -> Void)?
     public var onChunk: (@Sendable ([Int16]) -> Void)?
@@ -36,20 +41,16 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
 
     /// `releaseGrace` keeps the microphone open briefly after the finger lifts,
     /// because people let go while the last syllable is still sounding.
-    /// `idleRelease` is how long the audio session stays warm after an
-    /// utterance before it is handed back to the system.
     public init(
         microphone: MicrophoneInputProviding,
         queue: DispatchQueue = DispatchQueue(label: "phoneremote.voice"),
         chunker: PCM16Chunker = PCM16Chunker(),
         permissionGranted: Bool = false,
-        releaseGrace: TimeInterval = 0.15,
-        idleRelease: TimeInterval = 2
+        releaseGrace: TimeInterval = 0.15
     ) {
         self.queue = queue
         self.microphone = microphone
         self.releaseGrace = releaseGrace
-        self.idleRelease = idleRelease
         self.stateMachine = AudioCaptureStateMachine(permissionGranted: permissionGranted)
         self.chunker = chunker
     }
@@ -64,7 +65,17 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     }
 
     public func setPermissionGranted(_ granted: Bool) {
-        queue.async { self.apply(self.stateMachine.setPermissionGranted(granted)) }
+        queue.async {
+            self.apply(self.stateMachine.setPermissionGranted(granted))
+            self.prewarmNow()
+        }
+    }
+
+    /// Holds the audio session and engine open for the whole foreground
+    /// session.  Buffers that arrive outside an utterance are dropped by
+    /// `receive`, so a press costs only the state change.
+    public func prewarm() {
+        queue.async { self.prewarmNow() }
     }
 
     /// The start frame goes out before the microphone starts so the Mac can
@@ -79,8 +90,6 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
                 completion(.started)
                 return
             }
-            pendingSuspend?.cancel()
-            pendingSuspend = nil
             let actions = stateMachine.handle(.localPushToTalkPressed)
             guard actions.contains(.startCapture) else {
                 completion(stateMachine.appForegrounded ? .permissionDenied : .notForeground)
@@ -123,12 +132,18 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public func interruptionBegan() {
         queue.async {
             self.stopNow(.interruptionBegan)
-            self.suspendNow()
+            self.microphone.suspend()
         }
     }
 
+    /// The warm engine is bound to the input that just disappeared, so it has
+    /// to be torn down and brought back up on the new route.
     public func routeChanged() {
-        queue.async { self.stopNow(.routeChanged) }
+        queue.async {
+            self.stopNow(.routeChanged)
+            self.microphone.suspend()
+            self.prewarmNow()
+        }
     }
 
     /// Synchronous so the end frame is handed to the transport before the
@@ -136,24 +151,26 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public func applicationDidEnterBackground() {
         queue.sync {
             stopNow(.appBackgrounded)
-            suspendNow()
+            microphone.suspend()
         }
     }
 
-    private func suspendNow() {
-        pendingSuspend?.cancel()
-        pendingSuspend = nil
-        microphone.suspend()
+    public func applicationWillEnterForeground() {
+        queue.async {
+            self.stateMachine.handle(.appForegrounded)
+            self.prewarmNow()
+        }
+    }
+
+    private func prewarmNow() {
+        guard stateMachine.appForegrounded, stateMachine.permissionGranted else { return }
+        microphone.prewarm()
     }
 
     private func stopNow(_ event: AudioCaptureEvent) {
         pendingRelease?.cancel()
         pendingRelease = nil
         apply(stateMachine.handle(event))
-    }
-
-    public func applicationWillEnterForeground() {
-        queue.async { self.stateMachine.handle(.appForegrounded) }
     }
 
     private func receive(_ samples: [Int16]) {
@@ -170,22 +187,7 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
             }
             onUtteranceEnd?()
             microphone.stop()
-            scheduleIdleSuspend()
         }
-    }
-
-    private func scheduleIdleSuspend() {
-        guard idleRelease > 0 else {
-            microphone.suspend()
-            return
-        }
-        let suspend = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            pendingSuspend = nil
-            microphone.suspend()
-        }
-        pendingSuspend = suspend
-        queue.asyncAfter(deadline: .now() + idleRelease, execute: suspend)
     }
 }
 
@@ -194,10 +196,10 @@ import AVFoundation
 
 /// AVFoundation adapter.  It is created only by the iPhone app target; tests
 /// inject a MicrophoneInputProviding fake and never touch the microphone.
-/// The engine and converter stay warm for the life of the app, and the
-/// session stays active between quick successive presses; `suspend()` hands
-/// the session back once the controller decides the user is done talking.
-public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
+/// The session, engine and input tap stay up for the whole foreground
+/// session, so a press only attaches the sample handler; `suspend()` hands
+/// the session back when the app leaves the foreground.
+public final class AVAudioMicrophoneInput: MicrophoneInputProviding, @unchecked Sendable {
     private let session: AVAudioSession
     private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
@@ -206,9 +208,12 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
         channels: 1,
         interleaved: true
     )!
+    /// Guards `handler` only; it is set on the voice queue and read on the tap thread.
+    private let handlerLock = NSLock()
+    private var handler: (@Sendable ([Int16]) -> Void)?
     private var converter: AVAudioConverter?
     private var sessionConfigured = false
-    private var sessionActive = false
+    private var running = false
 
     public init(session: AVAudioSession = .sharedInstance()) {
         self.session = session
@@ -229,26 +234,58 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
         }
     }
 
+    public func prewarm() {
+        try? bringUp()
+    }
+
     public func start(samples: @Sendable @escaping ([Int16]) -> Void) throws {
+        try bringUp()
+        handlerLock.lock()
+        handler = samples
+        handlerLock.unlock()
+    }
+
+    public func stop() {
+        handlerLock.lock()
+        handler = nil
+        handlerLock.unlock()
+    }
+
+    public func suspend() {
+        stop()
+        guard running else { return }
+        running = false
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Idempotent.  Everything slow lives here: activating the session and
+    /// starting the engine cost 250-400 ms, which is the whole press-to-audio
+    /// delay when it happens under the finger instead of ahead of it.
+    private func bringUp() throws {
+        guard !running else { return }
         if !sessionConfigured {
-            try session.setCategory(.record, mode: .measurement, options: [])
-            try session.setPreferredSampleRate(16_000)
+            // `mixWithOthers` is what makes holding the session open all
+            // session long acceptable: other apps keep playing.  The hardware
+            // rate is left alone because the converter resamples anyway, and
+            // asking for 16 kHz only buys a slow route reconfiguration.
+            try session.setCategory(
+                .playAndRecord,
+                mode: .measurement,
+                options: [.mixWithOthers, .defaultToSpeaker]
+            )
             try session.setPreferredIOBufferDuration(0.02)
             sessionConfigured = true
         }
-        if !sessionActive {
-            try session.setActive(true)
-            sessionActive = true
-        }
+        try session.setActive(true)
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        if converter?.inputFormat != inputFormat {
-            guard let created = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-                throw AudioCaptureError.formatUnavailable
-            }
-            converter = created
+        guard let created = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            throw AudioCaptureError.formatUnavailable
         }
+        converter = created
         IPhoneDebugLog.emit("ptt_mic", [
             "route": session.currentRoute.inputs.map(\.portType.rawValue).joined(separator: "+"),
             "rate": "\(Int(inputFormat.sampleRate))",
@@ -256,25 +293,20 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
             "gain": "\(session.inputGain)",
             "avail": session.isInputAvailable ? "yes" : "no",
         ])
+        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            self?.convert(buffer: buffer, handler: samples)
+            self?.convert(buffer: buffer)
         }
+        engine.prepare()
         try engine.start()
+        running = true
     }
 
-    public func stop() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.pause()
-    }
-
-    public func suspend() {
-        engine.stop()
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        sessionActive = false
-    }
-
-    private func convert(buffer: AVAudioPCMBuffer, handler: ([Int16]) -> Void) {
-        guard let converter else { return }
+    private func convert(buffer: AVAudioPCMBuffer) {
+        handlerLock.lock()
+        let handler = self.handler
+        handlerLock.unlock()
+        guard let handler, let converter else { return }
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(max(1, Int(ceil(Double(buffer.frameLength) * ratio)) + 1))
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }

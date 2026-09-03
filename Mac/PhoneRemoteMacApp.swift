@@ -46,6 +46,7 @@ final class MacRemoteAppModel: ObservableObject {
     private static let trustedDeviceService = "com.example.phoneremote.macos.trusted-devices"
 
     private let injector: SafeInputInjector
+    private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
     private let central: MacBLECentralTransport
     private let pairingOffer: MacPairingOfferController
@@ -72,6 +73,11 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
     @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
+    /// Cursor traffic is counted, not narrated.  Publishing a label per packet
+    /// rebuilt the whole debug snapshot and invalidated the SwiftUI surface
+    /// sixty times a second, on the same actor that applies the packets.
+    private var cursorEvents: UInt64 = 0
+    private var lastCursorPublish: TimeInterval = 0
     private let voiceCoordinator: VoicePTTCoordinator
     private let speechServer = NemotronServer()
     private let normalizer = S1MiniNormalizer()
@@ -81,6 +87,7 @@ final class MacRemoteAppModel: ObservableObject {
     init() {
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust)
+        self.inputSink = sink
         let injector = SafeInputInjector(sink: sink, accessibility: trust)
         let inert = MacHostRuntime.isInert
         let adapter: MacCentralManagerAdapter = inert
@@ -511,10 +518,13 @@ final class MacRemoteAppModel: ObservableObject {
             }
             lastApplicationMessage = applied ? "appSwitcher \(value.phase)" : "appSwitcher blocked"
         default:
+            let isCursor = payload.messageType == .pointerDelta
+                || payload.messageType == .scrollDelta
+                || payload.messageType == .motionPointerDelta
             if let command = try? SharedInputProtocolAdapter.command(for: payload) {
                 switch injector.submit(command) {
                 case .applied:
-                    lastApplicationMessage = String(describing: payload.messageType)
+                    if isCursor { countCursorEvent() } else { lastApplicationMessage = String(describing: payload.messageType) }
                 case .denied:
                     lastApplicationMessage = "\(payload.messageType) blocked"
                 case .failed:
@@ -570,7 +580,16 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func publishDebugState() {
+        lastCursorPublish = ProcessInfo.processInfo.systemUptime
         debugSnapshotBox.update(makeDebugSnapshot())
+    }
+
+    /// The counter is not `@Published`, so cursor traffic republishes the
+    /// snapshot at 2 Hz for `debug-mac.sh` and never touches SwiftUI.
+    private func countCursorEvent() {
+        cursorEvents &+= 1
+        guard ProcessInfo.processInfo.systemUptime - lastCursorPublish >= 0.5 else { return }
+        publishDebugState()
     }
 
     private func makeDebugSnapshot() -> MacDebugSnapshot {
@@ -596,6 +615,8 @@ final class MacRemoteAppModel: ObservableObject {
             lastPairingFailure: lastPairingFailure,
             visiblePeripheralName: visiblePeripheralName,
             lastApplicationMessage: lastApplicationMessage,
+            keyPostMs: inputSink.lastKeyBurstMilliseconds,
+            cursorEvents: cursorEvents,
             audioPhase: voice.phase.rawValue,
             audioFrames: voice.health.receivedFrames,
             audioSamples: voice.health.receivedSamples,

@@ -431,9 +431,10 @@ public final class InMemoryTrustedDeviceStore: TrustedDeviceStore {
     }
 }
 
-/// A device-only Keychain record. The service is injected so app targets can
-/// provide their bundle-specific namespace without putting identifiers in the
-/// shared implementation.
+/// A device-only Keychain record. Every trust record lives in one item so a
+/// read costs a single Keychain approval; the service is injected so app
+/// targets can provide their bundle-specific namespace without putting
+/// identifiers in the shared implementation.
 public final class KeychainTrustedDeviceStore: TrustedDeviceStore {
     private static let account = "trusted-devices"
     private let service: String
@@ -460,17 +461,9 @@ public final class KeychainTrustedDeviceStore: TrustedDeviceStore {
 
     public func allRecords() throws -> [TrustedDeviceRecord] {
         if let cache { return cache }
-        if let stored = try loadBundle() {
-            cache = stored
-            return stored
-        }
-        let legacy = try loadLegacyRecords()
-        if !legacy.isEmpty {
-            try writeAll(legacy)
-            try deleteLegacyRecords()
-        }
-        cache = legacy
-        return legacy
+        let stored = try loadBundle() ?? []
+        cache = stored
+        return stored
     }
 
     public func delete(deviceID: UUID) throws {
@@ -526,59 +519,6 @@ public final class KeychainTrustedDeviceStore: TrustedDeviceStore {
             _ = SecItemDelete(baseQuery(account: Self.account) as CFDictionary)
             let retry = SecItemAdd(query as CFDictionary, nil)
             guard retry == errSecSuccess else { throw PairingError.keychainFailure(retry) }
-        }
-    }
-
-    private func loadLegacyRecords() throws -> [TrustedDeviceRecord] {
-        var query = baseQuery(account: nil)
-        query[kSecReturnAttributes as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitAll
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return [] }
-        guard status == errSecSuccess, let values = result as? [[String: Any]] else {
-            throw PairingError.keychainFailure(status)
-        }
-        let deviceIDs = values.compactMap { attributes -> UUID? in
-            guard let account = attributes[kSecAttrAccount as String] as? String,
-                  account != Self.account else { return nil }
-            return UUID(uuidString: account)
-        }
-        return try deviceIDs.compactMap { deviceID in try loadLegacyRecord(deviceID) }
-            .sorted { $0.pairedAt < $1.pairedAt }
-    }
-
-    private func loadLegacyRecord(_ deviceID: UUID) throws -> TrustedDeviceRecord? {
-        var query = baseQuery(account: deviceID.uuidString)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw PairingError.keychainFailure(status)
-        }
-        do { return try decoder.decode(TrustedDeviceRecord.self, from: data) }
-        catch { throw PairingError.malformedToken }
-    }
-
-    private func deleteLegacyRecords() throws {
-        var query = baseQuery(account: nil)
-        query[kSecReturnAttributes as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitAll
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return }
-        guard status == errSecSuccess, let values = result as? [[String: Any]] else {
-            throw PairingError.keychainFailure(status)
-        }
-        for attributes in values {
-            guard let account = attributes[kSecAttrAccount as String] as? String,
-                  account != Self.account else { continue }
-            let deleteStatus = SecItemDelete(baseQuery(account: account) as CFDictionary)
-            guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
-                throw PairingError.keychainFailure(deleteStatus)
-            }
         }
     }
 

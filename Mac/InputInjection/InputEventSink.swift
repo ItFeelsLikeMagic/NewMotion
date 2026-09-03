@@ -85,9 +85,28 @@ import CoreGraphics
 /// posts it, so it crosses that one hop by hand.
 private struct PostableEvent: @unchecked Sendable {
     let event: CGEvent
+    let isModifier: Bool
+}
 
-    init(_ event: CGEvent) {
-        self.event = event
+/// State that lives on the posting queue, plus the one number read back from
+/// the main thread for the debug snapshot.
+private final class KeyPostState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var burstMilliseconds: Double?
+
+    /// Only touched on the posting queue.
+    var lastPostWasModifier = false
+
+    var lastBurstMilliseconds: Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        return burstMilliseconds
+    }
+
+    func record(burst: Double) {
+        lock.lock()
+        burstMilliseconds = burst
+        lock.unlock()
     }
 }
 
@@ -124,20 +143,26 @@ public final class CGEventInputSink: InputEventSink {
         63: .maskSecondaryFn
     ]
 
-    /// The Dock only opens the app switcher when it sees Command go down, then
-    /// Tab, then Command come back up as separate moments.  A burst posted in
-    /// one instant is ignored, so key events are spaced out.
-    private static let keyGap: TimeInterval = 0.04
+    /// A flags change needs a moment to settle before the key it modifies, or
+    /// the Dock sees a bare Tab and never opens the switcher.
+    private static let modifierSettle: TimeInterval = 0.025
+    /// Ordinary keys only need to be distinguishable from each other.
+    private static let keyGap: TimeInterval = 0.010
 
     private let trust: AccessibilityTrustProviding
     private let source: CGEventSource?
     private let queue = DispatchQueue(label: "phoneremote.input.hotkey")
+    private let postState = KeyPostState()
     private var activeFlags: CGEventFlags = []
 
     public init(trust: AccessibilityTrustProviding = SystemAccessibilityTrust()) {
         self.trust = trust
         self.source = CGEventSource(stateID: .hidSystemState)
     }
+
+    /// How long the last paced burst took from hand-off to its final event
+    /// reaching the window server.  Read by the debug snapshot.
+    public var lastKeyBurstMilliseconds: Double? { postState.lastBurstMilliseconds }
 
     public func send(_ event: InjectedInputEvent) throws {
         guard trust.isTrusted(prompt: false) else {
@@ -217,7 +242,7 @@ public final class CGEventInputSink: InputEventSink {
         guard let cgEvent = build(keyCode: keyCode, isDown: isDown, flags: activeFlags, isModifier: modifier != nil) else {
             throw InputSinkError.eventCreationFailed
         }
-        enqueue([cgEvent], paced: true)
+        enqueue([PostableEvent(event: cgEvent, isModifier: modifier != nil)], paced: true)
     }
 
     /// Every event is built up front so a chord either posts whole or fails
@@ -225,7 +250,7 @@ public final class CGEventInputSink: InputEventSink {
     /// out, and never on the caller's thread, which is the main one.
     private func postHotkey(_ transitions: [PhysicalKeyTransition]) throws {
         var flags = activeFlags
-        var events: [CGEvent] = []
+        var events: [PostableEvent] = []
         for transition in transitions {
             let modifier = Self.flagForKeyCode[transition.keyCode]
             if let modifier {
@@ -241,7 +266,7 @@ public final class CGEventInputSink: InputEventSink {
                 flags: flags,
                 isModifier: modifier != nil
             ) else { throw InputSinkError.eventCreationFailed }
-            events.append(event)
+            events.append(PostableEvent(event: event, isModifier: modifier != nil))
         }
 
         enqueue(events, paced: true)
@@ -250,14 +275,19 @@ public final class CGEventInputSink: InputEventSink {
     /// Every keyboard event goes through one serial queue, so a chord cannot
     /// overtake the modifier that has to precede it, and the pacing never runs
     /// on the caller's thread, which is the main one.
-    private func enqueue(_ events: [CGEvent], paced: Bool) {
-        let carried = events.map(PostableEvent.init)
-        let gap = paced ? Self.keyGap : 0
+    private func enqueue(_ events: [PostableEvent], paced: Bool) {
+        let state = postState
+        let start = Date()
         queue.async {
-            for item in carried {
-                if gap > 0 { Thread.sleep(forTimeInterval: gap) }
+            for item in events {
+                if paced {
+                    let gap = state.lastPostWasModifier ? Self.modifierSettle : Self.keyGap
+                    Thread.sleep(forTimeInterval: gap)
+                }
                 item.event.post(tap: .cghidEventTap)
+                state.lastPostWasModifier = item.isModifier
             }
+            state.record(burst: Date().timeIntervalSince(start) * 1_000)
         }
     }
 
@@ -297,7 +327,7 @@ public final class CGEventInputSink: InputEventSink {
 
     private func postUnicode(_ value: String) throws {
         guard value.utf16.count <= UnicodeKeyEvents.maximumUnits else { throw InputSinkError.eventCreationFailed }
-        var events: [CGEvent] = []
+        var events: [PostableEvent] = []
         for var units in UnicodeKeyEvents.chunks(of: value) {
             guard let down = CGEvent(
                 keyboardEventSource: source,
@@ -310,8 +340,8 @@ public final class CGEventInputSink: InputEventSink {
             ) else { throw InputSinkError.eventCreationFailed }
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-            events.append(down)
-            events.append(up)
+            events.append(PostableEvent(event: down, isModifier: false))
+            events.append(PostableEvent(event: up, isModifier: false))
         }
         // Typed text needs no spacing, but it shares the queue so a Return
         // pressed before it cannot arrive after it.

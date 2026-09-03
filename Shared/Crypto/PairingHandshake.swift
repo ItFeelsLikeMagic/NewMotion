@@ -503,6 +503,15 @@ public final class PairingSession: @unchecked Sendable {
     private let lock = NSLock()
     private var nextSendSequence: UInt64 = 0
     private var highestReceivedSequence: UInt64?
+    /// One bit per recently accepted sequence, bit 0 being the highest one seen.
+    /// A strict climb was wrong for the unreliable streams: the cursor path
+    /// encrypts inline on the main actor while the voice path takes its number
+    /// on its own queue and sends a moment later, so the two can swap places on
+    /// the wire.  Rejecting anything that is not the new highest threw the
+    /// loser of that race away.  Sixty-four slots is about a second of cursor
+    /// traffic, far more reordering than the link can produce.
+    private var receivedWindow: UInt64 = 0
+    private static let replayWindowSize: UInt64 = 64
 
     public init(key: SymmetricKey, sessionID: Data, random: PairingRandomSource = SystemPairingRandomSource()) throws {
         guard sessionID.count == 16 else { throw PairingError.invalidHandshake }
@@ -551,11 +560,9 @@ public final class PairingSession: @unchecked Sendable {
             throw PairingError.invalidHandshake
         }
         lock.lock()
-        if let highestReceivedSequence, sequence <= highestReceivedSequence {
-            lock.unlock()
-            throw sequence == highestReceivedSequence ? PairingError.replayedEnvelope : PairingError.sequenceRollback
-        }
+        let freshness = replayCheck(sequence)
         lock.unlock()
+        if let error = freshness { throw error }
         let header = envelope.prefix(cursor)
         let ciphertext = envelope.subdata(in: cursor..<(cursor + Int(ciphertextLength)))
         let tag = envelope.subdata(in: (cursor + Int(ciphertextLength))..<envelope.count)
@@ -568,13 +575,39 @@ public final class PairingSession: @unchecked Sendable {
         let plaintext: Data
         do { plaintext = try ChaChaPoly.open(box, using: key, authenticating: header) }
         catch { throw PairingError.authenticationFailed }
+        // The window only moves once the tag has verified, so a forged or
+        // corrupt frame can never retire a sequence the real peer still owes.
         lock.lock()
         defer { lock.unlock() }
-        if let highestReceivedSequence, sequence <= highestReceivedSequence {
-            throw sequence == highestReceivedSequence ? PairingError.replayedEnvelope : PairingError.sequenceRollback
-        }
-        highestReceivedSequence = sequence
+        if let error = replayCheck(sequence) { throw error }
+        recordReceived(sequence)
         return (messageType, plaintext)
+    }
+
+    /// `nil` when the sequence may be accepted.  Caller holds `lock`.
+    private func replayCheck(_ sequence: UInt64) -> PairingError? {
+        guard let highestReceivedSequence else { return nil }
+        if sequence > highestReceivedSequence { return nil }
+        let distance = highestReceivedSequence - sequence
+        guard distance < Self.replayWindowSize else { return .sequenceRollback }
+        return receivedWindow & (1 << distance) == 0 ? nil : .replayedEnvelope
+    }
+
+    /// Caller holds `lock`.
+    private func recordReceived(_ sequence: UInt64) {
+        guard let highest = highestReceivedSequence else {
+            highestReceivedSequence = sequence
+            receivedWindow = 1
+            return
+        }
+        if sequence > highest {
+            let shift = sequence - highest
+            receivedWindow = shift >= Self.replayWindowSize ? 1 : (receivedWindow << shift) | 1
+            highestReceivedSequence = sequence
+            return
+        }
+        let distance = highest - sequence
+        if distance < Self.replayWindowSize { receivedWindow |= (1 << distance) }
     }
 
     public func wrapApplication(

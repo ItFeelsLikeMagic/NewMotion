@@ -118,6 +118,8 @@ public enum SharedInputProtocolAdapter {
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
         case .deleteBackward: return .deleteBackward
+        case .deleteWordBackward: return .deleteWordBackward
+        case .deleteLineBackward: return .deleteLineBackward
         case .shiftTab: return .shiftTab
         }
     }
@@ -137,6 +139,8 @@ public enum SharedInputProtocolAdapter {
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
         case .deleteBackward: return .deleteBackward
+        case .deleteWordBackward: return .deleteWordBackward
+        case .deleteLineBackward: return .deleteLineBackward
         case .shiftTab: return .shiftTab
         }
     }

@@ -107,6 +107,12 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
   ephemeral handshake and no QR. It still yields a new authenticated session.
 - Reject all-zero key material, altered transcripts or ciphertexts, wrong peer
   identities, replayed envelopes, and sequence rollback.
+- Replay protection is a 64-slot sliding window, not a strict high-water mark, and it
+  only advances after the AEAD tag verifies. Why: unreliable streams are encrypted on
+  more than one queue, so the cursor path can take a later sequence number and reach the
+  Mac first. Demanding a strict climb threw the frame that lost the race away, and a
+  window that moved before verification would let a forged frame retire a sequence the
+  real peer still owed.
 - First-pairing order: scanner confirm, foreground-only advertising, BLE service ready,
   framed control `PairingClientHello`, Mac offer consumption and server hello, client
   finish, trust-record write, paired UI.

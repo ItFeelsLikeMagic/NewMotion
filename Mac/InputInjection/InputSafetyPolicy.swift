@@ -124,6 +124,8 @@ public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendabl
     case arrowLeft
     case arrowRight
     case deleteBackward
+    case deleteWordBackward
+    case deleteLineBackward
     case shiftTab
 }
 

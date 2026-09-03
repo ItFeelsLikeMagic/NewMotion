@@ -33,13 +33,11 @@ public final class RemoteKeyboardCaptureView: UIView, UIKeyInput {
 
     public override var canBecomeFirstResponder: Bool { true }
 
-    /// The keyboard follows the view: it opens when the mode appears and closes
-    /// when it goes away, so no stray responder survives a mode switch.
+    /// Leaving the window must drop the responder, or the keyboard would stay
+    /// up over whatever replaced this screen.  Opening it is the toggle's job.
     public override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil {
-            becomeFirstResponder()
-        } else {
+        if window == nil {
             resignFirstResponder()
         }
     }
@@ -50,11 +48,6 @@ public final class RemoteKeyboardCaptureView: UIView, UIKeyInput {
 
     private func configure() {
         backgroundColor = .clear
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
-    }
-
-    @objc private func handleTap() {
-        becomeFirstResponder()
     }
 
     public func insertText(_ text: String) {

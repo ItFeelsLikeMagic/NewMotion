@@ -33,6 +33,13 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var lastProbe: String?
     public var visiblePeripheralName: String?
     public var lastApplicationMessage: String?
+    /// Milliseconds the last paced key burst took to reach the window server.
+    /// This is the Mac's own share of hotkey latency.
+    public var keyPostMs: Double?
+    /// Cursor and scroll deltas applied since launch.  Counting them keeps the
+    /// 60 Hz stream off `lastApplicationMessage`, whose every assignment
+    /// rebuilds this snapshot and re-renders the menu bar surface.
+    public var cursorEvents: UInt64
     public var audioPhase: String
     public var audioFrames: UInt64
     public var audioSamples: UInt64
@@ -57,6 +64,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         lastProbe: String? = nil,
         visiblePeripheralName: String? = nil,
         lastApplicationMessage: String? = nil,
+        keyPostMs: Double? = nil,
+        cursorEvents: UInt64 = 0,
         audioPhase: String = "idle",
         audioFrames: UInt64 = 0,
         audioSamples: UInt64 = 0,
@@ -80,6 +89,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.lastProbe = lastProbe
         self.visiblePeripheralName = visiblePeripheralName
         self.lastApplicationMessage = lastApplicationMessage
+        self.keyPostMs = keyPostMs
+        self.cursorEvents = cursorEvents
         self.audioPhase = audioPhase
         self.audioFrames = audioFrames
         self.audioSamples = audioSamples

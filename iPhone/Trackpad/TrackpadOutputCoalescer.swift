@@ -21,6 +21,12 @@ final class TrackpadOutputCoalescer {
         }
     }
 
+    /// Air-mouse travel is the same cursor motion arriving from another sensor,
+    /// so it shares this pacer instead of spending a second packet budget.
+    func handlePointer(_ delta: TrackpadPointerDelta) {
+        pointerCoalescer.send(delta)
+    }
+
     func handle(_ outputs: [TrackpadOutput]) {
         for output in outputs {
             if case let .pointer(delta) = output {

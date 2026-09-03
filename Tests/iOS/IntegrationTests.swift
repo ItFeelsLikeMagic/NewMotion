@@ -33,37 +33,6 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(try ProtocolCodec.decode(Array(try XCTUnwrap(complete))), envelope)
     }
 
-    func testMotionDeltaTravelsThroughProtocolAndBLEFraming() throws {
-        let payload = try SharedMotionProtocolAdapter.payload(
-            for: MotionPointerDelta(x: -4, y: 6),
-            sampleRateHz: 100
-        )
-        guard case let .motionPointerDelta(value) = payload else {
-            return XCTFail("expected motion payload")
-        }
-        XCTAssertEqual(value.deltaX, -4)
-        XCTAssertEqual(value.deltaY, 6)
-        XCTAssertEqual(value.sampleRateHz, 100)
-
-        let sessionID = try SessionID(bytes: Array(repeating: 0x22, count: SessionID.byteCount))
-        let envelope = ProtocolEnvelope(sessionID: sessionID, sequence: 2, timestampMs: 10, payload: payload)
-        let frames = try BLEFragmenter().fragment(
-            payload: Data(try ProtocolCodec.encode(envelope)),
-            kind: .data,
-            reliable: false,
-            messageID: 18,
-            maximumValueLength: BLEFramingLimits.minimumValueLength
-        )
-        let reassembler = try BLEReassembler(maximumValueLength: BLEFramingLimits.minimumValueLength)
-        var complete: Data?
-        for frame in frames {
-            if case let .complete(payload, _, _, _) = try reassembler.append(frame) {
-                complete = payload
-            }
-        }
-        XCTAssertEqual(try ProtocolCodec.decode(Array(try XCTUnwrap(complete))), envelope)
-    }
-
     func testTrackpadClickAndScrollExpandToSharedPayloads() throws {
         let click = try SharedTrackpadProtocolAdapter.payloads(for: .leftClick)
         XCTAssertEqual(click.count, 2)

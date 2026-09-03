@@ -97,6 +97,9 @@ targets:
         PRODUCT_NAME: PhoneRemoteSharedTests
         TEST_HOST: ""
         GENERATE_INFOPLIST_FILE: YES
+        # No test host to embed the framework, so the bundle loads it from the
+        # build products directory three levels above the executable.
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/../../.."
 
   PhoneRemote-iOSTests:
     type: bundle.unit-test

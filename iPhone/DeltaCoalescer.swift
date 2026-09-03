@@ -87,10 +87,11 @@ final class DeltaCoalescer<Delta: Sendable>: @unchecked Sendable {
 }
 
 extension DeltaCoalescer: MotionPointerOutputSink where Delta == MotionPointerDelta {
-    /// Air-mouse samples arrive at the Core Motion rate; 40 ms is the air-mouse
-    /// share of the same BLE link the trackpad uses.
+    /// Hands Core Motion samples to the main queue without pacing them, summing
+    /// whatever arrives while that queue is busy.  Air-mouse travel then joins
+    /// the trackpad's pointer coalescer, which is the only pacer on the path.
     static func motionPointer() -> DeltaCoalescer<MotionPointerDelta> {
-        DeltaCoalescer(minimumInterval: 0.04) {
+        DeltaCoalescer(minimumInterval: 0) {
             MotionPointerDelta(x: $0.x + $1.x, y: $0.y + $1.y)
         }
     }

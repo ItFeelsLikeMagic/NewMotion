@@ -282,6 +282,9 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
     elif kind == "shared-test":
         settings.update({
             "GENERATE_INFOPLIST_FILE": "YES",
+            # No test host to embed the framework, so the bundle loads it from
+            # the build products directory three levels above the executable.
+            "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @loader_path/../../..",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
             "PRODUCT_BUNDLE_IDENTIFIER": "com.example.phoneremote.shared-tests",
             "PRODUCT_NAME": "PhoneRemoteSharedTests",
