@@ -52,4 +52,17 @@ else
 fi
 APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/PhoneRemote.app"
 [ -d "$APP_PATH" ] || { echo "error: expected app not found at $APP_PATH" >&2; exit 1; }
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")"
 xcrun devicectl device install app --device "$UDID" "$APP_PATH"
+
+# The bundle prefix is an environment value, so a run with a different one
+# leaves a second app behind that looks identical on the home screen. Only
+# builds of this app are matched, and only the one just installed survives.
+xcrun devicectl device info apps --device "$UDID" |
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.phoneremote\.ios$/) print $i }' |
+    while read -r stale; do
+        if [ "$stale" != "$BUNDLE_ID" ]; then
+            echo "Removing older install: $stale"
+            xcrun devicectl device uninstall app --device "$UDID" "$stale"
+        fi
+    done
