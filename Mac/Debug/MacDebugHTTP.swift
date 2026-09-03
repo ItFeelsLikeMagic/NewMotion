@@ -33,7 +33,8 @@ public enum MacDebugHTTP {
     public static func handle(
         request: String,
         snapshot: MacDebugSnapshot,
-        focus: () -> [String: String] = { [:] }
+        focus: () -> [String: String] = { [:] },
+        vocabulary: (String?) -> [String: String] = { _ in [:] }
     ) -> Response {
         let lines = request.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
@@ -44,7 +45,12 @@ public enum MacDebugHTTP {
             return json(status: 400, object: ["error": "bad request"])
         }
         let method = String(parts[0])
-        let path = String(parts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: true).first ?? parts[1])
+        let target = parts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: true)
+        let path = String(target.first ?? parts[1])
+        // `/vocabulary?app=com.apple.Notes` measures a named app in place.
+        let query = target.count > 1 ? String(target[1]) : ""
+        let app = query.split(separator: "&").first { $0.hasPrefix("app=") }
+            .map { String($0.dropFirst("app=".count)).removingPercentEncoding ?? "" }
         guard method == "GET" else {
             return json(status: 405, object: ["error": "method not allowed"])
         }
@@ -57,6 +63,10 @@ public enum MacDebugHTTP {
         // and error codes only; the field's text never leaves the app.
         case "/focus":
             return json(status: 200, object: focus())
+        // Runs one front-window vocabulary walk and reports what it cost.
+        // Counts and milliseconds only; the words never leave the app.
+        case "/vocabulary":
+            return json(status: 200, object: vocabulary(app?.isEmpty == false ? app : nil))
         default:
             return json(status: 404, object: ["error": "not found"])
         }

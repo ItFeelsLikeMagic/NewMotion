@@ -6,7 +6,6 @@ import UIKit
 /// timing, and never emits protocol messages itself.
 public final class TrackpadTouchCaptureView: UIView {
     public var onOutputs: (([RemoteInputEvent]) -> Void)?
-    public var onLifecycle: ((TrackpadLifecycle) -> Void)?
     /// Fires when a resting finger takes or releases the scroll clutch, so the
     /// air mouse can send its travel as scroll for as long as it is held.
     public var onScrollClutchChanged: ((Bool) -> Void)?
@@ -28,6 +27,9 @@ public final class TrackpadTouchCaptureView: UIView {
     /// logged to separate a short swipe from touches that never arrived.
     private var peakTouches = 0
     private var scrollClutchEngaged = false
+    /// A drag whose finger has left holds the button down for a grace window,
+    /// and no touch will arrive to close it.  This is that window's clock.
+    private var dragReleaseTimer: Timer?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -47,6 +49,7 @@ public final class TrackpadTouchCaptureView: UIView {
         } else {
             onOutputs?(engine.handle(.foreground))
         }
+        scheduleDragRelease()
         publishScrollClutch()
     }
 
@@ -55,6 +58,16 @@ public final class TrackpadTouchCaptureView: UIView {
     public override func layoutSubviews() {
         super.layoutSubviews()
         engine.setSurfaceWidth(Double(bounds.width))
+    }
+
+    /// Leaving the app while a drag holds the button down would strand it on
+    /// the Mac until Bluetooth noticed.  Touches are not always cancelled on
+    /// the way out, so the surface is told directly.
+    public func setActive(_ isActive: Bool) {
+        guard isActive != engine.isForeground else { return }
+        onOutputs?(engine.handle(isActive ? .foreground : .background))
+        scheduleDragRelease()
+        publishScrollClutch()
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -121,7 +134,26 @@ public final class TrackpadTouchCaptureView: UIView {
             peakTouches = 0
         }
         onOutputs?(outputs)
+        scheduleDragRelease()
         publishScrollClutch()
+    }
+
+    private func scheduleDragRelease() {
+        dragReleaseTimer?.invalidate()
+        dragReleaseTimer = nil
+        guard engine.isDragSuspended else { return }
+        dragReleaseTimer = Timer.scheduledTimer(
+            withTimeInterval: engine.configuration.dragLiftGrace,
+            repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dragReleaseTimer = nil
+                // A timer never fires early, and the engine reads the same
+                // clock the touches carry, so the window has really passed.
+                self.onOutputs?(self.engine.flushSuspendedDrag(at: ProcessInfo.processInfo.systemUptime))
+            }
+        }
     }
 
     private func publishScrollClutch() {

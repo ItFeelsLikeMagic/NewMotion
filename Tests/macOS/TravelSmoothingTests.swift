@@ -43,11 +43,11 @@ final class TravelSmoothingTests: XCTestCase {
         let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 0)
 
         try? smoothing.send(.pointer(delta: MacPointerDelta(x: 30, y: 0)))
-        try? smoothing.send(.mouseButton(button: .left, isDown: true))
+        try? smoothing.send(.mouseButton(button: .left, isDown: true, clickCount: 1))
 
         // The travel is posted whole, before the button.
         XCTAssertEqual(sink.events.first, .pointer(delta: MacPointerDelta(x: 30, y: 0)))
-        XCTAssertEqual(sink.events.last, .mouseButton(button: .left, isDown: true))
+        XCTAssertEqual(sink.events.last, .mouseButton(button: .left, isDown: true, clickCount: 1))
         XCTAssertEqual(travel(sink.events).x, 30)
     }
 

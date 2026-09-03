@@ -109,8 +109,8 @@ public final class SafeInputInjector {
             try sink.send(.pointer(delta: delta))
         case let .scroll(delta):
             try sink.send(.scroll(delta: delta))
-        case let .mouseButton(button, isDown):
-            try sink.send(.mouseButton(button: button, isDown: isDown))
+        case let .mouseButton(button, isDown, clickCount):
+            try sink.send(.mouseButton(button: button, isDown: isDown, clickCount: clickCount))
         case let .doubleClick(button):
             try sink.send(.mouseDoubleClick(button: button))
         case let .modifier(key, isDown):
@@ -128,7 +128,7 @@ public final class SafeInputInjector {
             // Release in a deterministic order.  Only state that was held is
             // posted, avoiding unrelated mouse-up/key-up events.
             for button in MacMouseButton.allCases where held.buttons.contains(button) {
-                try? sink.send(.mouseButton(button: button, isDown: false))
+                try? sink.send(.mouseButton(button: button, isDown: false, clickCount: 1))
             }
             for key in MacModifierKey.allCases where held.modifiers.contains(key) {
                 try? sink.send(.modifier(key: key, isDown: false))

@@ -31,10 +31,89 @@ private final class FakeInputLink: InputLink {
             return payload
         }
     }
+
+    var heartbeats: [HeartbeatPayload] {
+        payloads.compactMap { payload in
+            guard case let .heartbeat(value) = payload else { return nil }
+            return value
+        }
+    }
 }
 
 @MainActor
 final class InputPipelineTests: XCTestCase {
+    /// The held set is folded from what actually went out, so the two things
+    /// the remote can hold are the two it counts.
+    func testHeldInputTracksTheDragButtonAndTheSwitcherModifier() {
+        var held = HeldRemoteInput()
+        XCTAssertTrue(held.isEmpty)
+
+        held.record(.mouseButton(MouseButtonPayload(button: .left, isDown: true, clickCount: 2)))
+        XCTAssertEqual(held.buttons, .left)
+
+        held.record(.appSwitcher(AppSwitcherPayload(phase: .begin)))
+        held.record(.appSwitcher(AppSwitcherPayload(phase: .next)))
+        XCTAssertEqual(held.modifiers, .command)
+
+        // A click and a hotkey carry their own release, so they hold nothing.
+        held.record(.mouseDoubleClick(MouseDoubleClickPayload(button: .left)))
+        held.record(.hotkey(HotkeyPayload(action: .copy)))
+        XCTAssertEqual(held.buttons, .left)
+        XCTAssertEqual(held.modifiers, .command)
+
+        held.record(.appSwitcher(AppSwitcherPayload(phase: .commit)))
+        held.record(.mouseButton(MouseButtonPayload(button: .left, isDown: false)))
+        XCTAssertTrue(held.isEmpty)
+    }
+
+    func testHeartbeatsBeatOnlyWhileSomethingIsHeld() {
+        let link = FakeInputLink()
+        let uplink = InputUplink(link: link)
+
+        uplink.send(.leftClick)
+        XCTAssertTrue(link.heartbeats.isEmpty, "a click holds nothing")
+
+        // The drag press starts the beat at once, so the Mac arms immediately
+        // rather than a beat later.
+        uplink.send(.dragBegan(clickCount: 2))
+        XCTAssertEqual(link.heartbeats.count, 1)
+        XCTAssertEqual(link.heartbeats[0].heldButtons, .left)
+        XCTAssertEqual(link.heartbeats[0].heartbeatIntervalMs, InputUplink.heartbeatIntervalMs)
+        XCTAssertTrue(uplink.heldInput.buttons.contains(.left))
+
+        // A beat is worthless once stale, so it never queues behind real input.
+        let beat = link.sent.last { if case .payload(.heartbeat) = $0.message { return true }; return false }
+        XCTAssertEqual(beat?.delivery, .latestWins)
+
+        uplink.send(.dragEnded)
+        XCTAssertTrue(uplink.heldInput.isEmpty)
+    }
+
+    /// Recording a press the link refused would make the Mac press it down on
+    /// the next beat, because reconcile repairs a difference either way.
+    func testARefusedPressIsNotCountedAsHeld() {
+        let link = FakeInputLink()
+        let uplink = InputUplink(link: link)
+
+        link.result = .unavailable
+        uplink.send(.dragBegan(clickCount: 2))
+        XCTAssertTrue(uplink.heldInput.isEmpty)
+        XCTAssertTrue(link.heartbeats.isEmpty)
+    }
+
+    /// A link that has gone cannot release anything, and the Mac lets go of
+    /// everything when the session drops.
+    func testLosingTheLinkDropsTheHeldSet() {
+        let link = FakeInputLink()
+        let uplink = InputUplink(link: link)
+
+        uplink.send(.dragBegan(clickCount: 2))
+        XCTAssertFalse(uplink.heldInput.isEmpty)
+
+        uplink.reset()
+        XCTAssertTrue(uplink.heldInput.isEmpty)
+    }
+
     func testTravelRidesTheCompactFrameAndKeepsItsRemainder() {
         let link = FakeInputLink()
         let uplink = InputUplink(link: link)

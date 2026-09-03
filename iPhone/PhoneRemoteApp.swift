@@ -842,8 +842,12 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .leftClick: label = "Left click"
         case .rightClick: label = "Right click"
         case .doubleClick: label = "Double click"
-        case .dragBegan: label = "Drag began"
-        case .dragEnded: label = "Drag ended"
+        case .dragBegan:
+            label = "Drag began"
+            Haptics.play(.gestureBegan)
+        case .dragEnded:
+            label = "Drag ended"
+            Haptics.play(.gestureEnded)
         case .missionControl: label = "Mission Control"
         case .appExpose: label = "App windows"
         }
@@ -907,6 +911,9 @@ private struct TrackpadSurface: UIViewRepresentable {
     let momentumStrength: Double
     let edgeScrollEnabled: Bool
     let holdScrollEnabled: Bool
+    /// A drag holds a real mouse button down on the Mac, so it has to end when
+    /// the app stops being the thing in front.
+    let isActive: Bool
     let onScrollClutch: (Bool) -> Void
     let onOutputs: ([RemoteInputEvent]) -> Void
 
@@ -935,6 +942,7 @@ private struct TrackpadSurface: UIViewRepresentable {
             holdScrollDelay: holdScrollEnabled ? Self.holdScrollDelay : 0
         )
         view.momentumStrength = momentumStrength
+        view.setActive(isActive)
     }
 }
 
@@ -1008,6 +1016,8 @@ extension RemoteHotkey {
         case .deleteBackward: return "Backspace"
         case .deleteWordBackward: return "Backspace word"
         case .deleteLineBackward: return "Backspace line"
+        case .copy: return "Copy"
+        case .paste: return "Paste"
         default: return buttonTitle
         }
     }
@@ -1142,6 +1152,7 @@ private struct RemoteControlTab: View {
     private static let contentPadding: Double = 16
 
     @ObservedObject var model: PhoneRemoteFeatureModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isKeyboardShowing = false
 
     var body: some View {
@@ -1154,6 +1165,7 @@ private struct RemoteControlTab: View {
                     momentumStrength: model.scrollMomentum,
                     edgeScrollEnabled: model.edgeScrollEnabled,
                     holdScrollEnabled: model.holdScrollEnabled,
+                    isActive: scenePhase == .active,
                     onScrollClutch: { engaged in
                         model.setScrollClutch(engaged)
                         Haptics.play(engaged ? .gestureBegan : .gestureEnded)
@@ -1164,7 +1176,7 @@ private struct RemoteControlTab: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
                 .overlay {
-                    Text("Tap, two-finger tap, double tap")
+                    Text("Tap, two-finger tap, double tap and slide")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .allowsHitTesting(false)
@@ -1180,7 +1192,8 @@ private struct RemoteControlTab: View {
                     switcher: { model.sendAppSwitcher($0) }
                 )
 
-                ZStack(alignment: .bottomTrailing) {
+                HStack(alignment: .top, spacing: 8) {
+                    ClipboardButtons(send: { model.sendHotkey($0) })
                     PushToTalkButton(controller: model.pushToTalk)
                         .frame(maxWidth: .infinity)
                     KeyboardToggleButton(isShowing: $isKeyboardShowing)
@@ -1205,6 +1218,33 @@ private struct RemoteControlTab: View {
                 model.setTrackpadVisible(false)
             }
         }
+    }
+}
+
+/// Copy and paste sit in the bottom left corner, mirroring the keyboard toggle
+/// on the right.  They are the two hotkeys a thumb reaches for without looking,
+/// so they get corner room instead of a slot in the crowded hotkey bar.
+private struct ClipboardButtons: View {
+    let send: (RemoteHotkey) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            key(.copy, systemImage: "doc.on.doc")
+            key(.paste, systemImage: "doc.on.clipboard")
+        }
+    }
+
+    private func key(_ hotkey: RemoteHotkey, systemImage: String) -> some View {
+        Button(action: Haptics.tap { send(hotkey) }) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .frame(width: 52, height: 52)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.secondarySystemFill))
+        .foregroundStyle(Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel(hotkey.spokenName)
     }
 }
 

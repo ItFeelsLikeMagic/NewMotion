@@ -5,7 +5,7 @@ import Foundation
 public enum InjectedInputEvent: Equatable, Sendable {
     case pointer(delta: MacPointerDelta)
     case scroll(delta: MacScrollDelta)
-    case mouseButton(button: MacMouseButton, isDown: Bool)
+    case mouseButton(button: MacMouseButton, isDown: Bool, clickCount: Int)
     case mouseDoubleClick(button: MacMouseButton)
     case modifier(key: MacModifierKey, isDown: Bool)
     case unicodeText(String)
@@ -215,6 +215,11 @@ public final class CGEventInputSink: InputEventSink {
     private let postState = KeyPostState()
     private let displays = DisplayGeometry()
     private var activeFlags: CGEventFlags = []
+    /// The button this sink is holding down, and the click count its press
+    /// carried.  Travel while a button is held has to go out as a drag rather
+    /// than a move: a text view follows a selection by reading dragged events,
+    /// and never sees a plain move at all.
+    private var heldButton: (button: CGMouseButton, clickState: Int64)?
 
     public init(trust: AccessibilityTrustProviding = SystemAccessibilityTrust()) {
         self.trust = trust
@@ -232,6 +237,7 @@ public final class CGEventInputSink: InputEventSink {
 
         switch event {
         case let .pointer(delta):
+            let held = heldButton
             let current = CGEvent(source: nil)?.location ?? .zero
             // The delta fields keep the full requested travel even when the
             // position is pinned, the way a real mouse still reports a push
@@ -242,12 +248,15 @@ public final class CGEventInputSink: InputEventSink {
             )
             guard let cgEvent = CGEvent(
                 mouseEventSource: source,
-                mouseType: .mouseMoved,
+                mouseType: Self.moveType(whileHolding: held?.button),
                 mouseCursorPosition: next,
-                mouseButton: .left
+                mouseButton: held?.button ?? .left
             ) else { throw InputSinkError.eventCreationFailed }
             cgEvent.setIntegerValueField(.mouseEventDeltaX, value: Int64(delta.x.rounded()))
             cgEvent.setIntegerValueField(.mouseEventDeltaY, value: Int64(delta.y.rounded()))
+            // The drag carries the press's click count for its whole length,
+            // which is what keeps a word selection widening by word.
+            if let held { cgEvent.setIntegerValueField(.mouseEventClickState, value: held.clickState) }
             cgEvent.post(tap: .cghidEventTap)
 
         case let .scroll(delta):
@@ -261,7 +270,7 @@ public final class CGEventInputSink: InputEventSink {
             ) else { throw InputSinkError.eventCreationFailed }
             cgEvent.post(tap: .cghidEventTap)
 
-        case let .mouseButton(button, isDown):
+        case let .mouseButton(button, isDown, clickCount):
             let mouseButton: CGMouseButton = button == .left ? .left : .right
             let mouseType: CGEventType
             switch (mouseButton, isDown) {
@@ -271,6 +280,7 @@ public final class CGEventInputSink: InputEventSink {
             case (.right, false): mouseType = .rightMouseUp
             default: throw InputSinkError.eventCreationFailed
             }
+            let clickState = Int64(min(max(clickCount, 1), 3))
             let location = CGEvent(source: nil)?.location ?? .zero
             guard let cgEvent = CGEvent(
                 mouseEventSource: source,
@@ -278,6 +288,10 @@ public final class CGEventInputSink: InputEventSink {
                 mouseCursorPosition: location,
                 mouseButton: mouseButton
             ) else { throw InputSinkError.eventCreationFailed }
+            cgEvent.setIntegerValueField(.mouseEventClickState, value: clickState)
+            // Tracked before the post so a throw further up cannot leave the
+            // sink believing it still holds a button it never pressed.
+            heldButton = isDown ? (mouseButton, clickState) : nil
             cgEvent.post(tap: .cghidEventTap)
 
         case let .mouseDoubleClick(button):
@@ -294,6 +308,16 @@ public final class CGEventInputSink: InputEventSink {
 
         case let .unicodeText(value):
             try postUnicode(value)
+        }
+    }
+
+    /// A held button turns travel into a drag.  Nothing held is an ordinary
+    /// move, whatever button the event is nominally built with.
+    private static func moveType(whileHolding button: CGMouseButton?) -> CGEventType {
+        switch button {
+        case .left: return .leftMouseDragged
+        case .right: return .rightMouseDragged
+        default: return .mouseMoved
         }
     }
 

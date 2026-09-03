@@ -5,13 +5,24 @@ import XCTest
 final class ProtocolTests: XCTestCase {
     private let sessionID = try! SessionID(bytes: Array(repeating: 7, count: SessionID.byteCount))
 
+    /// The click count is what makes a drag widen a word selection.  A message
+    /// written before the field existed has to keep decoding as a plain click.
+    func testMouseButtonClickCountDefaultsToOneAndIsClamped() throws {
+        let legacy = Data(#"{"button":1,"isDown":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(MouseButtonPayload.self, from: legacy)
+        XCTAssertEqual(decoded.clickCount, 1)
+
+        XCTAssertEqual(MouseButtonPayload(button: .left, isDown: true, clickCount: 0).clickCount, 1)
+        XCTAssertEqual(MouseButtonPayload(button: .left, isDown: true, clickCount: 9).clickCount, 3)
+    }
+
     func testRoundTripCoversEveryMVPMessageType() throws {
         let audio = try AudioChunkPayload(streamID: sessionID, chunkIndex: 3, pcm: [0, 1, 2, 3])
         let payloads: [MessagePayload] = [
             .heartbeat(HeartbeatPayload(isActive: true, buttons: 1, modifiers: 2)),
             .pointerDelta(PointerDeltaPayload(deltaX: 10, deltaY: -9)),
             .scrollDelta(ScrollDeltaPayload(deltaX: 0, deltaY: 12)),
-            .mouseButton(MouseButtonPayload(button: .right, isDown: true)),
+            .mouseButton(MouseButtonPayload(button: .right, isDown: true, clickCount: 2)),
             .textInput(try TextInputPayload(text: "héllo")),
             .hotkey(HotkeyPayload(action: .selectAll)),
             .motionPointerDelta(MotionPointerDeltaPayload(deltaX: -4, deltaY: 6, sampleRateHz: 100)),

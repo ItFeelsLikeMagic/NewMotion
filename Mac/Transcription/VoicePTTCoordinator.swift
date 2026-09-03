@@ -30,6 +30,9 @@ public struct VoicePTTState: Equatable, Sendable {
     /// Which path the last utterance took into the field: `merged`, `appended`,
     /// or the reason the field could not be joined. A label, never field text.
     public var merge = "none"
+    /// How long each stage of the newest utterance took, from the commit that
+    /// ended the speech to the text landing in the field. Durations only.
+    public var timing = "none"
     public var preview = ""
     public var lastFinalText: String?
 
@@ -43,6 +46,25 @@ public struct VoicePTTState: Equatable, Sendable {
 /// with whatever `focusedText` finds already in the field so that repeated
 /// presses read as one piece of writing.
 public final class VoicePTTCoordinator: @unchecked Sendable {
+    /// Wall-clock time between the stages of one utterance, starting at commit.
+    private final class StageTimer {
+        private var last = DispatchTime.now()
+        private var stages: [(name: String, ms: Double)] = []
+
+        func mark(_ name: String) {
+            let now = DispatchTime.now()
+            let ms = Double(now.uptimeNanoseconds &- last.uptimeNanoseconds) / 1_000_000
+            stages.append((name, ms))
+            last = now
+        }
+
+        var label: String {
+            let total = stages.reduce(0) { $0 + $1.ms }
+            let parts = stages.map { "\($0.name) \(Int($0.ms.rounded()))" }
+            return parts.joined(separator: "/") + " = \(Int(total.rounded()))ms"
+        }
+    }
+
     /// Mutated only on the coordinator queue; the main-thread hop just carries it back.
     private final class Utterance: @unchecked Sendable {
         let streamID: SessionID
@@ -53,6 +75,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         var committed = false
         var result: Result<String, TranscriptionError>?
         var typing = false
+        var timer: StageTimer?
         var idleTimer: DispatchWorkItem?
 
         init(streamID: SessionID, session: TranscriptionSession, nextSequence: UInt32) {
@@ -72,6 +95,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     private let insertionSink: SafeTranscriptInsertionSink
     private let normalizer: TranscriptNormalizer?
     private let focusedText: FocusedTextReading?
+    private let vocabulary: SpokenVocabularySink?
     private let isSecureInputActive: @Sendable () -> Bool
     private let idleTimeout: TimeInterval
     private var utterances: [Utterance] = []
@@ -85,6 +109,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         insertionSink: SafeTranscriptInsertionSink,
         normalizer: TranscriptNormalizer? = nil,
         focusedText: FocusedTextReading? = nil,
+        vocabulary: SpokenVocabularySink? = nil,
         idleTimeout: TimeInterval = 1.5,
         isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
     ) {
@@ -92,6 +117,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         self.insertionSink = insertionSink
         self.normalizer = normalizer
         self.focusedText = focusedText
+        self.vocabulary = vocabulary
         self.idleTimeout = idleTimeout
         self.isSecureInputActive = isSecureInputActive
     }
@@ -161,6 +187,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         utterance.idleTimer?.cancel()
         utterance.idleTimer = nil
         lastCommittedStream = utterance.streamID
+        utterance.timer = StageTimer()
         utterance.session.commit()
     }
 
@@ -172,6 +199,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
 
     private func finish(_ streamID: SessionID, with result: Result<String, TranscriptionError>) {
         guard let utterance = utterances.first(where: { $0.streamID == streamID }) else { return }
+        utterance.timer?.mark("asr")
         utterance.result = result
         typeNextIfReady()
     }
@@ -190,6 +218,9 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
             complete(utterance, phase: .idle)
             return
         }
+        // Saying a word is what earns it a long life in the boost list. This is
+        // the recogniser's own words, before the normalizer rewrites them.
+        vocabulary?.heard(text)
         guard let normalizer else {
             type(text, for: utterance)
             return
@@ -199,9 +230,11 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         // press as the start of a sentence.
         readFocusedField { [weak self] field in
             guard let self else { return }
+            utterance.timer?.mark("read")
             let existing = if case let .text(value) = field { value } else { "" }
             normalizer.normalize(TranscriptMerge.payload(existing: existing, transcript: text)) { normalized in
                 self.queue.async {
+                    utterance.timer?.mark("norm")
                     self.apply(
                         normalized.trimmingCharacters(in: .whitespacesAndNewlines),
                         over: field,
@@ -229,6 +262,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         }
         readFocusedField { [weak self] fresh in
             guard let self else { return }
+            utterance.timer?.mark("recheck")
             guard fresh == .text(existing),
                   let edit = TranscriptMerge.edit(from: existing, to: merged) else {
                 self.current.merge = "appended"
@@ -269,6 +303,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
                 typed = self.insertionSink.insertTranscript(text)
             }
             self.queue.async {
+                utterance.timer?.mark("type")
                 self.complete(utterance, phase: typed ? .typed : .failed, text: text)
             }
         }
@@ -280,6 +315,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         outcomeGeneration += 1
         let generation = outcomeGeneration
         if let text { current.lastFinalText = text }
+        if let timer = utterance.timer { current.timing = timer.label }
         publish()
         typeNextIfReady()
         queue.asyncAfter(deadline: .now() + Self.outcomeDisplayTime) {
