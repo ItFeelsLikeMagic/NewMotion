@@ -34,7 +34,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var isPaired = false
     @Published var microphoneStatus = "Microphone permission not requested"
     @Published var airMouseStatus = "Air mouse idle"
-    @Published var airMouseSensitivity = 1_200.0
+    @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
+    @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
+    @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
     @Published var pairingState: IPhonePairingScannerState = .idle
     @Published var bluetoothState: BLEPeripheralLifecycleState = .idle
     @Published var trustedMacName: String?
@@ -49,7 +51,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private let pairingCoordinator: IPhonePairingCoordinator?
     private var pairingClient: PairingHandshakeClient?
     private var pairingToken: PairingToken?
-    private var authenticatedSession: PairingSession?
+    private var authenticatedSession: PairingSession? {
+        didSet { voiceUplink.setSession(authenticatedSession, maximumValueLength: peripheral.maximumUpdateValueLength) }
+    }
     private var inboundReassembler: BLEReassembler?
     private var controlReassembler: BLEReassembler?
     private var nextHandshakeMessageID: UInt32 = 1
@@ -62,15 +66,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
     private var trustedPeer: TrustedDeviceSummary?
     private var reconnectFailures = 0
-    private var audioStreamID: SessionID?
-    private var audioEncoder = IMAADPCMEncoder()
-    private var audioSequence: UInt32 = 0
-    private var audioFramesSent: UInt32 = 0
+    private let voiceUplink: VoiceUplink
+    private var voiceMessagesSent = 0
+    private var voiceMessagesDropped = 0
     private var pushToTalkHeld = false
+    private var audioSessionObservers: [NSObjectProtocol] = []
 
     init() {
-        let microphone = AVAudioMicrophoneInput()
-        audioController = LocalPushToTalkAudioController(microphone: microphone)
+        let audioController = LocalPushToTalkAudioController(microphone: AVAudioMicrophoneInput())
+        self.audioController = audioController
+        voiceUplink = VoiceUplink(queue: audioController.queue)
         let motionSink = FeatureMotionSink()
         self.motionSink = motionSink
         motionSession = MotionPointerSession(
@@ -152,16 +157,25 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 self?.handleMotionDelta(delta)
             }
         }
-        audioController.onChunk = { [weak self] chunk in
-            Task { @MainActor [weak self] in
-                self?.enqueueAudioChunk(chunk)
-            }
+        let uplink = voiceUplink
+        audioController.onUtteranceStart = { uplink.beginStream() }
+        audioController.onChunk = { uplink.send(samples: $0) }
+        audioController.onUtteranceEnd = { uplink.endStream() }
+        uplink.deliver = { [weak self] fragments, flags in
+            MainActor.assumeIsolated { self?.deliverVoiceFragments(fragments, flags: flags) }
         }
-        audioController.onUtteranceEnd = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.finishAudioUtterance()
+        let center = NotificationCenter.default
+        audioSessionObservers = [
+            center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { note in
+                let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                if type == AVAudioSession.InterruptionType.began.rawValue { audioController.interruptionBegan() }
+            },
+            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { note in
+                let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+                if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { audioController.routeChanged() }
             }
-        }
+        ]
+        motionSession.updateFilter(MotionFilterConfiguration(sensitivity: airMouseSensitivity))
         IPhoneDebugLog.emit("app_init", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
             "screenCaptured": UIScreen.main.isCaptured ? "yes" : "no"
@@ -283,31 +297,27 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     func pushToTalkReleased() {
         pushToTalkHeld = false
         audioController.pushToTalkReleased()
-        IPhoneDebugLog.emit("ptt_release", [
-            "sent": "\(audioFramesSent)",
-            "ble": bluetoothState.label,
-            "auth": authenticatedSession != nil ? "yes" : "no"
-        ])
         latestAction = "Push to talk released"
     }
 
     private func startHeldPushToTalk() {
         guard pushToTalkHeld else { return }
-        audioStreamID = newAudioStreamID()
-        audioEncoder.reset()
-        audioSequence = 0
-        audioFramesSent = 0
-        let result = audioController.pushToTalkPressed()
+        voiceMessagesSent = 0
+        voiceMessagesDropped = 0
+        audioController.pushToTalkPressed { [weak self] result in
+            Task { @MainActor [weak self] in self?.handlePushToTalkStart(result) }
+        }
+    }
+
+    private func handlePushToTalkStart(_ result: AudioCaptureStartResult) {
         let resultName: String
         switch result {
         case .started:
             resultName = "started"
-            sendVoiceFrame(samples: [], flags: .start)
             latestAction = "Push to talk active"
         case .permissionDenied:
             resultName = "permissionDenied"
             microphoneStatus = "Allow microphone access, then try again"
-            audioStreamID = nil
             audioController.requestPermission { [weak self] granted in
                 Task { @MainActor in
                     guard let self else { return }
@@ -318,11 +328,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .notForeground:
             resultName = "notForeground"
             latestAction = "Push to talk unavailable while backgrounded"
-            audioStreamID = nil
         case .failed:
             resultName = "failed"
             latestAction = "Microphone could not start"
-            audioStreamID = nil
         }
         IPhoneDebugLog.emit("ptt_press", [
             "result": resultName,
@@ -331,94 +339,23 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         ])
     }
 
-    private func enqueueAudioChunk(_ chunk: CapturedPCM16Chunk) {
-        sendVoiceFrame(samples: pcmSamples(chunk.pcmLittleEndian), flags: [])
-    }
-
-    private func finishAudioUtterance() {
-        sendVoiceFrame(samples: [], flags: .end)
-        audioStreamID = nil
-        latestAction = "Voice sent"
-    }
-
-    private func sendVoiceFrame(samples: [Int16], flags: VoiceStreamFlags) {
-        let flagName = flags.contains(.end) ? "end" : (flags.contains(.start) ? "start" : "data")
-        guard authenticatedSession != nil, peripheral.state == .ready else {
-            IPhoneDebugLog.emit("ptt_drop", [
-                "reason": "not_ready",
-                "flags": flagName,
-                "ble": bluetoothState.label,
-                "auth": authenticatedSession != nil ? "yes" : "no"
+    /// A message whose fragments would not all fit is dropped whole; its
+    /// sequence number was already advanced on the voice queue.
+    private func deliverVoiceFragments(_ fragments: [Data], flags: VoiceStreamFlags) {
+        if peripheral.queueCapacity(on: .data) >= fragments.count {
+            for fragment in fragments { peripheral.send(fragment, on: .data) }
+            voiceMessagesSent += 1
+        } else {
+            voiceMessagesDropped += 1
+        }
+        if flags.contains(.end) {
+            latestAction = "Voice sent"
+            IPhoneDebugLog.emit("ptt_end", [
+                "sent": "\(voiceMessagesSent)",
+                "dropped": "\(voiceMessagesDropped)",
+                "ble": bluetoothState.label
             ])
-            return
         }
-        guard let streamID = audioStreamID else {
-            IPhoneDebugLog.emit("ptt_drop", ["reason": "no_stream", "flags": flagName])
-            return
-        }
-        do {
-            let payload = samples.isEmpty ? Data() : audioEncoder.encode(samples)
-            let frame = try VoiceStreamFrame(
-                flags: flags,
-                streamID: streamID,
-                sequence: audioSequence,
-                sampleCount: UInt16(clamping: samples.count),
-                payload: payload
-            )
-            audioSequence &+= 1
-            try sendVoiceBinary(frame.encode(), reliable: flags.contains(.end))
-            audioFramesSent += 1
-            if flags.contains(.start) || flags.contains(.end) || audioFramesSent == 2 {
-                IPhoneDebugLog.emit("ptt_send", [
-                    "seq": "\(frame.sequence)",
-                    "flags": flagName,
-                    "samples": "\(samples.count)",
-                    "bytes": "\(payload.count)",
-                    "sent": "\(audioFramesSent)"
-                ])
-            }
-        } catch {
-            IPhoneDebugLog.emit("ptt_drop", ["reason": "send_fail", "flags": flagName])
-            latestAction = "Voice send failed"
-        }
-    }
-
-    private func sendVoiceBinary(_ plaintext: Data, reliable: Bool) throws {
-        guard let session = authenticatedSession else { throw PairingError.invalidHandshake }
-        let messageID = nextHandshakeMessageID
-        nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-        let frames = try session.wrapBinary(
-            plaintext,
-            messageType: MessageType.audioChunk.rawValue,
-            messageID: messageID,
-            maximumValueLength: peripheral.maximumUpdateValueLength,
-            reliable: reliable
-        )
-        for frame in frames {
-            switch peripheral.send(frame, on: .data) {
-            case .sent, .queued:
-                continue
-            case .notReady, .queueFull, .unsupportedChannel:
-                throw PairingError.invalidHandshake
-            }
-        }
-    }
-
-    private func pcmSamples(_ data: Data) -> [Int16] {
-        guard data.count >= 2 else { return [] }
-        var samples: [Int16] = []
-        samples.reserveCapacity(data.count / 2)
-        var index = 0
-        while index + 1 < data.count {
-            let bits = UInt16(data[index]) | (UInt16(data[index + 1]) << 8)
-            samples.append(Int16(bitPattern: bits))
-            index += 2
-        }
-        return samples
-    }
-
-    private func newAudioStreamID() -> SessionID? {
-        try? SessionID(bytes: (0..<SessionID.byteCount).map { _ in UInt8.random(in: 0...255) })
     }
 
     func airMouseChanged(_ held: Bool) {
@@ -440,6 +377,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     func setAirMouseSensitivity(_ value: Double) {
         airMouseSensitivity = value
+        UserDefaults.standard.set(value, forKey: "airMouseSensitivity")
         motionSession.updateFilter(MotionFilterConfiguration(sensitivity: value))
     }
 
@@ -738,6 +676,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
+    func setTrackpadSensitivity(x: Double? = nil, y: Double? = nil) {
+        if let x {
+            trackpadSensitivityX = x
+            UserDefaults.standard.set(x, forKey: "trackpadSensitivityX")
+        }
+        if let y {
+            trackpadSensitivityY = y
+            UserDefaults.standard.set(y, forKey: "trackpadSensitivityY")
+        }
+    }
+
     func handleTrackpadOutputs(_ outputs: [TrackpadOutput]) {
         guard authenticatedSession != nil, peripheral.state == .ready else { return }
         for output in outputs {
@@ -860,16 +809,20 @@ private struct PairingCameraPreview: UIViewRepresentable {
 }
 
 private struct TrackpadSurface: UIViewRepresentable {
+    let pointerSensitivityX: Double
+    let pointerSensitivityY: Double
     let onOutputs: ([TrackpadOutput]) -> Void
 
     func makeUIView(context: Context) -> TrackpadTouchCaptureView {
         let view = TrackpadTouchCaptureView(frame: .zero)
         view.onOutputs = onOutputs
+        view.engine.setSensitivity(pointerX: pointerSensitivityX, pointerY: pointerSensitivityY)
         return view
     }
 
     func updateUIView(_ uiView: TrackpadTouchCaptureView, context: Context) {
         uiView.onOutputs = onOutputs
+        uiView.engine.setSensitivity(pointerX: pointerSensitivityX, pointerY: pointerSensitivityY)
     }
 }
 
@@ -889,21 +842,6 @@ struct PhoneRemoteControlView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
-                    Label("Phone Remote", systemImage: "iphone.gen3")
-                        .font(.title2.weight(.semibold))
-
-                    if let name = model.trustedMacName {
-                        Text("This phone already trusts \(name). Keep the app open to reconnect. Scan a QR only for a new Mac.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    } else {
-                        Text("Pair with the Mac using its one-time QR code. Input stays disabled until pairing is confirmed.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-
                     if model.isPairingVisible {
                         PairingCameraPreview(capture: model.pairingCapture)
                             .frame(maxWidth: .infinity)
@@ -957,7 +895,10 @@ struct PhoneRemoteControlView: View {
                     .pickerStyle(.segmented)
 
                     if mode == .trackpad {
-                        TrackpadSurface { outputs in
+                        TrackpadSurface(
+                            pointerSensitivityX: model.trackpadSensitivityX,
+                            pointerSensitivityY: model.trackpadSensitivityY
+                        ) { outputs in
                             model.handleTrackpadOutputs(outputs)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -967,6 +908,28 @@ struct PhoneRemoteControlView: View {
                                 .foregroundStyle(.secondary)
                                 .allowsHitTesting(false)
                         }
+                        Slider(
+                            value: Binding(
+                                get: { model.trackpadSensitivityX },
+                                set: { model.setTrackpadSensitivity(x: $0) }
+                            ),
+                            in: 0.5...6,
+                            step: 0.1
+                        )
+                        Text("Horizontal \(model.trackpadSensitivityX.formatted(.number.precision(.fractionLength(1))))x")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { model.trackpadSensitivityY },
+                                set: { model.setTrackpadSensitivity(y: $0) }
+                            ),
+                            in: 0.5...6,
+                            step: 0.1
+                        )
+                        Text("Vertical \(model.trackpadSensitivityY.formatted(.number.precision(.fractionLength(1))))x")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else {
                         AirMouseClutchButton { held in
                             model.airMouseChanged(held)
@@ -979,8 +942,8 @@ struct PhoneRemoteControlView: View {
                                 get: { model.airMouseSensitivity },
                                 set: { model.setAirMouseSensitivity($0) }
                             ),
-                            in: 200...4_000,
-                            step: 50
+                            in: 500...6_000,
+                            step: 100
                         )
                         Text("Pointer speed \(Int(model.airMouseSensitivity))")
                             .font(.caption)
@@ -1017,8 +980,6 @@ struct PhoneRemoteControlView: View {
                         .foregroundStyle(.secondary)
             }
             .padding()
-            .navigationTitle("Phone Remote")
-            .navigationBarTitleDisplayMode(.inline)
             .onAppear { model.scenePhaseChanged(.active) }
             .onChange(of: scenePhase) { _, phase in
                 model.scenePhaseChanged(phase)

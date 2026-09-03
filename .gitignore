@@ -29,3 +29,6 @@ xcuserdata/
 
 # macOS metadata
 .DS_Store
+
+# Serena agent workspace (tool residue)
+.serena/

@@ -490,7 +490,9 @@ public final class PairingHandshakeServer {
 /// An authenticated session protects already-serialized protocol envelopes.
 /// It enforces a fresh session ID and a strictly increasing receive sequence;
 /// gaps are allowed so unreliable messages can be dropped by the transport.
-public final class PairingSession {
+/// Send and receive counters are guarded by `lock`, so one session can encrypt
+/// from the voice queue while the main thread encrypts application messages.
+public final class PairingSession: @unchecked Sendable {
     public static let currentVersion: UInt8 = 1
     private static let magic = Data([0x50, 0x52, 0x45, 0x31]) // "PRE1"
     public static let maxPlaintextBytes = 8_192

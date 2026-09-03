@@ -36,7 +36,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var audioPhase: String
     public var audioFrames: UInt64
     public var audioSamples: UInt64
-    public var lastAudioEvent: String?
+    public var audioMissingChunks: UInt64
     public var appPath: String?
     public var pairedDevices: [MacDebugPairedDevice]
 
@@ -60,7 +60,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         audioPhase: String = "idle",
         audioFrames: UInt64 = 0,
         audioSamples: UInt64 = 0,
-        lastAudioEvent: String? = nil,
+        audioMissingChunks: UInt64 = 0,
         appPath: String? = nil,
         pairedDevices: [MacDebugPairedDevice] = []
     ) {
@@ -83,7 +83,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.audioPhase = audioPhase
         self.audioFrames = audioFrames
         self.audioSamples = audioSamples
-        self.lastAudioEvent = lastAudioEvent
+        self.audioMissingChunks = audioMissingChunks
         self.appPath = appPath
         self.pairedDevices = pairedDevices
     }

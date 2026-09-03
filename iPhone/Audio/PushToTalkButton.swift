@@ -7,6 +7,7 @@ public struct PushToTalkButton: View {
     private let onPress: () -> Void
     private let onRelease: () -> Void
     @State private var isPressed = false
+    @Environment(\.scenePhase) private var scenePhase
 
     public init(onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
         self.onPress = onPress
@@ -27,13 +28,20 @@ public struct PushToTalkButton: View {
                         isPressed = true
                         onPress()
                     }
-                    .onEnded { _ in
-                        guard isPressed else { return }
-                        isPressed = false
-                        onRelease()
-                    }
+                    .onEnded { _ in release() }
             )
+            // DragGesture.onEnded does not fire when the system cancels the
+            // touch (incoming call, app switcher), so the hold would stick.
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { release() }
+            }
             .accessibilityLabel("Push to talk")
+    }
+
+    private func release() {
+        guard isPressed else { return }
+        isPressed = false
+        onRelease()
     }
 }
 #endif

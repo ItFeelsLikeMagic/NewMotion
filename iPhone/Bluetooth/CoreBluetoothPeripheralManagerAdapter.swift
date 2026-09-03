@@ -110,10 +110,11 @@ public final class CoreBluetoothPeripheralManagerAdapter: NSObject, IPhonePeriph
 extension CoreBluetoothPeripheralManagerAdapter: CBPeripheralManagerDelegate {
     public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         state = mapState(peripheral.state)
-        // CBPeripheralManager does not expose a negotiated notification size;
-        // callers use the ATT-safe minimum until an adapter-specific probe is
-        // available.
-        maximumUpdateValueLength = BLEFramingLimits.minimumValueLength
+        // The negotiated size arrives with the central's subscription; it only
+        // goes stale when the radio is no longer powered on.
+        if state != .poweredOn {
+            maximumUpdateValueLength = BLEFramingLimits.minimumValueLength
+        }
         onStateChange?(state)
     }
 

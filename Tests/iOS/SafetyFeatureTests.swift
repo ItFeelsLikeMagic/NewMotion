@@ -1,9 +1,13 @@
+import CryptoKit
 import Foundation
 import UIKit
 import XCTest
 @testable import PhoneRemote_iOS
+@testable import PhoneRemoteShared
 
 final class SafetyFeatureTests: XCTestCase {
+    private let voiceQueue = DispatchQueue(label: "test.voice")
+
     func testTrackpadPointerScrollClicksAndCancellation() {
         var engine = TrackpadGestureEngine()
         XCTAssertEqual(engine.handle([
@@ -89,6 +93,19 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(sink.values.count, 1)
     }
 
+    func testDefaultMotionFilterRegistersSlowAiming() {
+        var filter = MotionPointerFilter(configuration: MotionFilterConfiguration())
+        filter.setClutch(active: true)
+        XCTAssertNil(filter.process(MotionSample(timestamp: 0, attitude: .identity)))
+        // 5 deg/s at 100 Hz is 0.0009 rad per sample. Slow aiming must move the pointer.
+        let half = 0.0009 / 2
+        let slow = filter.process(MotionSample(
+            timestamp: 0.01,
+            attitude: MotionQuaternion(w: cos(half), x: 0, y: 0, z: sin(half))
+        ))
+        XCTAssertGreaterThan(abs(slow?.x ?? 0), 0.5)
+    }
+
     func testMotionFilterNoiseAccelerationAndInvalidGapAreBounded() {
         var filter = MotionPointerFilter(configuration: MotionFilterConfiguration(
             sensitivity: 100,
@@ -131,62 +148,183 @@ final class SafetyFeatureTests: XCTestCase {
     }
 
     func testLifecycleForegroundRestoresPushToTalkAfterStartup() {
-        let microphone = TestMicrophone()
-        let controller = LocalPushToTalkAudioController(microphone: microphone, permissionGranted: true)
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log)
         let lifecycle = PhoneLifecycleCoordinator(audio: controller)
         _ = lifecycle.handle(.startup)
-        XCTAssertEqual(controller.pushToTalkPressed(), .notForeground)
+        XCTAssertEqual(press(controller), .notForeground)
         _ = lifecycle.handle(.foreground)
-        XCTAssertEqual(controller.pushToTalkPressed(), .started)
+        XCTAssertEqual(press(controller), .started)
         XCTAssertTrue(microphone.running)
         controller.pushToTalkReleased()
+        voiceQueue.sync {}
         XCTAssertFalse(microphone.running)
     }
 
     func testLifecycleKeepsPushToTalkAvailableAfterDisconnectInForeground() {
-        let microphone = TestMicrophone()
-        let controller = LocalPushToTalkAudioController(microphone: microphone, permissionGranted: true)
+        let log = EventLog()
+        let controller = makeController(microphone: TestMicrophone(log: log), log: log)
         let lifecycle = PhoneLifecycleCoordinator(audio: controller)
         _ = lifecycle.handle(.foreground)
         _ = lifecycle.handle(.transportDisconnected)
-        XCTAssertEqual(controller.pushToTalkPressed(), .started)
+        XCTAssertEqual(press(controller), .started)
         controller.pushToTalkReleased()
+        voiceQueue.sync {}
     }
 
     func testAudioRequiresLocalPressAndStopsOnRelease() {
-        let microphone = TestMicrophone()
-        let controller = LocalPushToTalkAudioController(microphone: microphone, permissionGranted: false)
-        XCTAssertEqual(controller.pushToTalkPressed(), .permissionDenied)
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, permissionGranted: false)
+        XCTAssertEqual(press(controller), .permissionDenied)
         controller.setPermissionGranted(true)
-        XCTAssertEqual(controller.pushToTalkPressed(), .started)
-        microphone.emit(Array(repeating: Int16(1_000), count: 320), timestamp: 1)
+        XCTAssertEqual(press(controller), .started)
+        microphone.emit(Array(repeating: Int16(1_000), count: 640))
+        voiceQueue.sync {}
         XCTAssertEqual(controller.state, .capturing)
-        XCTAssertEqual(microphone.lastSamples.count, 320)
+        XCTAssertEqual(log.events.last, "chunk(640)")
         controller.pushToTalkReleased()
+        voiceQueue.sync {}
         XCTAssertEqual(controller.state, .idle)
         XCTAssertFalse(microphone.running)
-        // No remote activation method exists on the controller by design.
-        XCTAssertFalse(controller.isCapturing)
     }
 
-    func testPushToTalkFlushEmitsRemainderAndEnd() {
-        let microphone = TestMicrophone()
+    func testStartCallbackFiresBeforeMicrophoneStarts() {
+        let log = EventLog()
+        let controller = makeController(microphone: TestMicrophone(log: log), log: log)
+        XCTAssertEqual(press(controller), .started)
+        XCTAssertEqual(log.events, ["start", "mic_start"])
+    }
+
+    func testReleaseFlushesRemainderThenEndsThenStopsMicrophone() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, samplesPerChunk: 4)
+        XCTAssertEqual(press(controller), .started)
+        microphone.emit([1, 2, 3, 4, 5, 6, 7])
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "chunk(4)"])
+        controller.pushToTalkReleased()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "chunk(4)", "chunk(3)", "end", "mic_stop"])
+        XCTAssertEqual(controller.state, .idle)
+    }
+
+    func testInterruptionEndsUtteranceWithEndFrame() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log)
+        XCTAssertEqual(press(controller), .started)
+        controller.interruptionBegan()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "mic_suspend"])
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertFalse(microphone.running)
+    }
+
+    func testBackgroundSendsEndBeforeTransportDisconnects() {
+        let log = EventLog()
+        let controller = makeController(microphone: TestMicrophone(log: log), log: log)
+        let lifecycle = PhoneLifecycleCoordinator(
+            audio: controller,
+            disconnectTransport: { log.events.append("disconnect") }
+        )
+        _ = lifecycle.handle(.foreground)
+        XCTAssertEqual(press(controller), .started)
+        _ = lifecycle.handle(.background)
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "mic_suspend", "disconnect"])
+    }
+
+    func testDroppedVoiceMessageLeavesSequenceGapAndNoPartialMessage() throws {
+        let session = try PairingSession(key: SymmetricKey(size: .bits256), sessionID: Data(repeating: 7, count: 16))
+        let uplink = VoiceUplink(queue: voiceQueue)
+        uplink.setSession(session, maximumValueLength: BLEFramingLimits.minimumValueLength)
+        let delivered = DeliveryLog()
+        uplink.deliver = { fragments, flags in delivered.messages.append((fragments, flags)) }
+        voiceQueue.sync {
+            uplink.beginStream()
+            uplink.send(samples: Array(repeating: 1_000, count: 640))
+            uplink.send(samples: Array(repeating: -1_000, count: 640))
+            uplink.endStream()
+        }
+        XCTAssertEqual(delivered.messages.count, 4)
+        XCTAssertGreaterThan(delivered.messages[1].fragments.count, 1)
+
+        // The transport drops the second data message whole; the Mac still
+        // sees a clean sequence gap and no partial message.
+        let kept = [delivered.messages[0], delivered.messages[1], delivered.messages[3]]
+        let reassembler = try BLEReassembler(maximumValueLength: BLEFramingLimits.minimumValueLength)
+        var frames: [VoiceStreamFrame] = []
+        for message in kept {
+            for fragment in message.fragments {
+                if case let .complete(payload, _, _, _) = try reassembler.append(fragment) {
+                    frames.append(try VoiceStreamFrame.decode(session.decrypt(payload).plaintext))
+                }
+            }
+        }
+        XCTAssertEqual(frames.map(\.sequence), [0, 1, 3])
+        XCTAssertEqual(frames.map(\.isStart), [true, false, false])
+        XCTAssertEqual(frames.map(\.isEnd), [false, false, true])
+        XCTAssertEqual(frames[1].sampleCount, 640)
+        XCTAssertEqual(frames.map(\.streamID), Array(repeating: frames[0].streamID, count: 3))
+    }
+
+    private func makeController(
+        microphone: TestMicrophone,
+        log: EventLog,
+        samplesPerChunk: Int = 640,
+        permissionGranted: Bool = true,
+        releaseGrace: TimeInterval = 0
+    ) -> LocalPushToTalkAudioController {
         let controller = LocalPushToTalkAudioController(
             microphone: microphone,
-            chunker: PCM16Chunker(configuration: AudioChunkerConfiguration(samplesPerChunk: 4)),
-            permissionGranted: true
+            queue: voiceQueue,
+            chunker: PCM16Chunker(samplesPerChunk: samplesPerChunk),
+            permissionGranted: permissionGranted,
+            releaseGrace: releaseGrace
         )
-        let captured = FlushCapture()
-        controller.onChunk = { captured.chunks.append($0) }
-        controller.onUtteranceEnd = { captured.ended += 1 }
-        XCTAssertEqual(controller.pushToTalkPressed(), .started)
-        microphone.emit([1, 2, 3], timestamp: 1)
-        XCTAssertTrue(captured.chunks.isEmpty)
+        controller.onUtteranceStart = { log.events.append("start") }
+        controller.onChunk = { log.events.append("chunk(\($0.count))") }
+        controller.onUtteranceEnd = { log.events.append("end") }
+        return controller
+    }
+
+    private func press(_ controller: LocalPushToTalkAudioController) -> AudioCaptureStartResult {
+        let result = ResultBox()
+        controller.pushToTalkPressed { result.value = $0 }
+        voiceQueue.sync {}
+        return result.value!
+    }
+
+    func testReleaseGraceKeepsCapturingAcrossAQuickRepress() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, releaseGrace: 0.05)
+
+        XCTAssertEqual(press(controller), .started)
         controller.pushToTalkReleased()
-        XCTAssertEqual(captured.chunks.count, 1)
-        XCTAssertEqual(captured.chunks[0].sampleCount, 3)
-        XCTAssertEqual(captured.ended, 1)
-        XCTAssertEqual(controller.state, .idle)
+        voiceQueue.sync {}
+        XCTAssertEqual(press(controller), .started)
+        Thread.sleep(forTimeInterval: 0.1)
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start"])
+
+        controller.pushToTalkReleased()
+        Thread.sleep(forTimeInterval: 0.1)
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
+    }
+
+    func testBackgroundStopsInsideTheGraceWindowAndSuspendsTheMicrophone() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, releaseGrace: 10)
+
+        XCTAssertEqual(press(controller), .started)
+        controller.pushToTalkReleased()
+        controller.applicationDidEnterBackground()
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "mic_suspend"])
     }
 
     func testTrackpadViewKeepsTouchesFromParentScrolling() {
@@ -250,27 +388,42 @@ private final class TestMotionSink: MotionPointerOutputSink {
     func send(_ delta: MotionPointerDelta) { values.append(delta) }
 }
 
-private final class FlushCapture: @unchecked Sendable {
-    var chunks: [CapturedPCM16Chunk] = []
-    var ended = 0
+private final class EventLog: @unchecked Sendable {
+    var events: [String] = []
 }
 
-private final class TestMicrophone: MicrophoneInputProviding {
-    var running = false
-    var lastSamples: [Int16] = []
-    private var callback: (([Int16], TimeInterval) -> Void)?
+private final class ResultBox: @unchecked Sendable {
+    var value: AudioCaptureStartResult?
+}
+
+private final class DeliveryLog: @unchecked Sendable {
+    var messages: [(fragments: [Data], flags: VoiceStreamFlags)] = []
+}
+
+private final class TestMicrophone: MicrophoneInputProviding, @unchecked Sendable {
+    private let log: EventLog
+    private(set) var running = false
+    private var callback: (([Int16]) -> Void)?
+
+    init(log: EventLog) {
+        self.log = log
+    }
 
     func requestPermission(completion: @escaping (Bool) -> Void) { completion(true) }
-    func start(samples: @escaping ([Int16], TimeInterval) -> Void) throws {
+    func start(samples: @escaping ([Int16]) -> Void) throws {
+        log.events.append("mic_start")
         running = true
         callback = samples
     }
     func stop() {
+        log.events.append("mic_stop")
         running = false
         callback = nil
     }
-    func emit(_ samples: [Int16], timestamp: TimeInterval) {
-        lastSamples = samples
-        callback?(samples, timestamp)
+    func suspend() {
+        log.events.append("mic_suspend")
+    }
+    func emit(_ samples: [Int16]) {
+        callback?(samples)
     }
 }

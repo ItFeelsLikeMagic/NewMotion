@@ -79,6 +79,20 @@ final class BluetoothPeripheralTests: XCTestCase {
         XCTAssertEqual(transport.queuedFrameCount, 1)
     }
 
+    func testQueueCapacityCountsFreeSlotsOnlyWhenReady() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
+        XCTAssertEqual(transport.queueCapacity(on: .data), 0)
+        transport.setForeground(true)
+        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.queueCapacity(on: .data), 2)
+        XCTAssertEqual(transport.send(Data([1]), on: .data), .queued)
+        XCTAssertEqual(transport.queueCapacity(on: .data), 1)
+        XCTAssertEqual(transport.queueCapacity(on: .control), 2)
+    }
+
     func testAdvertisingStartErrorDoesNotTearDownALiveBeacon() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
