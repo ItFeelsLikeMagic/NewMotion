@@ -24,6 +24,8 @@ public enum SharedInputProtocolAdapter {
                 button: button,
                 isDown: isDown
             ))
+        case let .doubleClick(button):
+            return .mouseDoubleClick(MouseDoubleClickPayload(button: button))
         case let .text(value):
             return .textInput(try TextInputPayload(text: value))
         case let .hotkey(hotkey):
@@ -63,13 +65,34 @@ public enum SharedInputProtocolAdapter {
             return .scroll(MacScrollDelta(x: Double(value.deltaX), y: Double(value.deltaY)))
         case let .mouseButton(value):
             return .mouseButton(button: value.button, isDown: value.isDown)
+        case let .mouseDoubleClick(value):
+            return .doubleClick(value.button)
         case let .textInput(value):
             guard let text = value.text else { throw ProtocolAdapterError.invalidPayload }
             return .text(text)
         case let .hotkey(value):
             return .hotkey(localHotkey(value.action))
-        case .heartbeat, .audioChunk, .acknowledgement, .connectionStatus, .error, .ping, .pong:
+        case .heartbeat, .appSwitcher, .audioChunk, .acknowledgement, .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
+        }
+    }
+
+    /// The switcher is the one remote action that spans several messages. Each
+    /// phase still expands into ordinary commands, so every event it produces
+    /// passes the same policy checks and the held Command is tracked for
+    /// release like any other.
+    public static func commands(for phase: AppSwitcherPhase) -> [RemoteInputCommand] {
+        switch phase {
+        case .begin:
+            return [.modifier(key: .command, isDown: true), .hotkey(.tab)]
+        case .next:
+            return [.hotkey(.tab)]
+        case .previous:
+            return [.hotkey(.shiftTab)]
+        case .commit:
+            return [.modifier(key: .command, isDown: false)]
+        case .cancel:
+            return [.hotkey(.escape), .modifier(key: .command, isDown: false)]
         }
     }
 
@@ -94,6 +117,8 @@ public enum SharedInputProtocolAdapter {
         case .arrowDown: return .arrowDown
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
+        case .deleteBackward: return .deleteBackward
+        case .shiftTab: return .shiftTab
         }
     }
 
@@ -111,6 +136,8 @@ public enum SharedInputProtocolAdapter {
         case .arrowDown: return .arrowDown
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
+        case .deleteBackward: return .deleteBackward
+        case .shiftTab: return .shiftTab
         }
     }
 }

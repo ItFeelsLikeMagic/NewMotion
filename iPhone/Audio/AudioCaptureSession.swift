@@ -24,9 +24,11 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public let queue: DispatchQueue
     private let microphone: MicrophoneInputProviding
     private let releaseGrace: TimeInterval
+    private let idleRelease: TimeInterval
     private var stateMachine: AudioCaptureStateMachine
     private var chunker: PCM16Chunker
     private var pendingRelease: DispatchWorkItem?
+    private var pendingSuspend: DispatchWorkItem?
 
     public var onUtteranceStart: (@Sendable () -> Void)?
     public var onChunk: (@Sendable ([Int16]) -> Void)?
@@ -34,16 +36,20 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
 
     /// `releaseGrace` keeps the microphone open briefly after the finger lifts,
     /// because people let go while the last syllable is still sounding.
+    /// `idleRelease` is how long the audio session stays warm after an
+    /// utterance before it is handed back to the system.
     public init(
         microphone: MicrophoneInputProviding,
         queue: DispatchQueue = DispatchQueue(label: "phoneremote.voice"),
         chunker: PCM16Chunker = PCM16Chunker(),
         permissionGranted: Bool = false,
-        releaseGrace: TimeInterval = 0.15
+        releaseGrace: TimeInterval = 0.15,
+        idleRelease: TimeInterval = 2
     ) {
         self.queue = queue
         self.microphone = microphone
         self.releaseGrace = releaseGrace
+        self.idleRelease = idleRelease
         self.stateMachine = AudioCaptureStateMachine(permissionGranted: permissionGranted)
         self.chunker = chunker
     }
@@ -73,6 +79,8 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
                 completion(.started)
                 return
             }
+            pendingSuspend?.cancel()
+            pendingSuspend = nil
             let actions = stateMachine.handle(.localPushToTalkPressed)
             guard actions.contains(.startCapture) else {
                 completion(stateMachine.appForegrounded ? .permissionDenied : .notForeground)
@@ -115,7 +123,7 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public func interruptionBegan() {
         queue.async {
             self.stopNow(.interruptionBegan)
-            self.microphone.suspend()
+            self.suspendNow()
         }
     }
 
@@ -128,8 +136,14 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     public func applicationDidEnterBackground() {
         queue.sync {
             stopNow(.appBackgrounded)
-            microphone.suspend()
+            suspendNow()
         }
+    }
+
+    private func suspendNow() {
+        pendingSuspend?.cancel()
+        pendingSuspend = nil
+        microphone.suspend()
     }
 
     private func stopNow(_ event: AudioCaptureEvent) {
@@ -156,7 +170,22 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
             }
             onUtteranceEnd?()
             microphone.stop()
+            scheduleIdleSuspend()
         }
+    }
+
+    private func scheduleIdleSuspend() {
+        guard idleRelease > 0 else {
+            microphone.suspend()
+            return
+        }
+        let suspend = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            pendingSuspend = nil
+            microphone.suspend()
+        }
+        pendingSuspend = suspend
+        queue.asyncAfter(deadline: .now() + idleRelease, execute: suspend)
     }
 }
 
@@ -165,10 +194,9 @@ import AVFoundation
 
 /// AVFoundation adapter.  It is created only by the iPhone app target; tests
 /// inject a MicrophoneInputProviding fake and never touch the microphone.
-/// The session stays active and the engine and converter stay warm between
-/// presses, so a press only installs the tap and resumes the engine; the
-/// session is released when the app leaves the foreground.  Activating a
-/// record session on every press cost 50-300 ms of lost speech.
+/// The engine and converter stay warm for the life of the app, and the
+/// session stays active between quick successive presses; `suspend()` hands
+/// the session back once the controller decides the user is done talking.
 public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
     private let session: AVAudioSession
     private let engine = AVAudioEngine()
@@ -203,9 +231,7 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
 
     public func start(samples: @Sendable @escaping ([Int16]) -> Void) throws {
         if !sessionConfigured {
-            // mixWithOthers keeps the phone's own audio playing while the
-            // session stays active between presses.
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
+            try session.setCategory(.record, mode: .measurement, options: [])
             try session.setPreferredSampleRate(16_000)
             try session.setPreferredIOBufferDuration(0.02)
             sessionConfigured = true
@@ -223,6 +249,13 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding {
             }
             converter = created
         }
+        IPhoneDebugLog.emit("ptt_mic", [
+            "route": session.currentRoute.inputs.map(\.portType.rawValue).joined(separator: "+"),
+            "rate": "\(Int(inputFormat.sampleRate))",
+            "ch": "\(inputFormat.channelCount)",
+            "gain": "\(session.inputGain)",
+            "avail": session.isInputAvailable ? "yes" : "no",
+        ])
         input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             self?.convert(buffer: buffer, handler: samples)
         }

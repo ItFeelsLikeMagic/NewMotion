@@ -24,6 +24,19 @@ private extension BLECentralLifecycleState {
     }
 }
 
+/// The macOS test bundle uses the real app as its test host, so every
+/// `xcodebuild test` run launches this app. Bluetooth and the login Keychain
+/// re-prompt on each unsigned rebuild, so the host stays inert under tests and
+/// only wires the parts a unit test can exercise without the system asking the
+/// user for anything.
+enum MacHostRuntime {
+    static let isInert: Bool = {
+        if ProcessInfo.processInfo.environment["PHONE_REMOTE_INERT_HOST"] == "1" { return true }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return true }
+        return NSClassFromString("XCTestCase") != nil
+    }()
+}
+
 /// The menu-bar surface owns no independent safety state. It talks to the
 /// same lifecycle coordinator that the eventual BLE session will use, so a
 /// local pause or an Accessibility revocation follows the normal release-all
@@ -61,6 +74,7 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
     private let voiceCoordinator: VoicePTTCoordinator
     private let speechServer = NemotronServer()
+    private let normalizer = S1MiniNormalizer()
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
 
@@ -68,15 +82,26 @@ final class MacRemoteAppModel: ObservableObject {
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust)
         let injector = SafeInputInjector(sink: sink, accessibility: trust)
-        let central = MacBLECentralTransport(adapter: CoreBluetoothCentralManagerAdapter())
+        let inert = MacHostRuntime.isInert
+        let adapter: MacCentralManagerAdapter = inert
+            ? InertCentralManagerAdapter()
+            : CoreBluetoothCentralManagerAdapter()
+        let central = MacBLECentralTransport(adapter: adapter)
         let pairingOffer = MacPairingOfferController()
+        let store: TrustedDeviceStore = inert
+            ? InMemoryTrustedDeviceStore()
+            : KeychainTrustedDeviceStore(service: Self.trustedDeviceService)
         let pairingCoordinator = try? MacPairingCoordinator(
-            store: KeychainTrustedDeviceStore(service: Self.trustedDeviceService),
+            store: store,
             offerController: pairingOffer
         )
         self.injector = injector
         self.lifecycle = MacLifecycleCoordinator(injector: injector)
-        let voiceCoordinator = VoicePTTCoordinator(sessions: speechServer, insertionSink: injector)
+        let voiceCoordinator = VoicePTTCoordinator(
+            sessions: speechServer,
+            insertionSink: injector,
+            normalizer: normalizer
+        )
         self.voiceCoordinator = voiceCoordinator
         self.central = central
         self.pairingOffer = pairingOffer
@@ -87,14 +112,18 @@ final class MacRemoteAppModel: ObservableObject {
         self.inboundReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
         self.controlReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
 
+        // Core Bluetooth already calls back on the main queue.  A `Task` hop
+        // per frame queued every packet behind whatever the main actor was
+        // doing, so a burst of cursor motion replayed slowly instead of
+        // arriving.  The same fix was needed for the phone's motion sink.
         central.onStateChange = { [weak self] state in
-            Task { @MainActor [weak self] in self?.handleCentralState(state) }
+            MainActor.assumeIsolated { self?.handleCentralState(state) }
         }
         central.onFrameReceived = { [weak self] channel, data in
-            Task { @MainActor [weak self] in self?.handleIncomingFrame(channel: channel, data: data) }
+            MainActor.assumeIsolated { self?.handleIncomingFrame(channel: channel, data: data) }
         }
         central.onTransportError = { [weak self] _ in
-            Task { @MainActor [weak self] in self?.handleTransportError() }
+            MainActor.assumeIsolated { self?.handleTransportError() }
         }
         handleCentralState(central.state)
         pairingOffer.onStateChange = { [weak self] state in
@@ -148,14 +177,17 @@ final class MacRemoteAppModel: ObservableObject {
                 }
             }
         }
-        speechServer.start()
+        if !inert {
+            speechServer.start()
+            normalizer.warmUp()
+        }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [speechServer] _ in speechServer.stop() }
 
         _ = lifecycle.handle(.startup)
         refreshAccessibility(prompt: false)
-        central.start()
+        if !inert { central.start() }
         publishDebugState()
         startDebugServerIfNeeded()
     }
@@ -210,8 +242,9 @@ final class MacRemoteAppModel: ObservableObject {
         pairingOffer.cancel()
     }
 
-    func tickPairingOffer() {
+    func tick() {
         pairingOffer.tick()
+        central.tick()
     }
 
     private func updateStatus() {
@@ -431,11 +464,35 @@ final class MacRemoteAppModel: ObservableObject {
                     voiceCoordinator.receive(try VoiceStreamFrame.decode(decrypted.plaintext))
                     return
                 }
+                if decrypted.messageType == MessageType.pointerDelta.rawValue,
+                   decrypted.plaintext.starts(with: PointerStreamFrame.magic) {
+                    try dispatchCursorFrame(PointerStreamFrame.decode(decrypted.plaintext))
+                    return
+                }
                 let envelope = try ProtocolCodec.decode(Array(decrypted.plaintext))
                 try dispatchApplication(envelope.payload)
             }
         } catch {
             lastApplicationMessage = "error"
+        }
+    }
+
+    /// Compact cursor frames carry the same deltas as the JSON envelope and go
+    /// through the same safety policy; only the encoding is cheaper.
+    private func dispatchCursorFrame(_ frame: PointerStreamFrame) throws {
+        for item in frame.items {
+            switch item.kind {
+            case .pointer:
+                try dispatchApplication(.pointerDelta(PointerDeltaPayload(
+                    deltaX: item.deltaX,
+                    deltaY: item.deltaY
+                )))
+            case .scroll:
+                try dispatchApplication(.scrollDelta(ScrollDeltaPayload(
+                    deltaX: item.deltaX,
+                    deltaY: item.deltaY
+                )))
+            }
         }
     }
 
@@ -447,6 +504,12 @@ final class MacRemoteAppModel: ObservableObject {
         case .pong:
             lastApplicationMessage = "pong"
             return
+        case let .appSwitcher(value):
+            var applied = true
+            for command in SharedInputProtocolAdapter.commands(for: value.phase) {
+                if injector.submit(command) != .applied { applied = false }
+            }
+            lastApplicationMessage = applied ? "appSwitcher \(value.phase)" : "appSwitcher blocked"
         default:
             if let command = try? SharedInputProtocolAdapter.command(for: payload) {
                 switch injector.submit(command) {
@@ -499,8 +562,7 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func startDebugServerIfNeeded() {
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
-        if NSClassFromString("XCTestCase") != nil { return }
+        if MacHostRuntime.isInert { return }
         if ProcessInfo.processInfo.environment["PHONE_REMOTE_DEBUG_SERVER"] == "0" { return }
         let server = MacDebugHTTPServer(box: debugSnapshotBox)
         server.start()
@@ -653,7 +715,7 @@ struct MacRemoteStatusView: View {
         .padding(12)
         .frame(width: 280)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            model.tickPairingOffer()
+            model.tick()
         }
     }
 }

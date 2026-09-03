@@ -35,6 +35,8 @@ public enum SharedTrackpadProtocolAdapter {
                 .mouseButton(MouseButtonPayload(button: .right, isDown: true)),
                 .mouseButton(MouseButtonPayload(button: .right, isDown: false))
             ]
+        case .doubleClick:
+            return [.mouseDoubleClick(MouseDoubleClickPayload(button: .left))]
         case .dragBegan:
             return [.mouseButton(MouseButtonPayload(button: .left, isDown: true))]
         case .dragEnded:
@@ -81,6 +83,7 @@ public enum SharedKeyboardProtocolAdapter {
         case .arrowDown: return .arrowDown
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
+        case .deleteBackward: return .deleteBackward
         }
     }
 }

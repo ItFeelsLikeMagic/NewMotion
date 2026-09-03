@@ -56,12 +56,101 @@ final class SafetyFeatureTests: XCTestCase {
         _ = engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.2)])
         XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .moved, timestamp: 0.21)]), [])
         XCTAssertFalse(engine.isDragging)
-        XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.22)]), [.leftClick])
+        // With drag off, a second quick tap in the same spot is a double click.
+        XCTAssertEqual(engine.handle([TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.22)]), [.doubleClick])
 
         engine.setDragEnabled(true)
         _ = engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0.3)])
         XCTAssertTrue(engine.isDragging)
         XCTAssertEqual(engine.handle([TrackpadTouch(id: 2, location: TrackpadPoint(x: 3, y: 0), phase: .ended, timestamp: 0.31)]), [.dragEnded])
+    }
+
+    func testTwoFingerTapSurvivesAnUnevenLift() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0),
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 12, y: 0), phase: .began, timestamp: 0)
+        ])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .ended, timestamp: 0.05)
+        ]), [])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 12, y: 0), phase: .ended, timestamp: 0.07)
+        ]), [.rightClick])
+    }
+
+    func testScrollingFingerLeftBehindDoesNotMoveThePointer() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0),
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 12, y: 0), phase: .began, timestamp: 0)
+        ])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 40), phase: .moved, timestamp: 0.02),
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 12, y: 40), phase: .moved, timestamp: 0.02)
+        ]), [.scroll(TrackpadScrollDelta(x: 0, y: 40))])
+
+        _ = engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 40), phase: .ended, timestamp: 0.04)
+        ])
+        // The finger still down would otherwise drag the cursor.
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 30, y: 60), phase: .moved, timestamp: 0.06)
+        ]), [])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 30, y: 60), phase: .ended, timestamp: 0.08)
+        ]), [])
+    }
+
+    func testSecondTapIsADoubleClickOnlyWhenItIsQuickAndClose() {
+        var engine = TrackpadGestureEngine()
+        func tap(_ id: UInt64, at point: TrackpadPoint, start: TimeInterval) -> [TrackpadOutput] {
+            _ = engine.handle([TrackpadTouch(id: id, location: point, phase: .began, timestamp: start)])
+            return engine.handle([TrackpadTouch(id: id, location: point, phase: .ended, timestamp: start + 0.05)])
+        }
+
+        XCTAssertEqual(tap(1, at: TrackpadPoint(x: 5, y: 5), start: 0), [.leftClick])
+        XCTAssertEqual(tap(2, at: TrackpadPoint(x: 6, y: 5), start: 0.15), [.doubleClick])
+        // A third tap starts a new count rather than chaining double clicks.
+        XCTAssertEqual(tap(3, at: TrackpadPoint(x: 6, y: 5), start: 0.3), [.leftClick])
+        // Too far away, and too late, are both ordinary clicks.
+        XCTAssertEqual(tap(4, at: TrackpadPoint(x: 90, y: 90), start: 0.45), [.leftClick])
+        XCTAssertEqual(tap(5, at: TrackpadPoint(x: 90, y: 90), start: 1.5), [.leftClick])
+    }
+
+    func testScrollMomentumCoastsThenStops() {
+        var momentum = ScrollMomentum()
+        XCTAssertFalse(momentum.begin(velocity: 10))
+        XCTAssertFalse(momentum.isActive)
+
+        XCTAssertTrue(momentum.begin(velocity: 1_200))
+        let first = momentum.step(elapsed: 1.0 / 60)
+        XCTAssertEqual(first?.y ?? 0, 20, accuracy: 0.001)
+        let second = momentum.step(elapsed: 1.0 / 60)
+        XCTAssertLessThan(second?.y ?? 0, first?.y ?? 0)
+
+        var frames = 0
+        while momentum.step(elapsed: 1.0 / 60) != nil {
+            frames += 1
+            XCTAssertLessThan(frames, 600)
+        }
+        XCTAssertFalse(momentum.isActive)
+
+        XCTAssertTrue(momentum.begin(velocity: -1_200))
+        XCTAssertLessThan(momentum.step(elapsed: 1.0 / 60)?.y ?? 0, 0)
+        momentum.stop()
+        XCTAssertNil(momentum.step(elapsed: 1.0 / 60))
+    }
+
+    func testDoubleClickAndCommandTabReachTheSharedProtocol() throws {
+        XCTAssertEqual(
+            try SharedTrackpadProtocolAdapter.payloads(for: .doubleClick),
+            [.mouseDoubleClick(MouseDoubleClickPayload(button: .left))]
+        )
+        XCTAssertEqual(
+            try SharedKeyboardProtocolAdapter.payload(for: .hotkey(.deleteBackward)),
+            .hotkey(HotkeyPayload(action: .deleteBackward))
+        )
     }
 
     func testUnicodeChunkingPreservesGraphemesAndBounds() {
@@ -275,14 +364,16 @@ final class SafetyFeatureTests: XCTestCase {
         log: EventLog,
         samplesPerChunk: Int = 640,
         permissionGranted: Bool = true,
-        releaseGrace: TimeInterval = 0
+        releaseGrace: TimeInterval = 0,
+        idleRelease: TimeInterval = 10
     ) -> LocalPushToTalkAudioController {
         let controller = LocalPushToTalkAudioController(
             microphone: microphone,
             queue: voiceQueue,
             chunker: PCM16Chunker(samplesPerChunk: samplesPerChunk),
             permissionGranted: permissionGranted,
-            releaseGrace: releaseGrace
+            releaseGrace: releaseGrace,
+            idleRelease: idleRelease
         )
         controller.onUtteranceStart = { log.events.append("start") }
         controller.onChunk = { log.events.append("chunk(\($0.count))") }
@@ -316,6 +407,25 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
     }
 
+    func testIdleReleaseHandsTheSessionBackUnlessRepressed() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, idleRelease: 0.05)
+
+        XCTAssertEqual(press(controller), .started)
+        controller.pushToTalkReleased()
+        voiceQueue.sync {}
+        XCTAssertEqual(press(controller), .started)
+        Thread.sleep(forTimeInterval: 0.1)
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "start", "mic_start"])
+
+        controller.pushToTalkReleased()
+        Thread.sleep(forTimeInterval: 0.1)
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "start", "mic_start", "end", "mic_stop", "mic_suspend"])
+    }
+
     func testBackgroundStopsInsideTheGraceWindowAndSuspendsTheMicrophone() {
         let log = EventLog()
         let microphone = TestMicrophone(log: log)
@@ -333,13 +443,75 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertTrue(view.isMultipleTouchEnabled)
     }
 
+    func testTrackpadPointerCarriesTheFractionalRemainder() {
+        var engine = TrackpadGestureEngine()
+        _ = engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 0)
+        ])
+
+        var travelled = 0.0
+        for step in 1...100 {
+            let outputs = engine.handle([
+                TrackpadTouch(
+                    id: 1,
+                    location: TrackpadPoint(x: Double(step) * 0.3, y: 0),
+                    phase: .moved,
+                    timestamp: Double(step) * 0.02
+                )
+            ])
+            for case let .pointer(delta) in outputs {
+                XCTAssertEqual(delta.x, delta.x.rounded())
+                travelled += delta.x
+            }
+        }
+        XCTAssertEqual(travelled, 30)
+
+        // The carry is per gesture: lifting and starting again must not move.
+        _ = engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 30, y: 0), phase: .ended, timestamp: 3)
+        ])
+        _ = engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 0), phase: .began, timestamp: 4)
+        ])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 0.3, y: 0), phase: .moved, timestamp: 4.02)
+        ]), [])
+    }
+
+    func testTrackpadCoalescerSumsPointerDeltasAndKeepsClickOrder() {
+        let coalescer = TrackpadOutputCoalescer(interval: 0.05)
+        var clock = 1.0
+        coalescer.pointerCoalescer.now = { clock }
+        var queued: [(TimeInterval, () -> Void)] = []
+        coalescer.pointerCoalescer.execute = { delay, work in queued.append((delay, work)) }
+        var outputs: [TrackpadOutput] = []
+        coalescer.onOutput = { outputs.append($0) }
+
+        coalescer.handle([.pointer(TrackpadPointerDelta(x: 1, y: 2))])
+        coalescer.handle([.pointer(TrackpadPointerDelta(x: 3, y: 4))])
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertTrue(outputs.isEmpty)
+
+        queued.removeFirst().1()
+        XCTAssertEqual(outputs, [.pointer(TrackpadPointerDelta(x: 4, y: 6))])
+
+        // A click inside the interval flushes the motion that preceded it.
+        clock = 1.01
+        coalescer.handle([.pointer(TrackpadPointerDelta(x: 5, y: 0)), .leftClick])
+        XCTAssertEqual(outputs, [
+            .pointer(TrackpadPointerDelta(x: 4, y: 6)),
+            .pointer(TrackpadPointerDelta(x: 5, y: 0)),
+            .leftClick
+        ])
+    }
+
     func testMotionSinkAddsDeltasAndFlushesOnce() {
-        let sink = FeatureMotionSink()
+        let sink = DeltaCoalescer<MotionPointerDelta>.motionPointer()
         sink.minimumInterval = 0
         var queued: [() -> Void] = []
         sink.execute = { _, work in queued.append(work) }
         var received: [MotionPointerDelta] = []
-        sink.onDelta = { received.append($0) }
+        sink.onFlush = { received.append($0) }
 
         sink.send(MotionPointerDelta(x: 1, y: 2))
         sink.send(MotionPointerDelta(x: 3, y: 4))
@@ -354,14 +526,14 @@ final class SafetyFeatureTests: XCTestCase {
     }
 
     func testMotionSinkWaitsOutTheIntervalBeforeASecondFlush() {
-        let sink = FeatureMotionSink()
+        let sink = DeltaCoalescer<MotionPointerDelta>.motionPointer()
         sink.minimumInterval = 0.04
         var clock = 1.0
         sink.now = { clock }
         var queued: [(TimeInterval, () -> Void)] = []
         sink.execute = { delay, work in queued.append((delay, work)) }
         var received: [MotionPointerDelta] = []
-        sink.onDelta = { received.append($0) }
+        sink.onFlush = { received.append($0) }
 
         sink.send(MotionPointerDelta(x: 1, y: 0))
         XCTAssertEqual(queued.count, 1)

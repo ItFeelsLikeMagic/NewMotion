@@ -35,7 +35,8 @@ public struct VoicePTTState: Equatable, Sendable {
 
 /// One transcription session per PTT stream. Audio is forwarded frame by
 /// frame; `.end` (or 1.5 s without frames) commits. Overlapping utterances
-/// each transcribe on their own; typed output stays in start order.
+/// each transcribe on their own; typed output stays in start order. A final
+/// passes through `normalizer`, when one is set, before it is typed.
 public final class VoicePTTCoordinator: @unchecked Sendable {
     /// Mutated only on the coordinator queue; the main-thread hop just carries it back.
     private final class Utterance: @unchecked Sendable {
@@ -64,6 +65,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     private let queue = DispatchQueue(label: "phoneremote.voice-ptt")
     private let sessions: TranscriptionSessionFactory
     private let insertionSink: SafeTranscriptInsertionSink
+    private let normalizer: TranscriptNormalizer?
     private let isSecureInputActive: @Sendable () -> Bool
     private let idleTimeout: TimeInterval
     private var utterances: [Utterance] = []
@@ -75,11 +77,13 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     public init(
         sessions: TranscriptionSessionFactory,
         insertionSink: SafeTranscriptInsertionSink,
+        normalizer: TranscriptNormalizer? = nil,
         idleTimeout: TimeInterval = 1.5,
         isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
     ) {
         self.sessions = sessions
         self.insertionSink = insertionSink
+        self.normalizer = normalizer
         self.idleTimeout = idleTimeout
         self.isSecureInputActive = isSecureInputActive
     }
@@ -171,6 +175,24 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
             return
         }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            complete(utterance, phase: .idle)
+            return
+        }
+        guard let normalizer else {
+            type(text, for: utterance)
+            return
+        }
+        normalizer.normalize(text) { [weak self] normalized in
+            guard let self else { return }
+            self.queue.async {
+                self.type(normalized.trimmingCharacters(in: .whitespacesAndNewlines), for: utterance)
+            }
+        }
+    }
+
+    /// Normalizing filler-only speech correctly yields nothing to type.
+    private func type(_ text: String, for utterance: Utterance) {
         guard !text.isEmpty else {
             complete(utterance, phase: .idle)
             return

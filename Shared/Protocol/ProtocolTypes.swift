@@ -32,12 +32,15 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case error = 11
     case ping = 12
     case pong = 13
+    case mouseDoubleClick = 14
+    case appSwitcher = 15
 
     public var deliveryClass: DeliveryClass {
         switch self {
         case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta, .audioChunk:
             return .unreliable
-        case .mouseButton, .textInput, .hotkey, .acknowledgement, .connectionStatus, .error, .ping, .pong:
+        case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .appSwitcher,
+             .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
     }
@@ -178,6 +181,17 @@ public struct MouseButtonPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// A double click is one atomic message rather than two click pairs, because
+/// two pairs crossing the link separately can arrive too far apart for the Mac
+/// to read them as one double click.
+public struct MouseDoubleClickPayload: Codable, Equatable, Sendable {
+    public let button: MouseButton
+
+    public init(button: MouseButton) {
+        self.button = button
+    }
+}
+
 /// Ordinary text is encoded as UTF-8 bytes so the protocol remains explicit
 /// about byte limits and does not depend on a platform string ABI.
 public struct TextInputPayload: Codable, Equatable, Sendable {
@@ -211,6 +225,30 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case arrowDown = 10
     case arrowLeft = 11
     case arrowRight = 12
+    // 13 was Command+Tab, replaced by the appSwitcher message, which has to
+    // hold Command open across several messages. The value is retired.
+    case deleteBackward = 14
+    case shiftTab = 15
+}
+
+/// The app switcher is a held gesture, not a chord: Command stays down from
+/// `begin` until `commit`, so the phone can step through the row first. The
+/// Mac tracks that held Command in its safety layer and releases it on
+/// disconnect, lock, or sleep.
+public enum AppSwitcherPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    case begin = 1
+    case next = 2
+    case previous = 3
+    case commit = 4
+    case cancel = 5
+}
+
+public struct AppSwitcherPayload: Codable, Equatable, Sendable {
+    public let phase: AppSwitcherPhase
+
+    public init(phase: AppSwitcherPhase) {
+        self.phase = phase
+    }
 }
 
 public struct HotkeyPayload: Codable, Equatable, Sendable {
@@ -380,8 +418,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case pointerDelta(PointerDeltaPayload)
     case scrollDelta(ScrollDeltaPayload)
     case mouseButton(MouseButtonPayload)
+    case mouseDoubleClick(MouseDoubleClickPayload)
     case textInput(TextInputPayload)
     case hotkey(HotkeyPayload)
+    case appSwitcher(AppSwitcherPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case audioChunk(AudioChunkPayload)
     case acknowledgement(AcknowledgementPayload)
@@ -396,8 +436,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .pointerDelta: return .pointerDelta
         case .scrollDelta: return .scrollDelta
         case .mouseButton: return .mouseButton
+        case .mouseDoubleClick: return .mouseDoubleClick
         case .textInput: return .textInput
         case .hotkey: return .hotkey
+        case .appSwitcher: return .appSwitcher
         case .motionPointerDelta: return .motionPointerDelta
         case .audioChunk: return .audioChunk
         case .acknowledgement: return .acknowledgement
@@ -429,10 +471,14 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .scrollDelta(try container.decode(ScrollDeltaPayload.self, forKey: .value))
         case .mouseButton:
             self = .mouseButton(try container.decode(MouseButtonPayload.self, forKey: .value))
+        case .mouseDoubleClick:
+            self = .mouseDoubleClick(try container.decode(MouseDoubleClickPayload.self, forKey: .value))
         case .textInput:
             self = .textInput(try container.decode(TextInputPayload.self, forKey: .value))
         case .hotkey:
             self = .hotkey(try container.decode(HotkeyPayload.self, forKey: .value))
+        case .appSwitcher:
+            self = .appSwitcher(try container.decode(AppSwitcherPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .audioChunk:
@@ -459,8 +505,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .pointerDelta(let value): try container.encode(value, forKey: .value)
         case .scrollDelta(let value): try container.encode(value, forKey: .value)
         case .mouseButton(let value): try container.encode(value, forKey: .value)
+        case .mouseDoubleClick(let value): try container.encode(value, forKey: .value)
         case .textInput(let value): try container.encode(value, forKey: .value)
         case .hotkey(let value): try container.encode(value, forKey: .value)
+        case .appSwitcher(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .audioChunk(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
@@ -487,7 +535,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "pointer_delta")
         case .scrollDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "scroll_delta")
-        case .mouseButton:
+        case .mouseButton, .mouseDoubleClick:
             break
         case .textInput(let value):
             guard !value.utf8.bytes.isEmpty else {
@@ -496,7 +544,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey:
+        case .hotkey, .appSwitcher:
             break
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")

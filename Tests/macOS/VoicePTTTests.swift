@@ -159,17 +159,92 @@ final class VoicePTTTests: XCTestCase {
         XCTAssertNil(RealtimeServerEvent.parse("not json"))
     }
 
+    func testNormalizerRewritesFinalBeforeTyping() throws {
+        let normalizer = FakeNormalizer { _ in "I am going to be late." }
+        let (coordinator, factory, sink) = makeCoordinator(normalizer: normalizer)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("um im gonna be late"))
+        XCTAssertTrue(waitUntil { sink.values == ["I am going to be late."] })
+        XCTAssertEqual(normalizer.inputs, ["um im gonna be late"])
+        XCTAssertEqual(coordinator.state.lastFinalText, "I am going to be late.")
+        XCTAssertEqual(coordinator.state.phase, .typed)
+    }
+
+    func testNormalizerEmptyResultTypesNothing() throws {
+        let (coordinator, factory, sink) = makeCoordinator(normalizer: FakeNormalizer { _ in "" })
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("um uh"))
+        XCTAssertTrue(waitUntil { coordinator.state.phase == .idle })
+        XCTAssertTrue(sink.values.isEmpty)
+    }
+
+    func testSlowNormalizerKeepsTypedOrder() throws {
+        let normalizer = FakeNormalizer(delay: 0.2) { $0.uppercased() }
+        let (coordinator, factory, sink) = makeCoordinator(normalizer: normalizer)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        coordinator.receive(try frame(streamB, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamB, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.count == 2 })
+
+        factory.sessions[1].handlers.onResult(.success("second"))
+        factory.sessions[0].handlers.onResult(.success("first"))
+        XCTAssertTrue(waitUntil { sink.values == ["FIRST", "SECOND"] })
+    }
+
+    func testSecureInputSkipsTypingAfterNormalizing() throws {
+        let normalizer = FakeNormalizer { _ in "My password is hunter two." }
+        let (coordinator, factory, sink) = makeCoordinator(secureInput: true, normalizer: normalizer)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("my password is hunter two"))
+        XCTAssertTrue(waitUntil { coordinator.state.phase == .failed })
+        XCTAssertTrue(sink.values.isEmpty)
+        XCTAssertNil(coordinator.state.lastFinalText)
+    }
+
+    func testS1MiniPromptMatchesTheTrainedFormat() {
+        XCTAssertEqual(
+            S1MiniNormalizer.prompt(for: "hello there"),
+            "<|im_start|>system\n" + S1MiniNormalizer.systemPrompt + "<|im_end|>\n"
+                + "<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\n"
+                + "hello there<|im_end|>\n"
+                + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
+    }
+
+    func testS1MiniResponseParsing() {
+        XCTAssertEqual(
+            S1MiniNormalizer.normalized(fromResponse: Data(#"{"model":"s1-mini","response":"Hello there.\n","done":true}"#.utf8)),
+            "Hello there."
+        )
+        // Filler-only speech normalizes to nothing, which is a result, not a failure.
+        XCTAssertEqual(S1MiniNormalizer.normalized(fromResponse: Data(#"{"response":""}"#.utf8)), "")
+        XCTAssertNil(S1MiniNormalizer.normalized(fromResponse: Data(#"{"error":"model not found"}"#.utf8)))
+        XCTAssertNil(S1MiniNormalizer.normalized(fromResponse: Data("not json".utf8)))
+    }
+
     // MARK: - Helpers
 
     private func makeCoordinator(
         idleTimeout: TimeInterval = 5,
-        secureInput: Bool = false
+        secureInput: Bool = false,
+        normalizer: TranscriptNormalizer? = nil
     ) -> (VoicePTTCoordinator, FakeSessionFactory, RecordingSink) {
         let factory = FakeSessionFactory()
         let sink = RecordingSink()
         let coordinator = VoicePTTCoordinator(
             sessions: factory,
             insertionSink: sink,
+            normalizer: normalizer,
             idleTimeout: idleTimeout,
             isSecureInputActive: { secureInput }
         )
@@ -234,6 +309,28 @@ private final class FakeSessionFactory: TranscriptionSessionFactory, @unchecked 
         let session = FakeSession(handlers: handlers)
         lock.withLock { _sessions.append(session) }
         return session
+    }
+}
+
+private final class FakeNormalizer: TranscriptNormalizer, @unchecked Sendable {
+    private let lock = NSLock()
+    private let delay: TimeInterval
+    private let transform: @Sendable (String) -> String
+    private var _inputs: [String] = []
+
+    init(delay: TimeInterval = 0, _ transform: @escaping @Sendable (String) -> String) {
+        self.delay = delay
+        self.transform = transform
+    }
+
+    var inputs: [String] { lock.withLock { _inputs } }
+
+    func normalize(_ transcript: String, completion: @escaping @Sendable (String) -> Void) {
+        lock.withLock { _inputs.append(transcript) }
+        let transform = transform
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+            completion(transform(transcript))
+        }
     }
 }
 

@@ -123,6 +123,8 @@ public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendabl
     case arrowDown
     case arrowLeft
     case arrowRight
+    case deleteBackward
+    case shiftTab
 }
 
 public struct MacPointerDelta: Equatable, Sendable {
@@ -156,6 +158,9 @@ public enum RemoteInputCommand: Equatable, Sendable {
     case pointer(MacPointerDelta)
     case scroll(MacScrollDelta)
     case mouseButton(button: MacMouseButton, isDown: Bool)
+    /// One atomic press-and-release carrying a click count of two. It holds no
+    /// button afterwards, so it needs no release bookkeeping.
+    case doubleClick(MacMouseButton)
     case modifier(key: MacModifierKey, isDown: Bool)
     case text(String)
     case hotkey(MacAllowedHotkey)
@@ -164,7 +169,7 @@ public enum RemoteInputCommand: Equatable, Sendable {
         switch self {
         case .pointer, .scroll, .text:
             return .bestEffort
-        case .mouseButton, .modifier, .hotkey:
+        case .mouseButton, .doubleClick, .modifier, .hotkey:
             return .reliable
         }
     }
@@ -314,7 +319,7 @@ public struct InputSafetyStateMachine: Sendable {
             } else {
                 held.modifiers.remove(key)
             }
-        case .pointer, .scroll, .text, .hotkey:
+        case .pointer, .scroll, .text, .hotkey, .doubleClick:
             break
         }
         return .allow(command)
@@ -355,7 +360,7 @@ public struct InputSafetyStateMachine: Sendable {
                 abs(delta.y) <= limits.maxScrollComponent
         case let .text(value):
             return !value.isEmpty && value.utf8.count <= limits.maxTextUTF8Bytes
-        case .mouseButton, .modifier, .hotkey:
+        case .mouseButton, .doubleClick, .modifier, .hotkey:
             return true
         }
     }
@@ -366,7 +371,7 @@ public struct InputSafetyStateMachine: Sendable {
             return value.isEmpty ? .emptyText : .textTooLarge
         case .pointer, .scroll:
             return .nonFiniteValue
-        case .mouseButton, .modifier, .hotkey:
+        case .mouseButton, .doubleClick, .modifier, .hotkey:
             return .invalidCommand
         }
     }

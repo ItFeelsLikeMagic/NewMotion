@@ -61,6 +61,9 @@ public final class IPhoneBLEPeripheralTransport {
     public var onStateChange: ((BLEPeripheralLifecycleState) -> Void)?
     public var onFrameReceived: ((BLETransportChannel, Data) -> Void)?
     public var onQueueFull: ((BLETransportChannel) -> Void)?
+    /// Fires when Core Bluetooth has room again.  Senders that hold a summed
+    /// delta instead of queueing it use this to push it out immediately.
+    public var onReadyToSend: (() -> Void)?
     public var onTransportError: ((Error) -> Void)?
 
     private let adapter: IPhonePeripheralManagerAdapter
@@ -237,6 +240,8 @@ public final class IPhoneBLEPeripheralTransport {
     private func flushAll() {
         flush(channel: .data, characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
         flush(channel: .control, characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        guard queuedFrameCount == 0, state == .ready else { return }
+        onReadyToSend?()
     }
 
     private func flush(channel: BLETransportChannel, characteristic: UUID) {
