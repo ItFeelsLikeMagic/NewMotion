@@ -4,13 +4,24 @@ import Foundation
 import ApplicationServices
 #endif
 
+/// What the focused field had to say. Anything but `.text` sends voice typing
+/// back to plain appending, and the label says why. The label is safe for logs
+/// and the debug snapshot; the text it stands for never is.
+public enum FocusedText: Equatable, Sendable {
+    case text(String)
+    case unavailable(String)
+
+    public var label: String {
+        switch self {
+        case let .text(value): value.isEmpty ? "emptyField" : "field"
+        case let .unavailable(reason): reason
+        }
+    }
+}
+
 /// Reads the text already sitting in the field that spoken words will join.
-/// The value is display-only: it must never be logged or written to the debug
-/// snapshot.
 public protocol FocusedTextReading: Sendable {
-    /// The whole text of the focused field, empty when the field is empty, or
-    /// nil when it cannot be read or the caret is not sitting at its end.
-    func focusedText() -> String?
+    func focusedText() -> FocusedText
 }
 
 /// Joins what is already in the field to what was just spoken, and works out
@@ -67,29 +78,38 @@ public final class AXFocusedTextReader: FocusedTextReading {
 
     public init() {}
 
-    public func focusedText() -> String? {
+    public func focusedText() -> FocusedText {
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, Self.messagingTimeout)
-        guard let field: AXUIElement = copy(kAXFocusedUIElementAttribute, from: system) else { return nil }
+        let focused: (value: AXUIElement?, error: AXError) = copy(kAXFocusedUIElementAttribute, from: system)
+        guard let field = focused.value else { return .unavailable(label("focus", focused.error)) }
         AXUIElementSetMessagingTimeout(field, Self.messagingTimeout)
-        guard let text: String = copy(kAXValueAttribute, from: field) else { return nil }
+
+        let value: (value: String?, error: AXError) = copy(kAXValueAttribute, from: field)
+        guard let text = value.value else { return .unavailable(label("value", value.error)) }
         let units = (text as NSString).length
-        guard units <= Self.maximumUnits else { return nil }
+        guard units <= Self.maximumUnits else { return .unavailable("tooLong") }
 
         // Typing lands at the caret, so a caret anywhere but the end would put
         // the merged text somewhere the speaker did not ask for.
-        guard let range: AXValue = copy(kAXSelectedTextRangeAttribute, from: field) else { return nil }
-        var selection = CFRange()
-        guard AXValueGetValue(range, .cfRange, &selection),
-              selection.length == 0,
-              selection.location == units else { return nil }
-        return text
+        let range: (value: AXValue?, error: AXError) = copy(kAXSelectedTextRangeAttribute, from: field)
+        guard let selected = range.value else { return .unavailable(label("range", range.error)) }
+        var caret = CFRange()
+        guard AXValueGetValue(selected, .cfRange, &caret) else { return .unavailable("range:shape") }
+        guard caret.length == 0, caret.location == units else { return .unavailable("caretNotAtEnd") }
+        return .text(text)
     }
 
-    private func copy<T>(_ attribute: String, from element: AXUIElement) -> T? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? T
+    private func copy<T>(_ attribute: String, from element: AXUIElement) -> (value: T?, error: AXError) {
+        var raw: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &raw)
+        return (raw as? T, error)
+    }
+
+    /// A successful read that still yielded nothing means the element answered
+    /// with something that is not text, which is a different fault to chase.
+    private func label(_ stage: String, _ error: AXError) -> String {
+        error == .success ? "\(stage):notText" : "\(stage):\(error.rawValue)"
     }
 }
 #endif

@@ -1032,7 +1032,7 @@ private struct HotkeyBar: View {
     }
 
     private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
-        Button(action: { send(hotkey) }, label: label)
+        Button(action: Haptics.tap { send(hotkey) }, label: label)
             .buttonStyle(.bordered)
             .frame(maxWidth: .infinity, minHeight: 44)
             .accessibilityLabel(hotkey.spokenName)
@@ -1081,6 +1081,7 @@ private struct AppSwitcherButton: View {
             guard !isHeld else { return }
             isHeld = true
             steps = 0
+            Haptics.play(.press)
             send(.begin)
         case let .moved(translationX):
             guard isHeld else { return }
@@ -1093,6 +1094,7 @@ private struct AppSwitcherButton: View {
     }
 
     private func step(to target: Int) {
+        guard steps != target else { return }
         while steps < target {
             steps += 1
             send(.next)
@@ -1101,12 +1103,14 @@ private struct AppSwitcherButton: View {
             steps -= 1
             send(.previous)
         }
+        Haptics.play(.step)
     }
 
     private func finish(_ phase: AppSwitcherPhase) {
         guard isHeld else { return }
         isHeld = false
         steps = 0
+        Haptics.play(.release)
         send(phase)
     }
 }
@@ -1150,7 +1154,10 @@ private struct RemoteControlTab: View {
                     momentumStrength: model.scrollMomentum,
                     edgeScrollEnabled: model.edgeScrollEnabled,
                     holdScrollEnabled: model.holdScrollEnabled,
-                    onScrollClutch: { model.setScrollClutch($0) }
+                    onScrollClutch: { engaged in
+                        model.setScrollClutch(engaged)
+                        Haptics.play(engaged ? .gestureBegan : .gestureEnded)
+                    }
                 ) { outputs in
                     model.handleRemoteInputEvents(outputs)
                 }
@@ -1189,7 +1196,10 @@ private struct RemoteControlTab: View {
                 }
             }
             .padding(Self.contentPadding)
-            .onAppear { model.setTrackpadVisible(true) }
+            .onAppear {
+                Haptics.prepare()
+                model.setTrackpadVisible(true)
+            }
             .onDisappear {
                 isKeyboardShowing = false
                 model.setTrackpadVisible(false)
@@ -1204,9 +1214,7 @@ private struct KeyboardToggleButton: View {
     @Binding var isShowing: Bool
 
     var body: some View {
-        Button {
-            isShowing.toggle()
-        } label: {
+        Button(action: Haptics.tap { isShowing.toggle() }) {
             Image(systemName: isShowing ? "keyboard.chevron.compact.down" : "keyboard")
                 .font(.title3)
                 .frame(width: 52, height: 52)
@@ -1250,21 +1258,22 @@ private struct RemoteSettingsTab: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 HStack {
-                                    Button("Confirm") { model.confirmPairing() }
+                                    Button("Confirm", action: Haptics.tap { model.confirmPairing() })
                                         .buttonStyle(.borderedProminent)
-                                    Button("Cancel") { model.cancelPairing() }
+                                    Button("Cancel", action: Haptics.tap { model.cancelPairing() })
                                         .buttonStyle(.bordered)
                                 }
                             }
                             .frame(maxWidth: .infinity)
                         } else {
-                            Button("Cancel scanner") { model.cancelPairing() }
+                            Button("Cancel scanner", action: Haptics.tap { model.cancelPairing() })
                         }
                     } else {
-                        Button("Scan Mac QR Code") { model.startPairing() }
-                        Button(model.isPaired ? "Ping Mac" : "Ping Mac (waiting)") {
-                            model.sendPing()
-                        }
+                        Button("Scan Mac QR Code", action: Haptics.tap { model.startPairing() })
+                        Button(
+                            model.isPaired ? "Ping Mac" : "Ping Mac (waiting)",
+                            action: Haptics.tap { model.sendPing() }
+                        )
                     }
 
                     LabeledContent("Bluetooth", value: model.bluetoothState.label)
