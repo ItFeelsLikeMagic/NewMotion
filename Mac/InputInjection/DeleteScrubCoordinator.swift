@@ -9,75 +9,74 @@ import PhoneRemoteShared
 public protocol RemoteInputSubmitting: AnyObject {
     @discardableResult
     func submit(_ command: RemoteInputCommand) -> InputInjectionResult
-
-    /// Returns once every key already submitted has reached the window server.
-    func waitForPostedInput()
 }
 
 extension SafeInputInjector: RemoteInputSubmitting {}
 
 /// Holds one press of a delete key so the text it rubbed out can come back.
 ///
-/// A notch is always the plain key the phone would have tapped, so what leaves
-/// is whatever the app in front does with Delete, or with Option and Delete.
-/// This never guesses at that amount.  It reads the field once as the press
-/// starts erasing, and again the moment the finger turns around; what is
-/// missing from that snapshot is exactly what left.  Restoring types the front
-/// of the missing text back, which is the most recent notch: deleting walks
-/// backwards from the caret, so typing forwards from it unwinds in order.
+/// The phone sends notches; it has no idea what is in the field.  So the field
+/// is read once, as the press starts erasing, and every notch after that is
+/// served from that one reading: a notch works out how much of the tail it
+/// wants, presses Delete exactly that many times, and remembers the characters
+/// it took.  Restoring types the last of them back.  Lifting the key throws the
+/// memory away, because by then the field may have moved on.
 ///
-/// Measuring has to wait for the keys.  `submit` hands them to a queue that
-/// paces them 10 ms apart and returns straight away, so a fast slide can leave
-/// a hundred milliseconds of them still in flight; a read taken then sees the
-/// field as it was several notches ago.  So a measurement waits out that queue
-/// first, and a measurement that found nothing missing is not kept: the next
-/// notch measures again, which is how a slide recovers from a read that was
-/// still too early.  A run of restores after a good measurement reads nothing,
-/// because by then this knows what it typed.
+/// The Mac decides where a word ends rather than pressing Option and Delete and
+/// asking the app afterwards.  Asking is what an app has to answer honestly,
+/// and Electron does not: Chromium hands back a container element for a
+/// contenteditable, and a container reports the caret at the start of the text
+/// however far along it really is, which reads exactly like a field that was
+/// emptied.  Counting its own plain Delete presses is the one measurement no
+/// app can get wrong, so the whole class of question disappears.  The cost is a
+/// word rule of its own, close to a Mac text field's, and about 20 ms per
+/// character in the key queue.
 ///
-/// This is what stops a press inventing text: every character typed back was in
-/// the field before and is not there now.  Anything that does not add up puts
-/// the press in blind mode, where notches still erase and restores are
-/// declined: a reversal faster than the keys land, an editor that rewrites what
-/// it is handed, a hand on the real keyboard.  A field that will not answer at
-/// all is blind from the first notch, and so is secure input, which is never
-/// read from and never typed into.
+/// A slide that runs past the start of the text presses nothing at all, so
+/// overshooting is free and everything it did erase still comes back.
+///
+/// When the field cannot be read there is nothing to count from, so a notch
+/// falls back to the plain key the phone would have tapped and there is nothing
+/// to restore.  Secure input is exactly that case: it is never read from and
+/// never typed into.
 public final class DeleteScrubCoordinator {
-    /// The key one notch presses: the same key the phone's plain tap sends, so
-    /// what a notch erases is whatever that app already does with it.
-    private static let notchHotkey: [DeleteScrubGranularity: MacAllowedHotkey] = [
+    /// What one notch falls back to for a field this could not read.
+    private static let blindHotkey: [DeleteScrubGranularity: MacAllowedHotkey] = [
         .character: .deleteBackward,
         .word: .deleteWordBackward
     ]
     /// A field that will not answer costs a quarter second of the main actor
-    /// per read, and that actor also carries every arriving BLE frame.  Reads
-    /// that answer are cheap, so the budget counts only the ones that fail:
-    /// one spare for an Electron tree still building, then the press goes
-    /// blind.
-    private static let maximumFailedReads = 2
+    /// per read, and that actor also carries every arriving BLE frame.  Only
+    /// failures count against this, and Electron needs several of them: its
+    /// accessibility tree is still being built as a press begins.
+    private static let maximumFailedReads = 6
     /// Enough of a slide to see its shape without a press growing without end.
-    private static let maximumTrail = 24
+    private static let maximumTrail = 40
+    /// Presses one notch may ask for, matching `InputPolicyLimits.maxHotkeyRun`
+    /// so a run this builds is never the thing the policy turns down.  Longer
+    /// than any word; a notch that hits it simply takes the first 64.
+    private static let maximumRun = 64
 
     private let submitter: RemoteInputSubmitting
     private let focusedText: FocusedTextReading?
     private let isSecureInputActive: @Sendable () -> Bool
 
-    /// The field as it stood before this press erased anything.
-    private var snapshot: [Character] = []
-    /// How much of the snapshot the field still holds.  Measured at the last
-    /// turn, then kept in step with what this has typed back.
-    private var present = 0
-    /// True while `present` is this coordinator's own arithmetic rather than a
-    /// reading, which is only trustworthy until the next delete.
-    private var hasTypedSinceMeasure = false
-    /// Set once the sums stop adding up.  Erasing goes on; restoring does not.
+    /// The text in front of the caret that this press has not erased yet.
+    private var remaining: [Character] = []
+    /// True once the field has answered.  Kept apart from `remaining` being
+    /// empty, which is the ordinary state of a press that erased everything.
+    private var hasSnapshot = false
+    /// What each notch took, newest last.  Restoring walks back along it, so a
+    /// notch always gives back exactly what its own delete took.
+    private var removed: [String] = []
+    /// Set when there is nothing to count from.  Erasing goes on blind;
+    /// restoring does not happen at all.
     private var isBlind = false
     private var failedReads = 0
     /// What each notch of the last press did, for the debug surface.  Counts
     /// and outcomes only; field text never appears here.
     private var trail: [String] = []
-    /// Why the field could not be used, in the reader's own words, so a slide
-    /// that would not restore says what stopped it.
+    /// Why the field could not be read, in the reader's own words.
     private var readFailure = ""
 
     public init(
@@ -99,7 +98,6 @@ public final class DeleteScrubCoordinator {
     @discardableResult
     public func handle(_ payload: DeleteScrubPayload) -> String {
         let outcome = apply(payload)
-        // A long slide is a long trail, and only the shape of it is useful.
         trail.append(outcome)
         if trail.count > Self.maximumTrail { trail.removeFirst() }
         return outcome
@@ -117,7 +115,7 @@ public final class DeleteScrubCoordinator {
         case .delete:
             return delete(payload.granularity)
         case .restore:
-            return restore(payload.granularity)
+            return restore()
         case .end:
             reset()
             return "deleteScrub end"
@@ -131,117 +129,109 @@ public final class DeleteScrubCoordinator {
     }
 
     private func delete(_ granularity: DeleteScrubGranularity) -> String {
-        if snapshot.isEmpty, !isBlind { takeSnapshot() }
-        guard let hotkey = Self.notchHotkey[granularity],
+        if !hasSnapshot, !isBlind { takeSnapshot() }
+        // Either the budget is spent or this one read did not answer.  A notch
+        // with nothing to count from still has to erase something.
+        guard hasSnapshot else { return blindDelete(granularity) }
+
+        let length = min(Self.runLength(in: remaining, granularity: granularity), Self.maximumRun)
+        // Past the start of the text.  Pressing nothing is what makes an
+        // overshoot free: the notches already taken are still restorable.
+        guard length > 0 else { return "deleteScrub delete start" }
+        guard deleteBackward(length) else { return "deleteScrub delete failed" }
+        removed.append(String(remaining.suffix(length)))
+        remaining.removeLast(length)
+        return "deleteScrub delete \(length)"
+    }
+
+    private func restore() -> String {
+        // Secure input can come on mid-press, so the typing side is guarded as
+        // well as the reading side.
+        guard !isSecureInputActive() else { return "deleteScrub restore secure" }
+        guard let run = removed.last else {
+            return isBlind ? "deleteScrub restore blind:\(readFailure)" : "deleteScrub nothing to restore"
+        }
+        guard submitter.submit(.text(run)) == .applied else {
+            return "deleteScrub restore failed"
+        }
+        removed.removeLast()
+        remaining.append(contentsOf: run)
+        return "deleteScrub restore \(run.count)"
+    }
+
+    /// No reading to count from, so the notch becomes the key a plain tap would
+    /// have sent and the app decides what it takes.  Nothing knows what left,
+    /// so nothing is restorable.
+    private func blindDelete(_ granularity: DeleteScrubGranularity) -> String {
+        guard let hotkey = Self.blindHotkey[granularity],
               submitter.submit(.hotkey(hotkey)) == .applied else {
             return "deleteScrub delete failed"
         }
-        hasTypedSinceMeasure = false
-        return isBlind ? "deleteScrub delete blind" : "deleteScrub delete"
+        return "deleteScrub delete blind:\(readFailure)"
     }
 
-    private func restore(_ granularity: DeleteScrubGranularity) -> String {
-        guard !isBlind else { return "deleteScrub restore blind:\(readFailure)" }
-        // Secure input can come on mid-press, so the typing side is guarded as
-        // well as the reading side.
-        guard !isSecureInputActive() else {
-            isBlind = true
-            return "deleteScrub restore secure"
-        }
-        if !hasTypedSinceMeasure, !measure() { return "deleteScrub restore no:\(readFailure)" }
-
-        let missing = snapshot[present...]
-        // Nothing missing, having just been measured, means the keys had not
-        // landed yet.  Leaving the measurement unclaimed is what lets the next
-        // notch look again instead of the whole slide going quiet.
-        guard !missing.isEmpty else { return "deleteScrub restore early" }
-        let length = Self.restoreRun(in: missing, granularity: granularity)
-        guard submitter.submit(.text(String(missing.prefix(length)))) == .applied else {
-            return "deleteScrub restore failed"
-        }
-        present += length
-        hasTypedSinceMeasure = true
-        return "deleteScrub restore \(length)"
-    }
-
-    /// The field before the press erases anything.  A read that fails is not
-    /// fatal: the next notch tries again, which is what an Electron tree still
-    /// being built needs.  Running out of reads is what ends it.
+    /// The text in front of the caret before this press erases anything.  A
+    /// read that does not answer is not fatal: the next notch tries again,
+    /// which is what an Electron tree still being built needs.  Running out of
+    /// tries is what ends it.
     private func takeSnapshot() {
-        guard let text = read() else { return }
-        guard !text.isEmpty else {
-            isBlind = true
-            return
-        }
-        snapshot = text
-        present = text.count
-    }
-
-    /// Works out how much of the snapshot survived the notches so far.  The
-    /// field has to still be the front of the snapshot; anything else means
-    /// something other than this press changed the text, and then nothing here
-    /// knows what is safe to type.
-    private func measure() -> Bool {
-        // The keys this press already sent have to be in the field before the
-        // field is worth reading.
-        submitter.waitForPostedInput()
-        guard let text = read() else { return false }
-        // Not the front of the snapshot means something other than this press
-        // changed the text, and then nothing here knows what is safe to type.
-        guard snapshot.starts(with: text) else {
-            readFailure = "changed"
-            isBlind = true
-            return false
-        }
-        present = text.count
-        return true
-    }
-
-    /// A read that does not answer is not fatal on its own: the next notch
-    /// tries again, which is what an Electron tree still being built needs.
-    /// Running out of tries is what ends the press.
-    private func read() -> [Character]? {
         guard let focusedText, !isSecureInputActive() else {
             readFailure = focusedText == nil ? "noReader" : "secure"
             isBlind = true
-            return nil
+            return
         }
-        let answer = focusedText.focusedText()
-        guard case let .text(value) = answer else {
+        let answer = focusedText.textAroundCaret()
+        guard case let .split(head, _) = answer else {
             readFailure = answer.label
             failedReads += 1
             if failedReads >= Self.maximumFailedReads { isBlind = true }
-            return nil
+            return
         }
-        return Array(value)
+        guard !head.isEmpty else {
+            readFailure = "emptyField"
+            isBlind = true
+            return
+        }
+        remaining = Array(head)
+        hasSnapshot = true
+    }
+
+    private func deleteBackward(_ count: Int) -> Bool {
+        submitter.submit(.hotkeyRun(.deleteBackward, times: count)) == .applied
     }
 
     private func reset() {
-        snapshot = []
-        present = 0
-        hasTypedSinceMeasure = false
+        remaining = []
+        hasSnapshot = false
+        removed = []
         isBlind = false
         failedReads = 0
         readFailure = ""
     }
 
-    /// One notch's worth from the front of the missing text: a single
-    /// character, or a whole word with the space that trails it, mirroring what
-    /// Option and Delete takes going the other way.  A leading space belongs to
-    /// the word already back in the field, so it comes along too and no notch
-    /// is ever empty.
-    static func restoreRun(in text: ArraySlice<Character>, granularity: DeleteScrubGranularity) -> Int {
+    /// How many characters at the end of `text` one notch takes.  Trailing
+    /// spaces go with the word in front of them, and a word stops at
+    /// punctuation, which is what Option and Delete does in a Mac text field:
+    /// `foo.bar` gives up `bar` and leaves the dot.
+    static func runLength(in text: [Character], granularity: DeleteScrubGranularity) -> Int {
         guard !text.isEmpty else { return 0 }
         switch granularity {
         case .character:
             return 1
         case .word:
-            var length = 0
-            while length < text.count, text[text.startIndex + length].isWhitespace { length += 1 }
-            while length < text.count, !text[text.startIndex + length].isWhitespace { length += 1 }
-            while length < text.count, text[text.startIndex + length].isWhitespace { length += 1 }
-            return length
+            var index = text.count
+            while index > 0, text[index - 1].isWhitespace { index -= 1 }
+            guard index > 0 else { return text.count }
+            let wantsWord = isWord(text[index - 1])
+            while index > 0, !text[index - 1].isWhitespace, isWord(text[index - 1]) == wantsWord {
+                index -= 1
+            }
+            return text.count - index
         }
+    }
+
+    private static func isWord(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber
     }
 }
 #endif

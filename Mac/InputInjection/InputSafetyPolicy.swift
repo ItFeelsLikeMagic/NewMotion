@@ -129,6 +129,14 @@ public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendabl
     case shiftTab
     case missionControl
     case appExpose
+    case nextWindow
+    case newItem
+    case newTab
+    case closeWindow
+    case selectLeft
+    case selectRight
+    case selectUp
+    case selectDown
 }
 
 public struct MacPointerDelta: Equatable, Sendable {
@@ -171,12 +179,18 @@ public enum RemoteInputCommand: Equatable, Sendable {
     case modifier(key: MacModifierKey, isDown: Bool)
     case text(String)
     case hotkey(MacAllowedHotkey)
+    /// One hotkey pressed `times` over, as a single burst.  The remote has no
+    /// way to ask for this; a held delete key's slide builds it on the Mac,
+    /// where the number of presses is the very thing being counted.  Sending
+    /// the run as one command is what keeps a word from taking a tenth of a
+    /// second: the presses inside a run need no spacing from each other.
+    case hotkeyRun(MacAllowedHotkey, times: Int)
 
     public var delivery: InputCommandDelivery {
         switch self {
         case .pointer, .scroll, .text:
             return .bestEffort
-        case .mouseButton, .doubleClick, .modifier, .hotkey:
+        case .mouseButton, .doubleClick, .modifier, .hotkey, .hotkeyRun:
             return .reliable
         }
     }
@@ -250,15 +264,21 @@ public struct InputPolicyLimits: Equatable, Sendable {
     public var maxPointerComponent: Double
     public var maxScrollComponent: Double
     public var maxTextUTF8Bytes: Int
+    /// Presses one command may ask for.  Longer than any word a delete key
+    /// would take in one notch, and short enough that a bad number cannot hold
+    /// the key queue for a noticeable time.
+    public var maxHotkeyRun: Int
 
     public init(
         maxPointerComponent: Double = 10_000,
         maxScrollComponent: Double = 10_000,
-        maxTextUTF8Bytes: Int = 4_096
+        maxTextUTF8Bytes: Int = 4_096,
+        maxHotkeyRun: Int = 64
     ) {
         self.maxPointerComponent = max(1, maxPointerComponent)
         self.maxScrollComponent = max(1, maxScrollComponent)
         self.maxTextUTF8Bytes = max(1, maxTextUTF8Bytes)
+        self.maxHotkeyRun = max(1, maxHotkeyRun)
     }
 }
 
@@ -326,7 +346,7 @@ public struct InputSafetyStateMachine: Sendable {
             } else {
                 held.modifiers.remove(key)
             }
-        case .pointer, .scroll, .text, .hotkey, .doubleClick:
+        case .pointer, .scroll, .text, .hotkey, .hotkeyRun, .doubleClick:
             break
         }
         return .allow(command)
@@ -371,6 +391,8 @@ public struct InputSafetyStateMachine: Sendable {
                 abs(delta.y) <= limits.maxScrollComponent
         case let .text(value):
             return !value.isEmpty && value.utf8.count <= limits.maxTextUTF8Bytes
+        case let .hotkeyRun(_, times):
+            return times > 0 && times <= limits.maxHotkeyRun
         case .mouseButton, .doubleClick, .modifier, .hotkey:
             return true
         }
@@ -382,7 +404,7 @@ public struct InputSafetyStateMachine: Sendable {
             return value.isEmpty ? .emptyText : .textTooLarge
         case .pointer, .scroll:
             return .nonFiniteValue
-        case .mouseButton, .doubleClick, .modifier, .hotkey:
+        case .mouseButton, .doubleClick, .modifier, .hotkey, .hotkeyRun:
             return .invalidCommand
         }
     }

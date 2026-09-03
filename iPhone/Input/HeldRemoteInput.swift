@@ -36,12 +36,12 @@ struct HeldRemoteInput: Equatable {
             } else {
                 buttons.remove(button)
             }
-        case let .appSwitcher(value):
-            // The switcher holds Command from the first Tab until the walk is
+        case let .tabWalk(value):
+            // The walk holds its modifier from the first Tab until it is
             // committed or cancelled; the steps between change nothing.
             switch value.phase {
-            case .begin: modifiers.insert(.command)
-            case .commit, .cancel: modifiers.remove(.command)
+            case .begin: modifiers.insert(HeldModifiers(value.modifier))
+            case .commit, .cancel: modifiers.remove(HeldModifiers(value.modifier))
             case .next, .previous: break
             }
         case .pointerDelta, .scrollDelta, .motionPointerDelta, .mouseDoubleClick,

@@ -621,12 +621,14 @@ final class MacRemoteAppModel: ObservableObject {
         case .pong:
             lastApplicationMessage = "pong"
             return
-        case let .appSwitcher(value):
+        case let .tabWalk(value):
             var applied = true
-            for command in SharedInputProtocolAdapter.commands(for: value.phase) {
+            for command in SharedInputProtocolAdapter.commands(for: value) {
                 if injector.submit(command) != .applied { applied = false }
             }
-            lastApplicationMessage = applied ? "appSwitcher \(value.phase)" : "appSwitcher blocked"
+            lastApplicationMessage = applied
+                ? "tabWalk \(value.modifier) \(value.phase)"
+                : "tabWalk blocked"
         case let .deleteScrub(value):
             // Several messages make up one press, so this needs the memory the
             // coordinator holds; every event it posts still goes through the
@@ -726,8 +728,61 @@ final class MacRemoteAppModel: ObservableObject {
         server.focusProbe = { reader.diagnostics() }
         let vocabulary = screenVocabularyReader
         server.vocabularyProbe = { vocabulary.probe(bundleID: $0) }
+        let keys = MainThreadInjector(injector: injector)
+        server.keyBurstProbe = { count in
+            MacRemoteAppModel.measureKeyBurst(count, keys: keys.injector, reader: reader)
+        }
         server.start()
         debugServer = server
+    }
+
+    /// Carries the injector to the debug probe.  Both are main-thread only:
+    /// the probe is hopped there before it runs, which is what makes this safe.
+    private struct MainThreadInjector: @unchecked Sendable {
+        let injector: SafeInputInjector
+    }
+
+    /// Presses Delete `asked` times as one burst and reports how many
+    /// characters the focused field actually lost.  It is the only honest way to
+    /// settle how much spacing a run of one repeated key needs; the numbers are
+    /// lengths and milliseconds, never text.
+    nonisolated private static func measureKeyBurst(
+        _ asked: Int,
+        keys: SafeInputInjector,
+        reader: FocusedTextReading
+    ) -> [String: String] {
+        let wanted = min(max(asked, 1), InputPolicyLimits().maxHotkeyRun)
+        // It types its own filler so the count is known and the caret is left
+        // where a delete key would find it.  Point this at a scratch window.
+        let filler = String(repeating: "abcdefghij", count: (wanted / 10) + 2)
+        guard keys.submit(.text(filler)) == .applied else {
+            return ["error": "filler refused"]
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        guard case let .split(before, _) = reader.textAroundCaret() else {
+            return ["error": "field unreadable"]
+        }
+        guard before.count >= wanted else {
+            return ["error": "filler did not land", "typed": String(filler.count), "read": String(before.count)]
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = keys.submit(.hotkeyRun(.deleteBackward, times: wanted))
+        // Long enough for the whole burst to be posted and taken in.  The app
+        // being typed into runs on its own, so sleeping here does not hold it up.
+        Thread.sleep(forTimeInterval: 0.8)
+        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1_000
+        guard case let .split(after, _) = reader.textAroundCaret() else {
+            return ["error": "field unreadable after"]
+        }
+        return [
+            "asked": String(wanted),
+            "removed": String(before.count - after.count),
+            "filler": String(filler.count),
+            "before": String(before.count),
+            "after": String(after.count),
+            "result": String(describing: result),
+            "elapsedMs": String(format: "%.0f", elapsed)
+        ]
     }
 
     private func publishDebugState() {

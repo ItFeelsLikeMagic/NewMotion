@@ -12,15 +12,18 @@ public final class SafeInputInjector {
     private var policy: InputSafetyStateMachine
     private let sink: InputEventSink
     private let accessibility: AccessibilityTrustProviding?
+    private let layout: KeyboardLayoutLookup
 
     public init(
         policy: InputSafetyStateMachine = InputSafetyStateMachine(),
         sink: InputEventSink,
-        accessibility: AccessibilityTrustProviding? = nil
+        accessibility: AccessibilityTrustProviding? = nil,
+        layout: KeyboardLayoutLookup = ActiveKeyboardLayout.shared
     ) {
         self.policy = policy
         self.sink = sink
         self.accessibility = accessibility
+        self.layout = layout
     }
 
     public var state: InputControlState { policy.state }
@@ -75,13 +78,6 @@ public final class SafeInputInjector {
 
     /// Releases all physical button/modifier state.  This is safe to call for
     /// disconnect, sleep, shutdown, watchdog expiry, and repeated callbacks.
-    /// Returns once every event this has already posted has reached the window
-    /// server.  A caller that wants to read back what its keys did has to wait
-    /// for them; the pacing runs on a queue of its own.
-    public func waitForPostedInput() {
-        sink.waitForPostedInput()
-    }
-
     @discardableResult
     public func releaseAllInputs(reason: ReleaseReason = .explicit) -> InputInjectionResult {
         let heldBefore = policy.held
@@ -125,7 +121,12 @@ public final class SafeInputInjector {
         case let .text(value):
             try sink.send(.unicodeText(value))
         case let .hotkey(hotkey):
-            try sink.send(.hotkey(HotkeyPhysicalSequence.transitions(for: hotkey)))
+            try sink.send(.hotkey(HotkeyPhysicalSequence.transitions(for: hotkey, layout: layout)))
+        case let .hotkeyRun(hotkey, times):
+            try sink.send(.hotkeyRun(
+                HotkeyPhysicalSequence.transitions(for: hotkey, layout: layout),
+                times: times
+            ))
         }
     }
 
@@ -157,39 +158,70 @@ public struct PhysicalKeyTransition: Equatable, Sendable {
 /// Physical key-code mapping is kept on the Mac side and selected only from
 /// the fixed protocol allowlist.
 public enum HotkeyPhysicalSequence {
-    public static func transitions(for hotkey: MacAllowedHotkey) -> [PhysicalKeyTransition] {
+    /// What a chord presses besides its modifiers.  A letter is named by the
+    /// character it has to produce, because the key carrying that character
+    /// moves with the keyboard layout; the QWERTY position rides along as the
+    /// fallback for when the active layout cannot be read.
+    private enum ChordKey {
+        case code(UInt16)
+        case letter(Character, qwerty: UInt16)
+    }
+
+    /// `layout` nil means resolve letters at their QWERTY positions.
+    public static func transitions(
+        for hotkey: MacAllowedHotkey,
+        layout: KeyboardLayoutLookup? = nil
+    ) -> [PhysicalKeyTransition] {
         let commandKey: UInt16 = 55
-        let key: UInt16
+        let key: ChordKey
         let modifiers: [UInt16]
 
         switch hotkey {
-        case .copy: key = 8; modifiers = [commandKey]
-        case .paste: key = 9; modifiers = [commandKey]
-        case .undo: key = 6; modifiers = [commandKey]
-        case .redo: key = 6; modifiers = [commandKey, 56] // Shift + Command + Z
-        case .selectAll: key = 0; modifiers = [commandKey]
-        case .escape: key = 53; modifiers = []
-        case .return: key = 36; modifiers = []
-        case .tab: key = 48; modifiers = []
-        case .arrowUp: key = 126; modifiers = []
-        case .arrowDown: key = 125; modifiers = []
-        case .arrowLeft: key = 123; modifiers = []
-        case .arrowRight: key = 124; modifiers = []
-        case .deleteBackward: key = 51; modifiers = []
-        case .deleteWordBackward: key = 51; modifiers = [58] // Option + Delete
-        case .deleteLineBackward: key = 51; modifiers = [commandKey]
-        case .shiftTab: key = 48; modifiers = [56]
+        case .copy: key = .letter("c", qwerty: 8); modifiers = [commandKey]
+        case .paste: key = .letter("v", qwerty: 9); modifiers = [commandKey]
+        case .undo: key = .letter("z", qwerty: 6); modifiers = [commandKey]
+        case .redo: key = .letter("z", qwerty: 6); modifiers = [commandKey, 56] // Shift + Command + Z
+        case .selectAll: key = .letter("a", qwerty: 0); modifiers = [commandKey]
+        case .escape: key = .code(53); modifiers = []
+        case .return: key = .code(36); modifiers = []
+        case .tab: key = .code(48); modifiers = []
+        case .arrowUp: key = .code(126); modifiers = []
+        case .arrowDown: key = .code(125); modifiers = []
+        case .arrowLeft: key = .code(123); modifiers = []
+        case .arrowRight: key = .code(124); modifiers = []
+        case .deleteBackward: key = .code(51); modifiers = []
+        case .deleteWordBackward: key = .code(51); modifiers = [58] // Option + Delete
+        case .deleteLineBackward: key = .code(51); modifiers = [commandKey]
+        case .shiftTab: key = .code(48); modifiers = [56]
         // Control + Up is the stock Mission Control shortcut. If it has been
         // remapped in System Settings, the swipe does what that keyboard
         // shortcut now does, exactly as the keys themselves would.
-        case .missionControl: key = 126; modifiers = [59]
-        case .appExpose: key = 125; modifiers = [59]
+        case .missionControl: key = .code(126); modifiers = [59]
+        case .appExpose: key = .code(125); modifiers = [59]
+        case .nextWindow: key = .letter("`", qwerty: 50); modifiers = [commandKey]
+        case .newItem: key = .letter("n", qwerty: 45); modifiers = [commandKey]
+        case .newTab: key = .letter("t", qwerty: 17); modifiers = [commandKey]
+        case .closeWindow: key = .letter("w", qwerty: 13); modifiers = [commandKey]
+        case .selectLeft: key = .code(123); modifiers = [56]
+        case .selectRight: key = .code(124); modifiers = [56]
+        case .selectUp: key = .code(126); modifiers = [56]
+        case .selectDown: key = .code(125); modifiers = [56]
         }
 
+        let code = resolve(key, on: layout)
         var result = modifiers.map { PhysicalKeyTransition(keyCode: $0, isDown: true) }
-        result.append(PhysicalKeyTransition(keyCode: key, isDown: true))
-        result.append(PhysicalKeyTransition(keyCode: key, isDown: false))
+        result.append(PhysicalKeyTransition(keyCode: code, isDown: true))
+        result.append(PhysicalKeyTransition(keyCode: code, isDown: false))
         result.append(contentsOf: modifiers.reversed().map { PhysicalKeyTransition(keyCode: $0, isDown: false) })
         return result
+    }
+
+    private static func resolve(_ key: ChordKey, on layout: KeyboardLayoutLookup?) -> UInt16 {
+        switch key {
+        case let .code(code):
+            return code
+        case let .letter(character, qwerty):
+            return layout?.keyCode(for: character) ?? qwerty
+        }
     }
 }

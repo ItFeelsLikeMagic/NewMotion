@@ -44,15 +44,15 @@ private final class FakeInputLink: InputLink {
 final class InputPipelineTests: XCTestCase {
     /// The held set is folded from what actually went out, so the two things
     /// the remote can hold are the two it counts.
-    func testHeldInputTracksTheDragButtonAndTheSwitcherModifier() {
+    func testHeldInputTracksTheDragButtonAndTheWalkModifier() {
         var held = HeldRemoteInput()
         XCTAssertTrue(held.isEmpty)
 
         held.record(.mouseButton(MouseButtonPayload(button: .left, isDown: true, clickCount: 2)))
         XCTAssertEqual(held.buttons, .left)
 
-        held.record(.appSwitcher(AppSwitcherPayload(phase: .begin)))
-        held.record(.appSwitcher(AppSwitcherPayload(phase: .next)))
+        held.record(.tabWalk(TabWalkPayload(phase: .begin, modifier: .command)))
+        held.record(.tabWalk(TabWalkPayload(phase: .next, modifier: .command)))
         XCTAssertEqual(held.modifiers, .command)
 
         // A click and a hotkey carry their own release, so they hold nothing.
@@ -61,7 +61,7 @@ final class InputPipelineTests: XCTestCase {
         XCTAssertEqual(held.buttons, .left)
         XCTAssertEqual(held.modifiers, .command)
 
-        held.record(.appSwitcher(AppSwitcherPayload(phase: .commit)))
+        held.record(.tabWalk(TabWalkPayload(phase: .commit, modifier: .command)))
         held.record(.mouseButton(MouseButtonPayload(button: .left, isDown: false)))
         XCTAssertTrue(held.isEmpty)
     }

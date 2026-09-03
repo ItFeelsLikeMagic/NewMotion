@@ -50,42 +50,61 @@ struct PushToTalkDragZones: View {
         let diameter = zone.isEdit ? Self.editDiameter : Self.cancelDiameter
         // Into the visible slice: diagonally for a corner, sideways for an edge.
         let labelInset = diameter / 4
-        return Circle()
-            .fill(armed ? tint : tint.opacity(0.16))
-            .overlay {
-                Circle().strokeBorder(tint.opacity(armed ? 0 : 0.55), lineWidth: 1)
+        return ZStack {
+            // Glass while it waits, solid the moment the finger is on it, so
+            // the armed target is unmistakable.
+            if armed {
+                Circle().fill(tint)
+            } else {
+                FrostedDisc(tint: tint)
             }
-            .overlay {
-                VStack(spacing: 4) {
-                    Image(systemName: icon(for: zone, armed: armed))
-                        .font(zone.isEdit ? .body : .title2)
-                    Text(armed ? "Release" : (zone.isEdit ? "Edit" : "Cancel"))
-                        .font(.caption2)
-                }
-                .foregroundStyle(armed ? Color.white : tint)
-                .offset(
-                    x: zone.isLeading ? labelInset : -labelInset,
-                    y: zone.isEdit ? 0 : -labelInset
-                )
+            VStack(spacing: 4) {
+                Image(systemName: icon(for: zone, armed: armed))
+                    .font(zone.isEdit ? .body : .title2)
+                Text(armed ? "Release" : (zone.isEdit ? "Edit" : "Cancel"))
+                    .font(.caption2)
             }
-            .frame(width: diameter, height: diameter)
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                controller.setZoneFrame(zone, frame)
-            }
-            // Negative padding rather than an offset: it moves the circle in
-            // layout, so the frame it reports is where the finger will find it.
-            .padding(zone.isLeading ? .leading : .trailing, -diameter / 2)
-            .padding(.bottom, zone.isEdit ? Self.editBottomInset : -diameter / 2)
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity,
-                alignment: zone.isLeading ? .bottomLeading : .bottomTrailing
+            .foregroundStyle(armed ? Color.white : tint)
+            .offset(
+                x: zone.isLeading ? labelInset : -labelInset,
+                y: zone.isEdit ? 0 : -labelInset
             )
+        }
+        .frame(width: diameter, height: diameter)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            controller.setZoneFrame(zone, frame)
+        }
+        // Negative padding rather than an offset: it moves the circle in
+        // layout, so the frame it reports is where the finger will find it.
+        .padding(zone.isLeading ? .leading : .trailing, -diameter / 2)
+        .padding(.bottom, zone.isEdit ? Self.editBottomInset : -diameter / 2)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: zone.isLeading ? .bottomLeading : .bottomTrailing
+        )
     }
 
     private func icon(for zone: PushToTalkZone, armed: Bool) -> String {
         if zone.isEdit { return armed ? "pencil.circle.fill" : "pencil" }
         return armed ? "trash.fill" : "trash"
+    }
+}
+
+/// Glass over the screen with a wash of the zone's colour.  Under the corners
+/// there is only the window background and the pale key fills, which no blur
+/// can make show through; the glass rim is what says the disc sits on top.
+private struct FrostedDisc: View {
+    let tint: Color
+
+    var body: some View {
+        if #available(iOS 26, *) {
+            Color.clear.glassEffect(.regular.tint(tint.opacity(0.2)), in: .circle)
+        } else {
+            Circle().fill(.ultraThinMaterial)
+            Circle().fill(tint.opacity(0.16))
+            Circle().strokeBorder(tint.opacity(0.55), lineWidth: 1)
+        }
     }
 }
 #endif

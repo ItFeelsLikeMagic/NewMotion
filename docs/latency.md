@@ -27,8 +27,15 @@ the key it modifies, or the Dock sees a bare Tab and never opens the switcher.
 
 | Gap | Value | Applies to |
 | --- | --- | --- |
-| `modifierSettle` | 25 ms | after a Command or Shift flags change |
+| `modifierSettle` | 0 ms | after a Command or Shift flags change |
 | `keyGap` | 10 ms | between ordinary key events |
+| `keyRunGap` | 0 ms | inside one `hotkeyRun`, a single key repeated |
+
+A run of one repeated key is the exception to the first sentence, because there
+is nothing in it to distinguish: the presses are identical by definition. So a
+held delete key's word notch goes out as one `hotkeyRun` command with no
+spacing inside it, and a five-letter word costs about a millisecond instead of
+about 100 ms. Measured, not assumed; see below.
 
 That gives, from the moment a message lands on the Mac:
 
@@ -143,6 +150,28 @@ so the queue stayed empty and the highlight tracked the finger.
 
 The Bluetooth hop is now the largest single cost, and it is not ours to tune
 directly; macOS and iOS negotiate the connection interval.
+
+### A run of one repeated key, 2026-09-04
+
+The worry was that identical key events posted with no gap would be coalesced
+by the window server, or read as a key repeat, and that characters would
+silently go missing. That would be serious for the delete slide, whose whole
+design rests on knowing exactly how many characters left.
+
+It does not happen. `/keyburst?count=N` types its own filler into the focused
+field, presses Delete `N` times as one unpaced run, and reports how many
+characters actually left:
+
+| Target | Asked | Removed |
+| --- | --- | --- |
+| TextEdit, `AXTextArea` | 8, 20, 40, 64 | 8, 20, 40, 64 |
+| Chromium textarea | 20, 64 | 20, 64 |
+| Chromium, 64 five times over | 64 each | 64 each |
+
+Key repeat is a flag the sender sets on the event, not something worked out
+from timing, and the window server coalesces mouse-moved events rather than
+key events. Typed text has always gone out unpaced through the same queue,
+with an identical key code on every event, and has never dropped a character.
 
 ## Future experiments, not started
 

@@ -20,9 +20,29 @@ public enum FocusedText: Equatable, Sendable {
     }
 }
 
+/// The field either side of the caret.  A held delete key only ever erases
+/// from the caret backwards, so `head` is the part that shrinks and `tail` is
+/// the part that has to stay put for a reading to mean anything: a caret that
+/// moved without deleting shows up as a tail that grew.
+public enum FocusedCaretText: Equatable, Sendable {
+    case split(head: String, tail: String)
+    case unavailable(String)
+
+    public var label: String {
+        switch self {
+        case .split: "split"
+        case let .unavailable(reason): reason
+        }
+    }
+}
+
 /// Reads the text already sitting in the field that spoken words will join.
 public protocol FocusedTextReading: Sendable {
     func focusedText() -> FocusedText
+
+    /// The field either side of the caret.  A requirement rather than only an
+    /// extension, so a reader that can see the caret is actually asked.
+    func textAroundCaret() -> FocusedCaretText
 
     /// Called when the speaker starts talking. A field that has to be woken
     /// before it can be read gets that head start here instead of stalling the
@@ -32,6 +52,9 @@ public protocol FocusedTextReading: Sendable {
 
 public extension FocusedTextReading {
     func prepare() {}
+
+    /// A reader that cannot see the caret.  Only the Accessibility reader can.
+    func textAroundCaret() -> FocusedCaretText { .unavailable("noCaretRead") }
 }
 
 /// Joins what is already in the field to what was just spoken, and works out
@@ -111,6 +134,44 @@ public final class AXFocusedTextReader: FocusedTextReading {
         guard AXValueGetValue(selected, .cfRange, &caret) else { return .unavailable("range:shape") }
         guard caret.length == 0, caret.location == units else { return .unavailable("caretNotAtEnd") }
         return .text(text)
+    }
+
+    /// Where the caret is and what sits either side of it.  Unlike
+    /// `focusedText`, this does not insist the caret be at the very end: a
+    /// held delete key erases backwards from wherever it is, and after a slide
+    /// that ran past the start of a line it very often is not at the end.
+    public func textAroundCaret() -> FocusedCaretText {
+        let focused = focusedElement()
+        guard let field = focused.value else { return .unavailable(label("focus", focused.error)) }
+        AXUIElementSetMessagingTimeout(field, Self.messagingTimeout)
+
+        let value: (value: String?, error: AXError) = copy(kAXValueAttribute, from: field)
+        guard let text = value.value else { return .unavailable(label("value", value.error)) }
+        let units = (text as NSString).length
+        guard units <= Self.maximumUnits else { return .unavailable("tooLong") }
+
+        let range: (value: AXValue?, error: AXError) = copy(kAXSelectedTextRangeAttribute, from: field)
+        guard let selected = range.value else { return .unavailable(label("range", range.error)) }
+        var caret = CFRange()
+        guard AXValueGetValue(selected, .cfRange, &caret) else { return .unavailable("range:shape") }
+        // A selection is not a caret, and Delete would take the selection
+        // instead of the character before it.
+        guard caret.length == 0 else { return .unavailable("selection") }
+        guard caret.location >= 0, caret.location <= units else { return .unavailable("range:bounds") }
+        // Chromium, and so every Electron app, hands back a container element
+        // for a contenteditable every so often, and a container does not track
+        // the caret: it answers {0, 0} while its value holds the whole field.
+        // Read as truth that says the whole field sits behind the caret, which
+        // is indistinguishable from the field having been emptied.  A caret
+        // genuinely at the start has nothing in front of it for a delete key to
+        // take, so refusing both costs nothing and the next read gets the real
+        // element.
+        guard caret.location > 0 || units == 0 else { return .unavailable("range:zero") }
+        let field_ = text as NSString
+        return .split(
+            head: field_.substring(to: caret.location),
+            tail: field_.substring(from: caret.location)
+        )
     }
 
     /// A label-only account of what Accessibility can see right now, for the

@@ -94,6 +94,14 @@ public enum SharedKeyboardProtocolAdapter {
         case .deleteBackward: return .deleteBackward
         case .deleteWordBackward: return .deleteWordBackward
         case .deleteLineBackward: return .deleteLineBackward
+        case .nextWindow: return .nextWindow
+        case .newItem: return .newItem
+        case .newTab: return .newTab
+        case .closeWindow: return .closeWindow
+        case .selectLeft: return .selectLeft
+        case .selectRight: return .selectRight
+        case .selectUp: return .selectUp
+        case .selectDown: return .selectDown
         }
     }
 }

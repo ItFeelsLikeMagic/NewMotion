@@ -31,6 +31,10 @@ public enum SharedInputProtocolAdapter {
             return .textInput(try TextInputPayload(text: value))
         case let .hotkey(hotkey):
             return .hotkey(HotkeyPayload(action: sharedHotkey(hotkey)))
+        case .hotkeyRun:
+            // A run of presses is worked out on the Mac and never travels, so
+            // the wire has no shape for it.
+            throw ProtocolAdapterError.unsupportedMessage
         case .modifier:
             // The current shared protocol represents hotkeys atomically and
             // does not expose long-held modifier messages.  Modifiers are
@@ -105,29 +109,34 @@ public enum SharedInputProtocolAdapter {
             return .text(text)
         case let .hotkey(value):
             return .hotkey(localHotkey(value.action))
-        case .heartbeat, .appSwitcher, .deleteScrub, .audioChunk, .acknowledgement,
+        case .heartbeat, .tabWalk, .deleteScrub, .audioChunk, .acknowledgement,
              .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
         }
     }
 
-    /// The switcher is the one remote action that spans several messages. Each
+    /// The walk is the one remote action that spans several messages. Each
     /// phase still expands into ordinary commands, so every event it produces
-    /// passes the same policy checks and the held Command is tracked for
+    /// passes the same policy checks and the held modifier is tracked for
     /// release like any other.
-    public static func commands(for phase: AppSwitcherPhase) -> [RemoteInputCommand] {
-        switch phase {
+    public static func commands(for payload: TabWalkPayload) -> [RemoteInputCommand] {
+        let key = localModifier(payload.modifier)
+        switch payload.phase {
         case .begin:
-            return [.modifier(key: .command, isDown: true), .hotkey(.tab)]
+            return [.modifier(key: key, isDown: true), .hotkey(.tab)]
         case .next:
             return [.hotkey(.tab)]
         case .previous:
             return [.hotkey(.shiftTab)]
         case .commit:
-            return [.modifier(key: .command, isDown: false)]
+            return [.modifier(key: key, isDown: false)]
         case .cancel:
-            return [.hotkey(.escape), .modifier(key: .command, isDown: false)]
+            return [.hotkey(.escape), .modifier(key: key, isDown: false)]
         }
+    }
+
+    private static func localModifier(_ modifier: HeldModifier) -> MacModifierKey {
+        modifierBits.first { $0.value == modifier }?.key ?? .command
     }
 
     private static func checkedInt16(_ value: Double) throws -> Int16 {
@@ -157,6 +166,14 @@ public enum SharedInputProtocolAdapter {
         case .shiftTab: return .shiftTab
         case .missionControl: return .missionControl
         case .appExpose: return .appExpose
+        case .nextWindow: return .nextWindow
+        case .newItem: return .newItem
+        case .newTab: return .newTab
+        case .closeWindow: return .closeWindow
+        case .selectLeft: return .selectLeft
+        case .selectRight: return .selectRight
+        case .selectUp: return .selectUp
+        case .selectDown: return .selectDown
         }
     }
 
@@ -180,6 +197,14 @@ public enum SharedInputProtocolAdapter {
         case .shiftTab: return .shiftTab
         case .missionControl: return .missionControl
         case .appExpose: return .appExpose
+        case .nextWindow: return .nextWindow
+        case .newItem: return .newItem
+        case .newTab: return .newTab
+        case .closeWindow: return .closeWindow
+        case .selectLeft: return .selectLeft
+        case .selectRight: return .selectRight
+        case .selectUp: return .selectUp
+        case .selectDown: return .selectDown
         }
     }
 }

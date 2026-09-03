@@ -13,6 +13,9 @@ public enum InjectedInputEvent: Equatable, Sendable {
     /// the sink has to pace them, and a half-posted chord would strand a
     /// modifier.
     case hotkey([PhysicalKeyTransition])
+    /// The same hotkey pressed `times` over.  It arrives as one event so the
+    /// sink can post the whole run in a single burst.
+    case hotkeyRun([PhysicalKeyTransition], times: Int)
 }
 
 public enum InputSinkError: Error, Equatable, Sendable {
@@ -26,16 +29,6 @@ public enum InputSinkError: Error, Equatable, Sendable {
 /// small and has no API for arbitrary key codes from the remote side.
 public protocol InputEventSink: AnyObject {
     func send(_ event: InjectedInputEvent) throws
-
-    /// Returns once everything already sent has reached the window server.
-    /// Keyboard events are paced on a queue of their own, so a caller that
-    /// wants to look at what its keys did has to wait for them first.
-    func waitForPostedInput()
-}
-
-public extension InputEventSink {
-    /// A sink that posts nothing has nothing to wait for.
-    func waitForPostedInput() {}
 }
 
 /// A deterministic sink for simulator/unit tests.  It never posts an event to
@@ -218,6 +211,12 @@ public final class CGEventInputSink: InputEventSink {
     private static let modifierSettle: TimeInterval = 0
     /// Ordinary keys only need to be distinguishable from each other.
     private static let keyGap: TimeInterval = 0.010
+    /// Inside a run of one repeated key there is nothing to distinguish: the
+    /// presses are identical by definition, and the window server neither
+    /// coalesces them nor reads them as a key repeat, which is set by a flag on
+    /// the event rather than worked out from timing.  Measured with
+    /// `/keyburst`; see docs/latency.md.
+    private static let keyRunGap: TimeInterval = 0
 
     private let trust: AccessibilityTrustProviding
     private let source: CGEventSource?
@@ -316,6 +315,9 @@ public final class CGEventInputSink: InputEventSink {
         case let .hotkey(transitions):
             try postHotkey(transitions)
 
+        case let .hotkeyRun(transitions, times):
+            try postHotkey(transitions, times: times, gap: Self.keyRunGap)
+
         case let .unicodeText(value):
             try postUnicode(value)
         }
@@ -349,10 +351,14 @@ public final class CGEventInputSink: InputEventSink {
     /// Every event is built up front so a chord either posts whole or fails
     /// before anything reaches the window server.  Only the posting is spaced
     /// out, and never on the caller's thread, which is the main one.
-    private func postHotkey(_ transitions: [PhysicalKeyTransition]) throws {
+    private func postHotkey(
+        _ transitions: [PhysicalKeyTransition],
+        times: Int = 1,
+        gap: TimeInterval? = nil
+    ) throws {
         var flags = activeFlags
         var events: [PostableEvent] = []
-        for transition in transitions {
+        for transition in Array(repeating: transitions, count: max(1, times)).flatMap({ $0 }) {
             let modifier = Self.flagForKeyCode[transition.keyCode]
             if let modifier {
                 if transition.isDown {
@@ -370,13 +376,13 @@ public final class CGEventInputSink: InputEventSink {
             events.append(PostableEvent(event: event, isModifier: modifier != nil))
         }
 
-        enqueue(events, paced: true)
+        enqueue(events, paced: true, gap: gap)
     }
 
     /// Every keyboard event goes through one serial queue, so a chord cannot
     /// overtake the modifier that has to precede it, and the pacing never runs
     /// on the caller's thread, which is the main one.
-    private func enqueue(_ events: [PostableEvent], paced: Bool) {
+    private func enqueue(_ events: [PostableEvent], paced: Bool, gap: TimeInterval? = nil) {
         let state = postState
         let start = Date()
         queue.async {
@@ -385,8 +391,8 @@ public final class CGEventInputSink: InputEventSink {
                 // the part not already elapsed is worth waiting out.  A queue
                 // that has been idle since the last press waits for nothing.
                 if paced, let last = state.lastPostAt {
-                    let gap = state.lastPostWasModifier ? Self.modifierSettle : Self.keyGap
-                    let remaining = gap - (ProcessInfo.processInfo.systemUptime - last)
+                    let wanted = gap ?? (state.lastPostWasModifier ? Self.modifierSettle : Self.keyGap)
+                    let remaining = wanted - (ProcessInfo.processInfo.systemUptime - last)
                     if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
                 }
                 item.event.post(tap: .cghidEventTap)
@@ -395,12 +401,6 @@ public final class CGEventInputSink: InputEventSink {
             }
             state.record(burst: Date().timeIntervalSince(start) * 1_000)
         }
-    }
-
-    /// Waits out the queue, including the pacing gaps still to be slept.  The
-    /// queue never calls back to the caller, so blocking on it cannot deadlock.
-    public func waitForPostedInput() {
-        queue.sync {}
     }
 
     /// A modifier reports itself as a flags change, not as a key press, which

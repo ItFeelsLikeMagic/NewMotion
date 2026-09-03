@@ -6,7 +6,7 @@ import XCTest
 /// The phone half of the held delete key: turning sideways travel into whole
 /// notches, and telling a tap apart from a slide.
 final class DeleteScrubTests: XCTestCase {
-    private let width = DeleteScrubTracker.baseStepWidth
+    private let width = SlideNotchCounter.baseStepWidth
 
     func testSlidingLeftTakesOneNotchPerStepWidth() {
         var tracker = DeleteScrubTracker()
@@ -88,5 +88,57 @@ final class DeleteScrubTests: XCTestCase {
     func testEveryStepHasAWirePhase() {
         XCTAssertEqual(DeleteScrubStep.delete.phase, .delete)
         XCTAssertEqual(DeleteScrubStep.restore.phase, .restore)
+    }
+}
+
+/// The two-axis drag behind the selection key and the arrow pad.  It runs on
+/// the same notch counter as the delete keys, so these tests only cover what
+/// differs: two axes, and no floor at zero.
+final class SlideStepTests: XCTestCase {
+    private let width = SlideNotchCounter.baseStepWidth
+
+    func testSidewaysTravelTakesCharactersAndVerticalTakesLines() {
+        var tracker = SlideStepTracker()
+
+        XCTAssertEqual(tracker.advance(translationX: -width * 0.9, translationY: 0), [])
+        XCTAssertEqual(tracker.advance(translationX: -width * 3, translationY: 0), [.left, .left, .left])
+        XCTAssertEqual(tracker.advance(translationX: -width * 3, translationY: -width * 2), [.up, .up])
+        XCTAssertEqual(tracker.advance(translationX: -width * 3, translationY: width * 2), [.down, .down, .down, .down])
+    }
+
+    /// A diagonal drag extends the selection both ways at once, which is what
+    /// holding Shift and pressing two arrows does.
+    func testADiagonalDragTakesBothAxes() {
+        var tracker = SlideStepTracker()
+
+        XCTAssertEqual(
+            tracker.advance(translationX: width * 2, translationY: -width),
+            [.right, .right, .up]
+        )
+    }
+
+    /// Nothing is clamped: dragging back the other way shrinks the selection
+    /// rather than being ignored, because the arrow undoes itself.
+    func testDraggingBackShrinksTheSelection() {
+        var tracker = SlideStepTracker()
+
+        XCTAssertEqual(tracker.advance(translationX: -width * 2, translationY: 0), [.left, .left])
+        XCTAssertEqual(tracker.advance(translationX: 0, translationY: 0), [.right, .right])
+        XCTAssertEqual(tracker.advance(translationX: width * 2, translationY: 0), [.right, .right])
+    }
+
+    func testEveryStepHasASelectionHotkey() {
+        XCTAssertEqual(SlideStep.left.selectionHotkey, .selectLeft)
+        XCTAssertEqual(SlideStep.right.selectionHotkey, .selectRight)
+        XCTAssertEqual(SlideStep.up.selectionHotkey, .selectUp)
+        XCTAssertEqual(SlideStep.down.selectionHotkey, .selectDown)
+    }
+
+    /// The arrow pad is the same drag with the Shift left off.
+    func testEveryStepHasAPlainArrowHotkey() {
+        XCTAssertEqual(SlideStep.left.arrowHotkey, .arrowLeft)
+        XCTAssertEqual(SlideStep.right.arrowHotkey, .arrowRight)
+        XCTAssertEqual(SlideStep.up.arrowHotkey, .arrowUp)
+        XCTAssertEqual(SlideStep.down.arrowHotkey, .arrowDown)
     }
 }

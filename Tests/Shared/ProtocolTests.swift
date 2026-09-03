@@ -33,7 +33,7 @@ final class ProtocolTests: XCTestCase {
             .ping(PingPayload()),
             .pong(PongPayload()),
             .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
-            .appSwitcher(AppSwitcherPayload(phase: .begin)),
+            .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
             .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word))
         ]
 

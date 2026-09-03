@@ -33,14 +33,14 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case ping = 12
     case pong = 13
     case mouseDoubleClick = 14
-    case appSwitcher = 15
+    case tabWalk = 15
     case deleteScrub = 16
 
     public var deliveryClass: DeliveryClass {
         switch self {
         case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta, .audioChunk:
             return .unreliable
-        case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .appSwitcher,
+        case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
              .deleteScrub, .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
@@ -154,7 +154,7 @@ public struct HeldButtons: OptionSet, Equatable, Sendable {
 /// The modifier keys a heartbeat can report as held.  The protocol carries no
 /// key codes, so the wire needs its own spelling; each platform maps its own
 /// modifier type onto these in a single table.
-public enum HeldModifier: UInt8, CaseIterable, Equatable, Sendable {
+public enum HeldModifier: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case command = 0
     case option = 1
     case control = 2
@@ -332,21 +332,32 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case arrowDown = 10
     case arrowLeft = 11
     case arrowRight = 12
-    // 13 was Command+Tab, replaced by the appSwitcher message, which has to
-    // hold Command open across several messages. The value is retired.
+    // 13 was Command+Tab, replaced by the tabWalk message, which has to hold
+    // Command open across several messages. The value is retired.
     case deleteBackward = 14
     case shiftTab = 15
     case deleteWordBackward = 16
     case deleteLineBackward = 17
     case missionControl = 18
     case appExpose = 19
+    // 20 was Control+Tab, replaced by the tabWalk message, which has to hold
+    // Control open across several messages. The value is retired.
+    case nextWindow = 21
+    case newItem = 22
+    case newTab = 23
+    case closeWindow = 24
+    case selectLeft = 25
+    case selectRight = 26
+    case selectUp = 27
+    case selectDown = 28
 }
 
-/// The app switcher is a held gesture, not a chord: Command stays down from
-/// `begin` until `commit`, so the phone can step through the row first. The
-/// Mac tracks that held Command in its safety layer and releases it on
-/// disconnect, lock, or sleep.
-public enum AppSwitcherPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+/// Holding a modifier and walking with Tab: Command for the app switcher,
+/// Control for the tab bar of whatever is in front. It is a held gesture, not
+/// a chord, because the modifier stays down from `begin` until `commit` so the
+/// phone can step along the row first. The Mac tracks that held modifier in
+/// its safety layer and releases it on disconnect, lock, or sleep.
+public enum TabWalkPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case begin = 1
     case next = 2
     case previous = 3
@@ -354,11 +365,15 @@ public enum AppSwitcherPhase: UInt8, Codable, CaseIterable, Equatable, Sendable 
     case cancel = 5
 }
 
-public struct AppSwitcherPayload: Codable, Equatable, Sendable {
-    public let phase: AppSwitcherPhase
+public struct TabWalkPayload: Codable, Equatable, Sendable {
+    public let phase: TabWalkPhase
+    /// The modifier held open for the whole walk. Which one it is decides what
+    /// the walk steps through; nothing else about the gesture changes.
+    public let modifier: HeldModifier
 
-    public init(phase: AppSwitcherPhase) {
+    public init(phase: TabWalkPhase, modifier: HeldModifier) {
         self.phase = phase
+        self.modifier = modifier
     }
 }
 
@@ -561,7 +576,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case mouseDoubleClick(MouseDoubleClickPayload)
     case textInput(TextInputPayload)
     case hotkey(HotkeyPayload)
-    case appSwitcher(AppSwitcherPayload)
+    case tabWalk(TabWalkPayload)
     case deleteScrub(DeleteScrubPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case audioChunk(AudioChunkPayload)
@@ -580,7 +595,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .mouseDoubleClick: return .mouseDoubleClick
         case .textInput: return .textInput
         case .hotkey: return .hotkey
-        case .appSwitcher: return .appSwitcher
+        case .tabWalk: return .tabWalk
         case .deleteScrub: return .deleteScrub
         case .motionPointerDelta: return .motionPointerDelta
         case .audioChunk: return .audioChunk
@@ -619,8 +634,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .textInput(try container.decode(TextInputPayload.self, forKey: .value))
         case .hotkey:
             self = .hotkey(try container.decode(HotkeyPayload.self, forKey: .value))
-        case .appSwitcher:
-            self = .appSwitcher(try container.decode(AppSwitcherPayload.self, forKey: .value))
+        case .tabWalk:
+            self = .tabWalk(try container.decode(TabWalkPayload.self, forKey: .value))
         case .deleteScrub:
             self = .deleteScrub(try container.decode(DeleteScrubPayload.self, forKey: .value))
         case .motionPointerDelta:
@@ -652,7 +667,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .mouseDoubleClick(let value): try container.encode(value, forKey: .value)
         case .textInput(let value): try container.encode(value, forKey: .value)
         case .hotkey(let value): try container.encode(value, forKey: .value)
-        case .appSwitcher(let value): try container.encode(value, forKey: .value)
+        case .tabWalk(let value): try container.encode(value, forKey: .value)
         case .deleteScrub(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .audioChunk(let value): try container.encode(value, forKey: .value)
@@ -689,7 +704,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey, .appSwitcher, .deleteScrub:
+        case .hotkey, .tabWalk, .deleteScrub:
             break
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")
