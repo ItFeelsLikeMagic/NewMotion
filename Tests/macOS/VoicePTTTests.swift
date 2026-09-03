@@ -236,7 +236,7 @@ final class VoicePTTTests: XCTestCase {
         let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
         let (coordinator, factory, sink) = makeCoordinator(
             normalizer: normalizer,
-            focusedText: FakeFocusedText(["Hello there."])
+            focusedText: FakeFocusedText([.text("Hello there.")])
         )
         coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
         coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
@@ -246,13 +246,14 @@ final class VoicePTTTests: XCTestCase {
         XCTAssertTrue(waitUntil { sink.values == [" How are you?"] })
         XCTAssertEqual(normalizer.inputs, ["Hello there. how are you"])
         XCTAssertEqual(sink.deletions, [])
+        XCTAssertEqual(coordinator.state.merge, "merged")
     }
 
     func testRewordedFieldTextIsCorrectedInPlace() throws {
         let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
         let (coordinator, factory, sink) = makeCoordinator(
             normalizer: normalizer,
-            focusedText: FakeFocusedText(["hello there"])
+            focusedText: FakeFocusedText([.text("hello there")])
         )
         coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
         coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
@@ -267,7 +268,7 @@ final class VoicePTTTests: XCTestCase {
         let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
         let (coordinator, factory, sink) = makeCoordinator(
             normalizer: normalizer,
-            focusedText: FakeFocusedText(["Hello there.", "Hello there. and more"])
+            focusedText: FakeFocusedText([.text("Hello there."), .text("Hello there. and more")])
         )
         coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
         coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
@@ -276,13 +277,14 @@ final class VoicePTTTests: XCTestCase {
         factory.sessions[0].handlers.onResult(.success("how are you"))
         XCTAssertTrue(waitUntil { sink.values == [" how are you"] })
         XCTAssertEqual(sink.deletions, [])
+        XCTAssertEqual(coordinator.state.merge, "appended")
     }
 
     func testUnreadableFieldKeepsThePlainPath() throws {
         let normalizer = FakeNormalizer { _ in "How are you?" }
         let (coordinator, factory, sink) = makeCoordinator(
             normalizer: normalizer,
-            focusedText: FakeFocusedText([nil])
+            focusedText: FakeFocusedText([.unavailable("focus:-25204")])
         )
         coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
         coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
@@ -291,6 +293,18 @@ final class VoicePTTTests: XCTestCase {
         factory.sessions[0].handlers.onResult(.success("how are you"))
         XCTAssertTrue(waitUntil { sink.values == ["How are you?"] })
         XCTAssertEqual(normalizer.inputs, ["how are you"])
+        XCTAssertEqual(coordinator.state.merge, "focus:-25204")
+    }
+
+    func testFieldIsWokenWhenTheSpeakerStartsNotWhenTheyStop() throws {
+        let field = FakeFocusedText([.text("Hello there.")])
+        let (coordinator, factory, _) = makeCoordinator(
+            normalizer: FakeNormalizer { $0 },
+            focusedText: field
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        XCTAssertTrue(waitUntil { field.prepared == 1 })
+        XCTAssertTrue(factory.sessions[0].sampleCount == 0)
     }
 
     func testMergeBuildsThePayloadAndTheSmallestEdit() {
@@ -435,13 +449,20 @@ private final class RecordingSink: SafeTranscriptInsertionSink {
 /// checks the field before typing.
 private final class FakeFocusedText: FocusedTextReading, @unchecked Sendable {
     private let lock = NSLock()
-    private var readings: [String?]
+    private var readings: [FocusedText]
+    private var _prepared = 0
 
-    init(_ readings: [String?]) {
+    init(_ readings: [FocusedText]) {
         self.readings = readings
     }
 
-    func focusedText() -> String? {
-        lock.withLock { readings.count > 1 ? readings.removeFirst() : readings.first ?? nil }
+    var prepared: Int { lock.withLock { _prepared } }
+
+    func focusedText() -> FocusedText {
+        lock.withLock { readings.count > 1 ? readings.removeFirst() : readings[0] }
+    }
+
+    func prepare() {
+        lock.withLock { _prepared += 1 }
     }
 }

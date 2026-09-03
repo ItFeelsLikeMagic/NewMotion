@@ -5,6 +5,9 @@ import Network
 /// instead of listening on every interface.
 public final class MacDebugHTTPServer: @unchecked Sendable {
     public private(set) var port: UInt16?
+    /// Answers `/focus`.  Runs on the main thread because it reads the live UI
+    /// tree, and gives up rather than holding a connection open.
+    public var focusProbe: (@Sendable () -> [String: String])?
 
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
@@ -89,11 +92,31 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
                 return
             }
             let request = String(data: data ?? Data(), encoding: .utf8) ?? ""
-            let response = MacDebugHTTP.handle(request: request, snapshot: self.box.current())
+            let response = MacDebugHTTP.handle(
+                request: request,
+                snapshot: self.box.current(),
+                focus: { self.probeFocus() }
+            )
             connection.send(content: response.httpData, completion: .contentProcessed { _ in
                 connection.cancel()
             })
         }
+    }
+
+    private static let probeTimeout: TimeInterval = 2
+
+    private func probeFocus() -> [String: String] {
+        guard let focusProbe else { return ["error": "no probe"] }
+        let box = MainThreadResultBox()
+        let ready = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            box.value = focusProbe()
+            ready.signal()
+        }
+        guard ready.wait(timeout: .now() + Self.probeTimeout) == .success else {
+            return ["error": "main thread busy"]
+        }
+        return box.value ?? [:]
     }
 
     private func writePortFile(port: UInt16) {
@@ -107,4 +130,10 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
         try? data.write(to: portFileURL, options: .atomic)
     }
+}
+
+/// Hands one probe result back from the main thread.  The semaphore is the
+/// only synchronisation it needs: nothing reads it before that signal.
+private final class MainThreadResultBox: @unchecked Sendable {
+    var value: [String: String]?
 }
