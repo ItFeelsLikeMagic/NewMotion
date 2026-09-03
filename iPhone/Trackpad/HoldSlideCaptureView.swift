@@ -3,10 +3,11 @@ import SwiftUI
 import UIKit
 
 /// What a press on a hold-and-slide control is doing right now.  Translation
-/// is horizontal only; the control decides what a distance means.
+/// is measured from where the finger landed; the control decides what a
+/// distance means and which axes it reads.
 public enum HoldSlidePhase: Equatable, Sendable {
     case began
-    case moved(translationX: Double)
+    case moved(translationX: Double, translationY: Double)
     case ended
     case cancelled
 }
@@ -47,8 +48,11 @@ public final class HoldSlideCaptureView: UIView {
 
     public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let trackedTouch, touches.contains(trackedTouch), let origin else { return }
-        let translation = trackedTouch.location(in: self).x - origin.x
-        onPhase?(.moved(translationX: Double(translation)))
+        let location = trackedTouch.location(in: self)
+        onPhase?(.moved(
+            translationX: Double(location.x - origin.x),
+            translationY: Double(location.y - origin.y)
+        ))
     }
 
     public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -62,7 +66,7 @@ public final class HoldSlideCaptureView: UIView {
     }
 
     /// Leaving the window ends the press the same way a cancel does, so the Mac
-    /// is never left holding Command.
+    /// is never left holding a modifier.
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil, trackedTouch != nil { finish(.cancelled) }
@@ -98,6 +102,44 @@ struct HoldSlideSurface: UIViewRepresentable {
 
     func updateUIView(_ view: HoldSlideCaptureView, context: Context) {
         view.onPhase = onPhase
+    }
+}
+
+/// The shared look of a key that is held: it fills the cell it is given and
+/// lights up while the finger is down.
+extension View {
+    func heldKeyStyle(isHeld: Bool) -> some View {
+        frame(maxWidth: .infinity, minHeight: 44)
+            .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
+            .foregroundStyle(isHeld ? Color.white : Color.primary)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The shared behaviour of a key that is held and dragged: touches come
+    /// from UIKit rather than a SwiftUI gesture, and a system interruption
+    /// cancels the press rather than leaving the Mac holding what it started.
+    func holdSlide(
+        _ debugLabel: String,
+        spokenName: String,
+        onPhase: @escaping (HoldSlidePhase) -> Void
+    ) -> some View {
+        modifier(HoldSlideBehavior(debugLabel: debugLabel, spokenName: spokenName, onPhase: onPhase))
+    }
+}
+
+private struct HoldSlideBehavior: ViewModifier {
+    let debugLabel: String
+    let spokenName: String
+    let onPhase: (HoldSlidePhase) -> Void
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(HoldSlideSurface(label: debugLabel, onPhase: onPhase))
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { onPhase(.cancelled) }
+            }
+            .accessibilityLabel(spokenName)
     }
 }
 #endif

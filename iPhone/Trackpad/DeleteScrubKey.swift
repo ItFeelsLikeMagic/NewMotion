@@ -23,26 +23,20 @@ struct DeleteScrubKey<Label: View>: View {
     @State private var tracker = DeleteScrubTracker()
     @State private var isHeld = false
     @State private var hasBegun = false
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         label
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
-            .foregroundStyle(isHeld ? Color.white : Color.primary)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .heldKeyStyle(isHeld: isHeld)
             // The count is always in the tree and only fades, because swapping
             // it in and out rebuilds the surface below: the removed view leaves
             // the window, which reads as a cancelled press, and the slide dies
             // after its first notch.
             .overlay(alignment: .topTrailing) { count }
-            .overlay(HoldSlideSurface(label: "delete_scrub", onPhase: handle))
-            // A system interruption cancels the gesture without an end, and the
-            // Mac would be left holding the characters this press removed.
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active { finish(sendKey: false) }
-            }
-            .accessibilityLabel("\(hotkey.spokenName). Hold and slide left to erase, right to undo.")
+            .holdSlide(
+                "delete_scrub",
+                spokenName: "\(hotkey.spokenName). Hold and slide left to erase, right to undo.",
+                onPhase: handle
+            )
     }
 
     private var count: some View {
@@ -62,7 +56,7 @@ struct DeleteScrubKey<Label: View>: View {
             hasBegun = false
             tracker = DeleteScrubTracker()
             Haptics.play(.press)
-        case let .moved(translationX):
+        case let .moved(translationX, _):
             guard isHeld else { return }
             let steps = tracker.advance(translationX: translationX)
             guard !steps.isEmpty else { return }

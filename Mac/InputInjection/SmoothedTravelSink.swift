@@ -128,10 +128,6 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
         }
     }
 
-    public func waitForPostedInput() {
-        wrapped.waitForPostedInput()
-    }
-
     public func send(_ event: InjectedInputEvent) throws {
         switch event {
         case let .pointer(delta):

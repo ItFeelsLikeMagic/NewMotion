@@ -9,6 +9,9 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     /// tree, and gives up rather than holding a connection open.
     public var focusProbe: (@Sendable () -> [String: String])?
     public var vocabularyProbe: (@Sendable (String?) -> [String: String])?
+    /// Answers `/keyburst`.  Posts keys and reads the field, so it runs on the
+    /// main thread like the typing does.
+    public var keyBurstProbe: (@Sendable (Int) -> [String: String])?
 
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
@@ -97,7 +100,8 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
                 request: request,
                 snapshot: self.box.current(),
                 focus: { self.probeFocus() },
-                vocabulary: { self.probeVocabulary(app: $0) }
+                vocabulary: { self.probeVocabulary(app: $0) },
+                keyBurst: { self.probeKeyBurst(count: $0) }
             )
             connection.send(content: response.httpData, completion: .contentProcessed { _ in
                 connection.cancel()
@@ -115,6 +119,11 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
         return vocabularyProbe(app)
     }
 
+    private func probeKeyBurst(count: Int) -> [String: String] {
+        guard let keyBurstProbe else { return ["error": "no probe"] }
+        return onMainThread(timeout: 6) { keyBurstProbe(count) }
+    }
+
     private func probeFocus() -> [String: String] {
         guard let focusProbe else { return ["error": "no probe"] }
         return onMainThread(focusProbe)
@@ -122,14 +131,17 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
 
     /// Reading the focused field walks the live UI tree from the main thread,
     /// the way the typing does.
-    private func onMainThread(_ probe: @escaping @Sendable () -> [String: String]) -> [String: String] {
+    private func onMainThread(
+        timeout: TimeInterval = MacDebugHTTPServer.probeTimeout,
+        _ probe: @escaping @Sendable () -> [String: String]
+    ) -> [String: String] {
         let box = MainThreadResultBox()
         let ready = DispatchSemaphore(value: 0)
         DispatchQueue.main.async {
             box.value = probe()
             ready.signal()
         }
-        guard ready.wait(timeout: .now() + Self.probeTimeout) == .success else {
+        guard ready.wait(timeout: .now() + timeout) == .success else {
             return ["error": "main thread busy"]
         }
         return box.value ?? [:]

@@ -34,7 +34,8 @@ public enum MacDebugHTTP {
         request: String,
         snapshot: MacDebugSnapshot,
         focus: () -> [String: String] = { [:] },
-        vocabulary: (String?) -> [String: String] = { _ in [:] }
+        vocabulary: (String?) -> [String: String] = { _ in [:] },
+        keyBurst: (Int) -> [String: String] = { _ in [:] }
     ) -> Response {
         let lines = request.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
@@ -51,6 +52,9 @@ public enum MacDebugHTTP {
         let query = target.count > 1 ? String(target[1]) : ""
         let app = query.split(separator: "&").first { $0.hasPrefix("app=") }
             .map { String($0.dropFirst("app=".count)).removingPercentEncoding ?? "" }
+        // `/keyburst?count=40` presses Delete that many times in one burst.
+        let count = query.split(separator: "&").first { $0.hasPrefix("count=") }
+            .flatMap { Int(String($0.dropFirst("count=".count))) }
         guard method == "GET" else {
             return json(status: 405, object: ["error": "method not allowed"])
         }
@@ -67,6 +71,11 @@ public enum MacDebugHTTP {
         // Counts and milliseconds only; the words never leave the app.
         case "/vocabulary":
             return json(status: 200, object: vocabulary(app?.isEmpty == false ? app : nil))
+        // Presses Delete `count` times into whatever is focused and reports how
+        // many characters actually left.  This is how the gap inside a run was
+        // settled rather than guessed at.  Lengths only; no text leaves the app.
+        case "/keyburst":
+            return json(status: 200, object: keyBurst(count ?? 20))
         default:
             return json(status: 404, object: ["error": "not found"])
         }

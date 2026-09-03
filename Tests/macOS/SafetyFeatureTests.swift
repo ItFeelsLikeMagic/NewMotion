@@ -152,14 +152,14 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertTrue(injector.held.isEmpty)
     }
 
-    func testAppSwitcherHoldsCommandUntilCommitAndReleasesItOnDisconnect() {
+    func testTheWalkHoldsItsModifierUntilCommitAndReleasesItOnDisconnect() {
         var state = InputControlState()
         state.authentication = .authenticated
         state.accessibility = .granted
         let sink = MockInputEventSink()
         let injector = SafeInputInjector(policy: InputSafetyStateMachine(state: state), sink: sink)
 
-        for command in SharedInputProtocolAdapter.commands(for: .begin) {
+        for command in SharedInputProtocolAdapter.commands(for: walk(.begin)) {
             XCTAssertEqual(injector.submit(command), .applied)
         }
         XCTAssertEqual(sink.events, [
@@ -168,7 +168,7 @@ final class SafetyFeatureTests: XCTestCase {
         ])
         XCTAssertTrue(injector.held.modifiers.contains(.command))
 
-        for command in SharedInputProtocolAdapter.commands(for: .previous) {
+        for command in SharedInputProtocolAdapter.commands(for: walk(.previous)) {
             XCTAssertEqual(injector.submit(command), .applied)
         }
         XCTAssertEqual(sink.events.last, .hotkey(HotkeyPhysicalSequence.transitions(for: .shiftTab)))
@@ -181,11 +181,26 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertTrue(injector.held.isEmpty)
     }
 
+    /// Control walks the front app's tabs through the same phases; only the
+    /// modifier it holds differs.
+    func testTheWalkHoldsWhicheverModifierTheMessageNames() {
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.begin, .control)), [
+            .modifier(key: .control, isDown: true),
+            .hotkey(.tab)
+        ])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.previous, .control)), [
+            .hotkey(.shiftTab)
+        ])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.commit, .control)), [
+            .modifier(key: .control, isDown: false)
+        ])
+    }
+
     func testCommitAndCancelBothReleaseCommand() {
-        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: .commit), [
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.commit)), [
             .modifier(key: .command, isDown: false)
         ])
-        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: .cancel), [
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.cancel)), [
             .hotkey(.escape),
             .modifier(key: .command, isDown: false)
         ])
@@ -222,6 +237,85 @@ final class SafetyFeatureTests: XCTestCase {
             try? SharedInputProtocolAdapter.payload(for: .hotkey(.missionControl)),
             .hotkey(HotkeyPayload(action: .missionControl))
         )
+    }
+
+    /// Colemak leaves ZXCVA where QWERTY has them but moves N and T, so a
+    /// letter chord has to be posted at the key that types the letter now.
+    func testLetterChordsFollowTheActiveLayout() {
+        let colemak = StubKeyboardLayout(codes: ["n": 38, "t": 3, "w": 13, "c": 8, "a": 0, "`": 50])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .newItem, layout: colemak), [
+            PhysicalKeyTransition(keyCode: 55, isDown: true),
+            PhysicalKeyTransition(keyCode: 38, isDown: true),
+            PhysicalKeyTransition(keyCode: 38, isDown: false),
+            PhysicalKeyTransition(keyCode: 55, isDown: false)
+        ])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .newTab, layout: colemak), [
+            PhysicalKeyTransition(keyCode: 55, isDown: true),
+            PhysicalKeyTransition(keyCode: 3, isDown: true),
+            PhysicalKeyTransition(keyCode: 3, isDown: false),
+            PhysicalKeyTransition(keyCode: 55, isDown: false)
+        ])
+        // Tab is a key, not a letter, so no layout can move it.
+        XCTAssertEqual(
+            HotkeyPhysicalSequence.transitions(for: .tab, layout: colemak),
+            HotkeyPhysicalSequence.transitions(for: .tab)
+        )
+    }
+
+    /// A layout that cannot say where a letter is must not silently swallow the
+    /// chord; QWERTY is the fallback.
+    func testAnUnreadableLayoutFallsBackToQwerty() {
+        let empty = StubKeyboardLayout(codes: [:])
+        XCTAssertEqual(
+            HotkeyPhysicalSequence.transitions(for: .newItem, layout: empty),
+            HotkeyPhysicalSequence.transitions(for: .newItem)
+        )
+    }
+
+    func testSelectionStepsAreShiftAndAnArrow() {
+        let expected: [(MacAllowedHotkey, UInt16)] = [
+            (.selectLeft, 123),
+            (.selectRight, 124),
+            (.selectUp, 126),
+            (.selectDown, 125)
+        ]
+        for (hotkey, key) in expected {
+            XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: hotkey), [
+                PhysicalKeyTransition(keyCode: 56, isDown: true),
+                PhysicalKeyTransition(keyCode: key, isDown: true),
+                PhysicalKeyTransition(keyCode: key, isDown: false),
+                PhysicalKeyTransition(keyCode: 56, isDown: false)
+            ], "\(hotkey)")
+            let payload = try? SharedInputProtocolAdapter.payload(for: .hotkey(hotkey))
+            XCTAssertEqual(
+                payload.flatMap { try? SharedInputProtocolAdapter.command(for: $0) },
+                .hotkey(hotkey),
+                "\(hotkey)"
+            )
+        }
+    }
+
+    func testWindowAndTabChordsCarryTheirModifier() {
+        let expected: [(MacAllowedHotkey, UInt16, UInt16)] = [
+            (.nextWindow, 55, 50),
+            (.newItem, 55, 45),
+            (.newTab, 55, 17),
+            (.closeWindow, 55, 13)
+        ]
+        for (hotkey, modifier, key) in expected {
+            XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: hotkey), [
+                PhysicalKeyTransition(keyCode: modifier, isDown: true),
+                PhysicalKeyTransition(keyCode: key, isDown: true),
+                PhysicalKeyTransition(keyCode: key, isDown: false),
+                PhysicalKeyTransition(keyCode: modifier, isDown: false)
+            ], "\(hotkey)")
+            let payload = try? SharedInputProtocolAdapter.payload(for: .hotkey(hotkey))
+            XCTAssertEqual(
+                payload.flatMap { try? SharedInputProtocolAdapter.command(for: $0) },
+                .hotkey(hotkey),
+                "\(hotkey)"
+            )
+        }
     }
 
     func testReliableDuplicatesAreAcknowledgedAndWatchdogReleases() {
@@ -265,6 +359,42 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(lifecycle.handle(.lock).status, .disconnected)
         XCTAssertEqual(lifecycle.handle(.unlock).reconnect, .eligibleWhenBothAppsActive)
     }
+
+    /// A run of one repeated key reaches the sink whole, so the sink can post
+    /// it in a single burst.  This is what a held delete key's word notch
+    /// builds, and it is the difference between a word costing about 100 ms and
+    /// costing about one.
+    func testARepeatedHotkeyReachesTheSinkAsOneRun() {
+        let sink = MockInputEventSink()
+        let injector = SafeInputInjector(policy: controllablePolicy(), sink: sink)
+
+        XCTAssertEqual(injector.submit(.hotkeyRun(.deleteBackward, times: 7)), .applied)
+        XCTAssertEqual(sink.events.count, 1)
+        guard case let .hotkeyRun(transitions, times) = sink.events[0] else {
+            return XCTFail("expected one run")
+        }
+        XCTAssertEqual(times, 7)
+        XCTAssertEqual(transitions, HotkeyPhysicalSequence.transitions(for: .deleteBackward))
+    }
+
+    /// The count is the one number a run carries, so it is the one number the
+    /// policy has to bound.
+    func testARunWithAnImpossibleCountIsRefused() {
+        let sink = MockInputEventSink()
+        let injector = SafeInputInjector(policy: controllablePolicy(), sink: sink)
+        let limit = InputPolicyLimits().maxHotkeyRun
+
+        XCTAssertEqual(injector.submit(.hotkeyRun(.deleteBackward, times: 0)), .denied(.invalidCommand))
+        XCTAssertEqual(injector.submit(.hotkeyRun(.deleteBackward, times: limit + 1)), .denied(.invalidCommand))
+        XCTAssertEqual(injector.submit(.hotkeyRun(.deleteBackward, times: limit)), .applied)
+        XCTAssertEqual(sink.events.count, 1)
+    }
+
+    /// A run is worked out on the Mac and never travels, so the wire has no
+    /// shape for it and the adapter must say so rather than guess.
+    func testARepeatedHotkeyHasNoWireShape() {
+        XCTAssertThrowsError(try SharedInputProtocolAdapter.payload(for: .hotkeyRun(.deleteBackward, times: 3)))
+    }
 }
 
 private final class TestInputClock: InputSafetyClock {
@@ -272,3 +402,19 @@ private final class TestInputClock: InputSafetyClock {
     init(now: TimeInterval) { self.now = now }
 }
 
+
+private func walk(_ phase: TabWalkPhase, _ modifier: HeldModifier = .command) -> TabWalkPayload {
+    TabWalkPayload(phase: phase, modifier: modifier)
+}
+
+private final class StubKeyboardLayout: KeyboardLayoutLookup, @unchecked Sendable {
+    private let codes: [Character: UInt16]
+
+    init(codes: [Character: UInt16]) {
+        self.codes = codes
+    }
+
+    func keyCode(for character: Character) -> UInt16? {
+        codes[character]
+    }
+}

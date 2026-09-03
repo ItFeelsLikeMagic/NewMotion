@@ -35,7 +35,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var airMouseStatus = "Air mouse off"
     @Published var airMouseEnabled = UserDefaults.standard.bool(forKey: "airMouseEnabled")
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
-    @Published var appSwitcherSensitivity = UserDefaults.standard.object(forKey: "appSwitcherSensitivity") as? Double ?? 2.0
+    @Published var tabWalkSensitivity = UserDefaults.standard.object(forKey: "tabWalkSensitivity") as? Double ?? 2.0
     @Published var edgeScrollEnabled = UserDefaults.standard.bool(forKey: "edgeScrollEnabled")
     @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
     @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
@@ -448,9 +448,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    func setAppSwitcherSensitivity(_ value: Double) {
-        appSwitcherSensitivity = value
-        UserDefaults.standard.set(value, forKey: "appSwitcherSensitivity")
+    func setTabWalkSensitivity(_ value: Double) {
+        tabWalkSensitivity = value
+        UserDefaults.standard.set(value, forKey: "tabWalkSensitivity")
     }
 
     func setAirMouseSensitivity(_ value: Double) {
@@ -812,20 +812,21 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         keyboard.type(text)
     }
 
-    /// The switcher holds Command open on the Mac between begin and commit, so
-    /// a dropped phase would strand it.  These go reliable like every other
-    /// input message, and the Mac releases Command on disconnect regardless.
-    func sendAppSwitcher(_ phase: AppSwitcherPhase) {
+    /// The walk holds its modifier open on the Mac between begin and commit,
+    /// so a dropped phase would strand it.  These go reliable like every other
+    /// input message, and the Mac releases the modifier on disconnect
+    /// regardless.
+    func sendTabWalk(_ phase: TabWalkPhase, holding modifier: HeldModifier) {
         guard isControllable else {
-            latestAction = "Pair before switching apps"
+            latestAction = "Pair before walking tabs"
             return
         }
-        guard inputUplink.send(.appSwitcher(AppSwitcherPayload(phase: phase))) else {
-            latestAction = "App switcher send failed"
+        guard inputUplink.send(.tabWalk(TabWalkPayload(phase: phase, modifier: modifier))) else {
+            latestAction = "Tab walk send failed"
             return
         }
-        latestAction = "App switcher \(phase)"
-        IPhoneDebugLog.emit("app_switcher", ["phase": "\(phase)"])
+        latestAction = "Tab walk \(modifier) \(phase)"
+        IPhoneDebugLog.emit("tab_walk", ["modifier": "\(modifier)", "phase": "\(phase)"])
     }
 
     func sendHotkey(_ hotkey: RemoteHotkey) {
@@ -1029,12 +1030,20 @@ extension RemoteHotkey {
         case .paste: return "paste"
         case .undo: return "undo"
         case .redo: return "redo"
-        case .selectAll: return "all"
+        case .selectAll: return "⌘A"
         case .tab: return "tab"
         case .arrowUp: return "up"
         case .arrowDown: return "down"
         case .arrowLeft: return "left"
         case .arrowRight: return "right"
+        case .nextWindow: return "⌘`"
+        case .newItem: return "⌘N"
+        case .newTab: return "⌘T"
+        case .closeWindow: return "⌘W"
+        case .selectLeft: return "⇧←"
+        case .selectRight: return "⇧→"
+        case .selectUp: return "⇧↑"
+        case .selectDown: return "⇧↓"
         }
     }
 
@@ -1047,6 +1056,11 @@ extension RemoteHotkey {
         case .deleteLineBackward: return "Backspace line"
         case .copy: return "Copy"
         case .paste: return "Paste"
+        case .selectAll: return "Select all"
+        case .nextWindow: return "Next window"
+        case .newItem: return "New"
+        case .newTab: return "New tab"
+        case .closeWindow: return "Close window"
         default: return buttonTitle
         }
     }
@@ -1071,16 +1085,63 @@ enum RemoteKeyMetrics {
 private struct RemoteKeyPad: View {
     @ObservedObject var pushToTalk: PushToTalkController
     let send: (RemoteHotkey) -> Void
-    let switcherSensitivity: Double
-    let switcher: (AppSwitcherPhase) -> Void
+    let walkSensitivity: Double
+    let walk: (TabWalkPhase, HeldModifier) -> Void
     let scrubEnabled: Bool
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
     var body: some View {
+        VStack(spacing: RemoteKeyMetrics.spacing) {
+            chordRow
+            thumbClusters
+        }
+    }
+
+    /// Whole-window and whole-tab keys.  They are reached for far less often
+    /// than the keys below, so they take the row a thumb has to stretch for and
+    /// leave the corners to return and delete.  The three that are held and
+    /// dragged sit in the middle, where a thumb lands squarely enough to drag
+    /// from.
+    private var chordRow: some View {
+        HStack(spacing: RemoteKeyMetrics.spacing) {
+            chordSlot { titledKey(.newItem) }
+            chordSlot { titledKey(.selectAll) }
+            chordSlot { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
+            chordSlot { TextSelectionKey(send: send) }
+            chordSlot { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
+            chordSlot { titledKey(.newTab) }
+            chordSlot { titledKey(.closeWindow) }
+        }
+    }
+
+    /// A key that says what it sends.
+    private func titledKey(_ hotkey: RemoteHotkey) -> some View {
+        key(hotkey) { Text(hotkey.buttonTitle) }
+    }
+
+    /// One stretched cell of the chord row.  The row is wider than it is tall,
+    /// so its keys take the width they are given rather than a fixed one.
+    private func chordSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .frame(height: RemoteKeyMetrics.keyHeight)
+    }
+
+    private func walkKey(_ title: String, _ modifier: HeldModifier, _ spokenName: String) -> some View {
+        TabWalkButton(
+            title: title,
+            modifier: modifier,
+            spokenName: spokenName,
+            sensitivity: walkSensitivity,
+            send: walk
+        )
+    }
+
+    private var thumbClusters: some View {
         HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
             cluster {
-                slot { key(.escape) { Text(RemoteHotkey.escape.buttonTitle) } }
-                slot { AppSwitcherButton(sensitivity: switcherSensitivity, send: switcher) }
+                slot { titledKey(.escape) }
+                slot { titledKey(.nextWindow) }
             } bottom: {
                 slot { key(.copy) { Image(systemName: "doc.on.doc") } }
                 slot { key(.paste) { Image(systemName: "doc.on.clipboard") } }
@@ -1094,7 +1155,7 @@ private struct RemoteKeyPad: View {
             // deletes fill the rest, growing outward from the character.
             cluster {
                 slot { key(.return) { Image(systemName: "return") } }
-                slot { key(.deleteLineBackward) { Text(RemoteHotkey.deleteLineBackward.buttonTitle) } }
+                slot { titledKey(.deleteLineBackward) }
             } bottom: {
                 slot { deleteKey(.deleteBackward, .character) { Image(systemName: "delete.left") } }
                 slot { deleteKey(.deleteWordBackward, .word) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) } }
@@ -1158,36 +1219,27 @@ private struct RemoteKeyPad: View {
     }
 }
 
-/// Hold to open the Mac's app switcher, slide to walk along it, lift to pick.
-/// A plain tap is the ordinary flip to the last app, because begin already
-/// highlights it.
-private struct AppSwitcherButton: View {
+/// Hold a modifier open on the Mac, slide to step along whatever that modifier
+/// walks, lift to pick.  Command walks apps, Control walks the front app's
+/// tabs.  A plain tap is the ordinary one-step flip, because begin already
+/// takes that step.
+private struct TabWalkButton: View {
     /// Travel per app at 1x.  Roughly a thumb's width, so a wobble while
     /// holding does not step; the sensitivity setting divides it.
     static let baseStepWidth: Double = 44
 
+    let title: String
+    let modifier: HeldModifier
+    let spokenName: String
     let sensitivity: Double
-    let send: (AppSwitcherPhase) -> Void
+    let send: (TabWalkPhase, HeldModifier) -> Void
     @State private var isHeld = false
     @State private var steps = 0
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        Text("⌘⇥")
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
-            .foregroundStyle(isHeld ? Color.white : Color.primary)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            // Touches come from UIKit, not from a SwiftUI gesture.  The
-            // gesture sat on a press for 100 ms at best and 780 ms after an
-            // idle spell, which was most of what this button felt like.
-            .overlay(HoldSlideSurface(label: "app_switcher", onPhase: handle))
-            // A system interruption cancels the gesture without an end, and the
-            // Mac would be left holding Command until the watchdog fires.
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active { finish(.cancel) }
-            }
-            .accessibilityLabel("App switcher. Hold and slide to choose.")
+        Text(title)
+            .heldKeyStyle(isHeld: isHeld)
+            .holdSlide("tab_walk", spokenName: spokenName, onPhase: handle)
     }
 
     private var stepWidth: Double {
@@ -1201,8 +1253,8 @@ private struct AppSwitcherButton: View {
             isHeld = true
             steps = 0
             Haptics.play(.press)
-            send(.begin)
-        case let .moved(translationX):
+            step(.begin)
+        case let .moved(translationX, _):
             guard isHeld else { return }
             step(to: Int((translationX / stepWidth).rounded(.towardZero)))
         case .ended:
@@ -1216,21 +1268,25 @@ private struct AppSwitcherButton: View {
         guard steps != target else { return }
         while steps < target {
             steps += 1
-            send(.next)
+            step(.next)
         }
         while steps > target {
             steps -= 1
-            send(.previous)
+            step(.previous)
         }
         Haptics.play(.step)
     }
 
-    private func finish(_ phase: AppSwitcherPhase) {
+    private func step(_ phase: TabWalkPhase) {
+        send(phase, modifier)
+    }
+
+    private func finish(_ phase: TabWalkPhase) {
         guard isHeld else { return }
         isHeld = false
         steps = 0
         Haptics.play(.release)
-        send(phase)
+        step(phase)
     }
 }
 
@@ -1302,6 +1358,12 @@ private struct RemoteControlTab: View {
                     KeyboardToggleButton(isShowing: $isKeyboardShowing)
                         .padding(8)
                 }
+                // Centred in the same row, where either thumb can reach it
+                // without covering the keyboard button.
+                .overlay(alignment: .bottom) {
+                    ArrowPadKey(send: { model.sendHotkey($0) })
+                        .padding(8)
+                }
                 // The scroll strips are the thing a thumb reaches for without
                 // looking, so they run to the side of the screen rather than
                 // stopping short of it and leaving a dead margin.
@@ -1310,8 +1372,8 @@ private struct RemoteControlTab: View {
                 RemoteKeyPad(
                     pushToTalk: model.pushToTalk,
                     send: { model.sendHotkey($0) },
-                    switcherSensitivity: model.appSwitcherSensitivity,
-                    switcher: { model.sendAppSwitcher($0) },
+                    walkSensitivity: model.tabWalkSensitivity,
+                    walk: { model.sendTabWalk($0, holding: $1) },
                     scrubEnabled: model.deleteScrubEnabled,
                     scrub: { model.sendDeleteScrub($0, granularity: $1) }
                 )
@@ -1447,25 +1509,25 @@ private struct RemoteSettingsTab: View {
 
                 Section {
                     VStack(alignment: .leading) {
-                        Text("Slide sensitivity \(model.appSwitcherSensitivity.formatted(.number.precision(.fractionLength(1))))x")
+                        Text("Slide sensitivity \(model.tabWalkSensitivity.formatted(.number.precision(.fractionLength(1))))x")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
                             value: Binding(
-                                get: { model.appSwitcherSensitivity },
-                                set: { model.setAppSwitcherSensitivity($0) }
+                                get: { model.tabWalkSensitivity },
+                                set: { model.setTabWalkSensitivity($0) }
                             ),
                             in: 0.5...4,
                             step: 0.1
                         )
-                        Text("One app per \(Int((AppSwitcherButton.baseStepWidth / model.appSwitcherSensitivity).rounded())) points of slide")
+                        Text("One step per \(Int((TabWalkButton.baseStepWidth / model.tabWalkSensitivity).rounded())) points of slide")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("App switcher")
+                    Text("Tab walk")
                 } footer: {
-                    Text("How far you slide sideways, holding the app switcher button, to move one app.")
+                    Text("How far you slide sideways, holding the app switcher or next tab button, to move one step.")
                 }
 
                 Section("Scrolling") {
