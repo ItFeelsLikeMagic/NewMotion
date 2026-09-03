@@ -16,6 +16,16 @@ public struct VoiceStreamFlags: OptionSet, Equatable, Sendable {
     public init(rawValue: UInt8) { self.rawValue = rawValue }
     public static let start = VoiceStreamFlags(rawValue: 1 << 0)
     public static let end = VoiceStreamFlags(rawValue: 1 << 1)
+    /// The speaker threw this utterance away mid-hold. The stream stops here
+    /// and nothing it carried may be transcribed or typed.
+    public static let cancel = VoiceStreamFlags(rawValue: 1 << 2)
+    /// On an `.end` frame: these words are an instruction for editing what is
+    /// already in the field, not text to type. On an `.intent` frame: which way
+    /// the hold is leaning right now.
+    public static let edit = VoiceStreamFlags(rawValue: 1 << 3)
+    /// Carries no audio and ends nothing. It says where the finger is hovering
+    /// so the Mac can hold its typing and warm the editor before the release.
+    public static let intent = VoiceStreamFlags(rawValue: 1 << 4)
 }
 
 /// Compact BLE audio frame. Encrypted as application type `audioChunk`.
@@ -34,6 +44,9 @@ public struct VoiceStreamFrame: Equatable, Sendable {
 
     public var isStart: Bool { flags.contains(.start) }
     public var isEnd: Bool { flags.contains(.end) }
+    public var isCancel: Bool { flags.contains(.cancel) }
+    public var isEdit: Bool { flags.contains(.edit) }
+    public var isIntent: Bool { flags.contains(.intent) }
 
     public init(
         flags: VoiceStreamFlags,

@@ -33,6 +33,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var lastProbe: String?
     public var visiblePeripheralName: String?
     public var lastApplicationMessage: String?
+    /// Every notch of the last held delete key, oldest first.
+    public var deleteScrub: String?
     /// Milliseconds the last paced key burst took to reach the window server.
     /// This is the Mac's own share of hotkey latency.
     public var keyPostMs: Double?
@@ -73,6 +75,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         lastProbe: String? = nil,
         visiblePeripheralName: String? = nil,
         lastApplicationMessage: String? = nil,
+        deleteScrub: String? = nil,
         keyPostMs: Double? = nil,
         cursorEvents: UInt64 = 0,
         audioPhase: String = "idle",
@@ -101,6 +104,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.lastProbe = lastProbe
         self.visiblePeripheralName = visiblePeripheralName
         self.lastApplicationMessage = lastApplicationMessage
+        self.deleteScrub = deleteScrub
         self.keyPostMs = keyPostMs
         self.cursorEvents = cursorEvents
         self.audioPhase = audioPhase

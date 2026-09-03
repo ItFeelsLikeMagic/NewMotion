@@ -559,7 +559,145 @@ final class SafetyFeatureTests: XCTestCase {
         controller.onUtteranceStart = { log.events.append("start") }
         controller.onChunk = { log.events.append("chunk(\($0.count))") }
         controller.onUtteranceEnd = { log.events.append("end") }
+        controller.onUtteranceCancel = { log.events.append("cancel") }
+        controller.onUtteranceEndAsEdit = { log.events.append("editEnd") }
+        controller.onEditIntent = { log.events.append($0 ? "intentEdit" : "intentType") }
         return controller
+    }
+
+    func testCancelDropsPendingAudioAndEndsTheStreamAsCancelled() {
+        let log = EventLog()
+        let microphone = TestMicrophone(log: log)
+        let controller = makeController(microphone: microphone, log: log, samplesPerChunk: 4)
+        XCTAssertEqual(press(controller), .started)
+        microphone.emit([1, 2, 3, 4, 5, 6, 7])
+        voiceQueue.sync {}
+        controller.pushToTalkCancelled()
+        voiceQueue.sync {}
+        // The three buffered samples never leave, and the stream ends as a cancel.
+        XCTAssertEqual(log.events, ["start", "mic_start", "chunk(4)", "cancel", "mic_stop"])
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertFalse(microphone.running)
+    }
+
+    @MainActor
+    func testDraggingToACancelZoneThrowsTheUtteranceAway() {
+        let log = EventLog()
+        let (audio, ptt) = makePushToTalk(log: log)
+        ptt.pressed()
+        voiceQueue.sync {}
+        ptt.dragged(to: CGPoint(x: 30, y: 760))
+        XCTAssertEqual(ptt.armedZone, .cancelLeading)
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "cancel", "mic_stop"])
+        XCTAssertEqual(audio.state, .idle)
+        XCTAssertNil(ptt.armedZone)
+        XCTAssertFalse(ptt.isHolding)
+    }
+
+    /// Backing out of the corner puts the utterance back on its normal path.
+    @MainActor
+    func testDraggingBackOutOfACancelZoneStillSends() {
+        let log = EventLog()
+        let (_, ptt) = makePushToTalk(log: log)
+        ptt.pressed()
+        voiceQueue.sync {}
+        // The corner of the frame is outside the circle drawn inside it.
+        ptt.dragged(to: CGPoint(x: 5, y: 705))
+        XCTAssertNil(ptt.armedZone)
+        ptt.dragged(to: CGPoint(x: 30, y: 760))
+        ptt.dragged(to: CGPoint(x: 200, y: 400))
+        XCTAssertNil(ptt.armedZone)
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
+    }
+
+    /// Dragging to an edit target sends the words as an instruction, and says
+    /// so mid-hold so the Mac can hold its typing.
+    @MainActor
+    func testDraggingToAnEditZoneSendsTheWordsAsAnInstruction() {
+        let log = EventLog()
+        let (audio, ptt) = makePushToTalk(log: log, editEnabled: true)
+        ptt.pressed()
+        voiceQueue.sync {}
+        ptt.dragged(to: CGPoint(x: 30, y: 400))
+        voiceQueue.sync {}
+        XCTAssertEqual(ptt.armedZone, .editLeading)
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "intentEdit", "editEnd", "mic_stop"])
+        XCTAssertEqual(audio.state, .idle)
+    }
+
+    /// Leaving the edit target tells the Mac to let go of the words again.
+    @MainActor
+    func testLeavingAnEditZoneClearsTheIntentAndTypesNormally() {
+        let log = EventLog()
+        let (_, ptt) = makePushToTalk(log: log, editEnabled: true)
+        ptt.pressed()
+        voiceQueue.sync {}
+        ptt.dragged(to: CGPoint(x: 30, y: 400))
+        ptt.dragged(to: CGPoint(x: 200, y: 300))
+        voiceQueue.sync {}
+        XCTAssertNil(ptt.armedZone)
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "intentEdit", "intentType", "end", "mic_stop"])
+    }
+
+    @MainActor
+    func testEditZonesDoNothingUntilTheSettingIsOn() {
+        let log = EventLog()
+        let (_, ptt) = makePushToTalk(log: log)
+        ptt.pressed()
+        voiceQueue.sync {}
+        ptt.dragged(to: CGPoint(x: 30, y: 400))
+        voiceQueue.sync {}
+        XCTAssertNil(ptt.armedZone)
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
+    }
+
+    /// Turning the setting off with the finger already on an edit target drops
+    /// the arming rather than leaving it live.
+    @MainActor
+    func testTurningTheEditSettingOffDisarmsTheHold() {
+        let log = EventLog()
+        let (_, ptt) = makePushToTalk(log: log, editEnabled: true)
+        ptt.pressed()
+        ptt.dragged(to: CGPoint(x: 30, y: 400))
+        XCTAssertEqual(ptt.armedZone, .editLeading)
+        ptt.setEditEnabled(false)
+        XCTAssertNil(ptt.armedZone)
+    }
+
+    @MainActor
+    private func makePushToTalk(
+        log: EventLog,
+        editEnabled: Bool = false
+    ) -> (LocalPushToTalkAudioController, PushToTalkController) {
+        let audio = makeController(microphone: TestMicrophone(log: log), log: log)
+        let ptt = PushToTalkController(audio: audio, activity: { _ in }, logContext: { [:] })
+        ptt.setEditEnabled(editEnabled)
+        ptt.setZoneFrame(.cancelLeading, CGRect(x: 0, y: 700, width: 120, height: 120))
+        ptt.setZoneFrame(.cancelTrailing, CGRect(x: 280, y: 700, width: 120, height: 120))
+        ptt.setZoneFrame(.editLeading, CGRect(x: 0, y: 340, width: 120, height: 120))
+        ptt.setZoneFrame(.editTrailing, CGRect(x: 280, y: 340, width: 120, height: 120))
+        return (audio, ptt)
+    }
+
+    func testCancelBeatsTheReleaseGraceWindow() {
+        let log = EventLog()
+        let controller = makeController(microphone: TestMicrophone(log: log), log: log, releaseGrace: 5)
+        XCTAssertEqual(press(controller), .started)
+        controller.pushToTalkReleased()
+        controller.pushToTalkCancelled()
+        voiceQueue.sync {}
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertEqual(log.events, ["start", "mic_start", "cancel", "mic_stop"])
     }
 
     private func press(_ controller: LocalPushToTalkAudioController) -> AudioCaptureStartResult {

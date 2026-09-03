@@ -55,8 +55,28 @@ final class VoiceUplink: @unchecked Sendable {
         streamID = nil
     }
 
+    /// Says where the finger is hovering, mid-stream.  The Mac holds its typing
+    /// while an edit is on the table and warms the editor model.
+    func sendIntent(edit: Bool) {
+        send(samples: [], flags: edit ? [.intent, .edit] : .intent)
+    }
+
+    /// Ends the stream the other way: the Mac drops everything it has for this
+    /// stream instead of transcribing it.
+    func cancelStream() {
+        send(samples: [], flags: [.end, .cancel])
+        streamID = nil
+    }
+
+    /// Ends the stream as an instruction: the Mac edits the field with these
+    /// words instead of typing them.
+    func endStreamAsEdit() {
+        send(samples: [], flags: [.end, .edit])
+        streamID = nil
+    }
+
     private func send(samples: [Int16], flags: VoiceStreamFlags) {
-        let flagName = flags.contains(.end) ? "end" : (flags.contains(.start) ? "start" : "data")
+        let flagName = Self.name(for: flags)
         guard let streamID, let session else {
             IPhoneDebugLog.emit("ptt_drop", ["reason": "no_session", "flags": flagName])
             return
@@ -95,6 +115,13 @@ final class VoiceUplink: @unchecked Sendable {
         } catch {
             IPhoneDebugLog.emit("ptt_drop", ["reason": "encode_fail", "flags": flagName])
         }
+    }
+
+    private static func name(for flags: VoiceStreamFlags) -> String {
+        if flags.contains(.intent) { return flags.contains(.edit) ? "intentEdit" : "intentType" }
+        if flags.contains(.cancel) { return "cancel" }
+        if flags.contains(.end) { return flags.contains(.edit) ? "endEdit" : "end" }
+        return flags.contains(.start) ? "start" : "data"
     }
 
     /// The background path drains the voice queue with `sync` from the main

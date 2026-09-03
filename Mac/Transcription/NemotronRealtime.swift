@@ -231,6 +231,15 @@ final class NemotronRealtimeSession: NSObject, TranscriptionSession, URLSessionW
         }
     }
 
+    func cancel() {
+        queue.async {
+            guard !self.finished else { return }
+            self.finished = true
+            self.task?.cancel(with: .normalClosure, reason: nil)
+            self.urlSession?.invalidateAndCancel()
+        }
+    }
+
     /// The first list to arrive wins; the timeout and the reader race and only
     /// one of them can decide the utterance.
     private func adopt(_ phrases: [String]) {

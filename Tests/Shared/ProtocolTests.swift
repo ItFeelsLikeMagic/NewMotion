@@ -33,7 +33,8 @@ final class ProtocolTests: XCTestCase {
             .ping(PingPayload()),
             .pong(PongPayload()),
             .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
-            .appSwitcher(AppSwitcherPayload(phase: .begin))
+            .appSwitcher(AppSwitcherPayload(phase: .begin)),
+            .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)
@@ -194,6 +195,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(decodedData.sampleCount, 4)
         XCTAssertEqual(IMAADPCM.decode(payload: decodedData.payload, sampleCount: 4).count, 4)
         XCTAssertTrue(try VoiceStreamFrame.decode(end.encode()).isEnd)
+
+        let cancelled = try VoiceStreamFrame(
+            flags: [.end, .cancel],
+            streamID: sessionID,
+            sequence: 3,
+            sampleCount: 0,
+            payload: Data()
+        )
+        let decodedCancel = try VoiceStreamFrame.decode(cancelled.encode())
+        XCTAssertTrue(decodedCancel.isEnd)
+        XCTAssertTrue(decodedCancel.isCancel)
+        XCTAssertFalse(try VoiceStreamFrame.decode(end.encode()).isCancel)
     }
 
     func testDecoderBoundedDeterministicFuzzCorpus() {

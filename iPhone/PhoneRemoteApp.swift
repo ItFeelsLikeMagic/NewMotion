@@ -38,6 +38,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var appSwitcherSensitivity = UserDefaults.standard.object(forKey: "appSwitcherSensitivity") as? Double ?? 2.0
     @Published var edgeScrollEnabled = UserDefaults.standard.bool(forKey: "edgeScrollEnabled")
     @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
+    @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
+    @Published var spokenEditEnabled = UserDefaults.standard.bool(forKey: "spokenEditEnabled")
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
     @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
     @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
@@ -215,6 +217,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         audioController.onUtteranceStart = { uplink.beginStream() }
         audioController.onChunk = { uplink.send(samples: $0) }
         audioController.onUtteranceEnd = { uplink.endStream() }
+        audioController.onUtteranceCancel = { uplink.cancelStream() }
+        audioController.onUtteranceEndAsEdit = { uplink.endStreamAsEdit() }
+        audioController.onEditIntent = { uplink.sendIntent(edit: $0) }
         uplink.deliver = { [weak self] fragments, flags in
             MainActor.assumeIsolated { self?.deliverVoiceFragments(fragments, flags: flags) }
         }
@@ -231,6 +236,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         ]
         motionSession.updateFilter(MotionFilterConfiguration(sensitivity: airMouseSensitivity))
         refreshAirMouse()
+        pushToTalk.setEditEnabled(spokenEditEnabled)
         IPhoneDebugLog.emit("app_init", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
             "screenCaptured": UIScreen.main.isCaptured ? "yes" : "no"
@@ -350,10 +356,14 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             voiceMessagesDropped += 1
         }
         if flags.contains(.end) {
-            latestAction = "Voice sent"
+            let cancelled = flags.contains(.cancel)
+            let edit = flags.contains(.edit)
+            latestAction = cancelled ? "Voice thrown away" : (edit ? "Edit sent" : "Voice sent")
             IPhoneDebugLog.emit("ptt_end", [
                 "sent": "\(voiceMessagesSent)",
                 "dropped": "\(voiceMessagesDropped)",
+                "cancelled": cancelled ? "yes" : "no",
+                "edit": edit ? "yes" : "no",
                 "ble": bluetoothState.label
             ])
         }
@@ -406,6 +416,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     func setEdgeScrollEnabled(_ enabled: Bool) {
         edgeScrollEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "edgeScrollEnabled")
+    }
+
+    func setDeleteScrubEnabled(_ enabled: Bool) {
+        deleteScrubEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "deleteScrubEnabled")
+    }
+
+    func setSpokenEditEnabled(_ enabled: Bool) {
+        spokenEditEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "spokenEditEnabled")
+        pushToTalk.setEditEnabled(enabled)
     }
 
     func setHoldScrollEnabled(_ enabled: Bool) {
@@ -815,6 +836,29 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         keyboard.send(hotkey)
     }
 
+    /// One notch of a held delete key.  It goes out beside the hotkeys rather
+    /// than through them, because the Mac has to keep the characters a notch
+    /// removed in order to put them back.
+    func sendDeleteScrub(_ phase: DeleteScrubPhase, granularity: DeleteScrubGranularity) {
+        guard isControllable else {
+            latestAction = "Pair before erasing"
+            return
+        }
+        let payload = DeleteScrubPayload(phase: phase, granularity: granularity)
+        guard inputUplink.send(.deleteScrub(payload)) else {
+            latestAction = "Erase send failed"
+            return
+        }
+        // Deliberately quiet on the notches themselves.  Narrating each one
+        // republishes the model, which rebuilds the whole trackpad screen
+        // under the finger that is still sliding.
+        switch phase {
+        case .begin: latestAction = "Erasing"
+        case .end: latestAction = "Erased"
+        case .delete, .restore: break
+        }
+    }
+
     private func sendKeyboardOutput(_ output: KeyboardOutput) {
         guard let payload = try? SharedKeyboardProtocolAdapter.payload(for: output),
               inputUplink.send(payload) else {
@@ -879,21 +923,6 @@ private struct PairingCameraPreview: UIViewRepresentable {
 
     func updateUIView(_ view: PairingCameraPreviewView, context: Context) {
         view.attach(capture.previewLayer)
-    }
-}
-
-private struct AppSwitcherTouchSurface: UIViewRepresentable {
-    let onPhase: (HoldSlidePhase) -> Void
-
-    func makeUIView(context: Context) -> HoldSlideCaptureView {
-        let view = HoldSlideCaptureView(frame: .zero)
-        view.label = "app_switcher"
-        view.onPhase = onPhase
-        return view
-    }
-
-    func updateUIView(_ uiView: HoldSlideCaptureView, context: Context) {
-        uiView.onPhase = onPhase
     }
 }
 
@@ -1025,27 +1054,107 @@ extension RemoteHotkey {
 
 /// The hotkeys that sit beside the trackpad.  They are the same allowlisted
 /// atomic actions the protocol already carries; no key script is possible.
-private struct HotkeyBar: View {
+/// The key pad that flanks the hold bar.  Two 2x2 clusters, one under each
+/// thumb, with the hold bar filling the middle at their full height.
+enum RemoteKeyMetrics {
+    static let keyWidth: Double = 48
+    static let keyHeight: Double = 46
+    static let spacing: Double = 8
+    static let clusterWidth = keyWidth * 2 + spacing
+    static let clusterHeight = keyHeight * 2 + spacing
+}
+
+/// Each cluster keeps its frequent keys in the column nearest the hold bar, so
+/// the same reach finds the same kind of key whichever hand holds the phone.
+/// The keys are the same allowlisted atomic actions the protocol already
+/// carries; no key script is possible.
+private struct RemoteKeyPad: View {
+    @ObservedObject var pushToTalk: PushToTalkController
     let send: (RemoteHotkey) -> Void
     let switcherSensitivity: Double
     let switcher: (AppSwitcherPhase) -> Void
+    let scrubEnabled: Bool
+    let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            key(.escape) { Text(RemoteHotkey.escape.buttonTitle) }
-            AppSwitcherButton(sensitivity: switcherSensitivity, send: switcher)
-            key(.return) { Image(systemName: "return") }
-            key(.deleteBackward) { Image(systemName: "delete.left") }
-            key(.deleteWordBackward) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) }
-            key(.deleteLineBackward) { Text(RemoteHotkey.deleteLineBackward.buttonTitle) }
+        HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
+            cluster {
+                slot { key(.escape) { Text(RemoteHotkey.escape.buttonTitle) } }
+                slot { AppSwitcherButton(sensitivity: switcherSensitivity, send: switcher) }
+            } bottom: {
+                slot { key(.copy) { Image(systemName: "doc.on.doc") } }
+                slot { key(.paste) { Image(systemName: "doc.on.clipboard") } }
+            }
+
+            PushToTalkButton(controller: pushToTalk)
+                .frame(maxWidth: .infinity)
+
+            // Return takes the inner top corner: it is the key that follows a
+            // dictated line, so it sits right against the hold bar.  The three
+            // deletes fill the rest, growing outward from the character.
+            cluster {
+                slot { key(.return) { Image(systemName: "return") } }
+                slot { key(.deleteLineBackward) { Text(RemoteHotkey.deleteLineBackward.buttonTitle) } }
+            } bottom: {
+                slot { deleteKey(.deleteBackward, .character) { Image(systemName: "delete.left") } }
+                slot { deleteKey(.deleteWordBackward, .word) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) } }
+            }
         }
     }
 
+    private func cluster<Top: View, Bottom: View>(
+        @ViewBuilder top: () -> Top,
+        @ViewBuilder bottom: () -> Bottom
+    ) -> some View {
+        VStack(spacing: RemoteKeyMetrics.spacing) {
+            HStack(spacing: RemoteKeyMetrics.spacing) { top() }
+            HStack(spacing: RemoteKeyMetrics.spacing) { bottom() }
+        }
+        .frame(width: RemoteKeyMetrics.clusterWidth)
+    }
+
+    /// One fixed cell.  Every key fills the width it is offered, so the pad
+    /// sets the size once here rather than each key guessing.
+    private func slot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
+    }
+
+    /// Drawn like the hold-and-slide keys rather than with `.bordered`, whose
+    /// padding leaves a 48pt cell too little room for a two-glyph label.
     private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
-        Button(action: Haptics.tap { send(hotkey) }, label: label)
-            .buttonStyle(.bordered)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .accessibilityLabel(hotkey.spokenName)
+        Button(action: Haptics.tap { send(hotkey) }) {
+            label()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.secondarySystemFill))
+        .foregroundStyle(Color.accentColor)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(hotkey.spokenName)
+    }
+
+    /// With the slide off, a delete key is an ordinary key and nothing about it
+    /// changes.
+    @ViewBuilder
+    private func deleteKey<Label: View>(
+        _ hotkey: RemoteHotkey,
+        _ granularity: DeleteScrubGranularity,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        if scrubEnabled {
+            DeleteScrubKey(
+                hotkey: hotkey,
+                granularity: granularity,
+                send: send,
+                scrub: scrub,
+                label: label()
+            )
+        } else {
+            key(hotkey, label: label)
+        }
     }
 }
 
@@ -1072,7 +1181,7 @@ private struct AppSwitcherButton: View {
             // Touches come from UIKit, not from a SwiftUI gesture.  The
             // gesture sat on a press for 100 ms at best and 780 ms after an
             // idle spell, which was most of what this button felt like.
-            .overlay(AppSwitcherTouchSurface(onPhase: handle))
+            .overlay(HoldSlideSurface(label: "app_switcher", onPhase: handle))
             // A system interruption cancels the gesture without an end, and the
             // Mac would be left holding Command until the watchdog fires.
             .onChange(of: scenePhase) { _, phase in
@@ -1136,6 +1245,12 @@ struct PhoneRemoteControlView: View {
             RemoteSettingsTab(model: model)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
+        // Over the tab bar and into the bottom safe area, so the targets sit in
+        // the true corners of the screen rather than the corners of a tab.
+        .overlay {
+            PushToTalkDragZones(controller: model.pushToTalk)
+                .ignoresSafeArea()
+        }
         .onAppear { model.scenePhaseChanged(.active) }
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(phase)
@@ -1181,23 +1296,25 @@ private struct RemoteControlTab: View {
                         .foregroundStyle(.secondary)
                         .allowsHitTesting(false)
                 }
+                // Floated over a corner rather than given a slot in the pad, so
+                // it costs no height.
+                .overlay(alignment: .bottomTrailing) {
+                    KeyboardToggleButton(isShowing: $isKeyboardShowing)
+                        .padding(8)
+                }
                 // The scroll strips are the thing a thumb reaches for without
                 // looking, so they run to the side of the screen rather than
                 // stopping short of it and leaving a dead margin.
                 .padding(.horizontal, -Self.contentPadding)
 
-                HotkeyBar(
+                RemoteKeyPad(
+                    pushToTalk: model.pushToTalk,
                     send: { model.sendHotkey($0) },
                     switcherSensitivity: model.appSwitcherSensitivity,
-                    switcher: { model.sendAppSwitcher($0) }
+                    switcher: { model.sendAppSwitcher($0) },
+                    scrubEnabled: model.deleteScrubEnabled,
+                    scrub: { model.sendDeleteScrub($0, granularity: $1) }
                 )
-
-                HStack(alignment: .top, spacing: 8) {
-                    ClipboardButtons(send: { model.sendHotkey($0) })
-                    PushToTalkButton(controller: model.pushToTalk)
-                        .frame(maxWidth: .infinity)
-                    KeyboardToggleButton(isShowing: $isKeyboardShowing)
-                }
                 .overlay(alignment: .bottom) {
                     RemoteKeyboardSurface(
                         isShowing: $isKeyboardShowing,
@@ -1221,35 +1338,8 @@ private struct RemoteControlTab: View {
     }
 }
 
-/// Copy and paste sit in the bottom left corner, mirroring the keyboard toggle
-/// on the right.  They are the two hotkeys a thumb reaches for without looking,
-/// so they get corner room instead of a slot in the crowded hotkey bar.
-private struct ClipboardButtons: View {
-    let send: (RemoteHotkey) -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            key(.copy, systemImage: "doc.on.doc")
-            key(.paste, systemImage: "doc.on.clipboard")
-        }
-    }
-
-    private func key(_ hotkey: RemoteHotkey, systemImage: String) -> some View {
-        Button(action: Haptics.tap { send(hotkey) }) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .frame(width: 52, height: 52)
-                .contentShape(Rectangle())
-        }
-        .background(Color(.secondarySystemFill))
-        .foregroundStyle(Color.primary)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .accessibilityLabel(hotkey.spokenName)
-    }
-}
-
-/// Sits in the bottom right corner beside push to talk.  It only opens and
-/// closes the system keyboard; the trackpad above stays live either way.
+/// Opens and closes the system keyboard; the trackpad under it stays live
+/// either way.
 private struct KeyboardToggleButton: View {
     @Binding var isShowing: Bool
 
@@ -1257,12 +1347,12 @@ private struct KeyboardToggleButton: View {
         Button(action: Haptics.tap { isShowing.toggle() }) {
             Image(systemName: isShowing ? "keyboard.chevron.compact.down" : "keyboard")
                 .font(.title3)
-                .frame(width: 52, height: 52)
+                .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
                 .contentShape(Rectangle())
         }
-        .background(isShowing ? Color.accentColor : Color(.secondarySystemFill))
+        .background(isShowing ? Color.accentColor : Color(.tertiarySystemFill))
         .foregroundStyle(isShowing ? Color.white : Color.primary)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel(isShowing ? "Hide keyboard" : "Show keyboard")
     }
 }
@@ -1459,6 +1549,26 @@ private struct RemoteSettingsTab: View {
                         )
                     )
                     Text("Rest a finger, then move. With the air mouse on, hold and aim to scroll.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle(
+                        "Hold a delete key and slide",
+                        isOn: Binding(
+                            get: { model.deleteScrubEnabled },
+                            set: { model.setDeleteScrubEnabled($0) }
+                        )
+                    )
+                    Text("Slide left to rub out text a buzz at a time, right to bring it back. A tap still sends one delete.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle(
+                        "Edit text with a spoken instruction",
+                        isOn: Binding(
+                            get: { model.spokenEditEnabled },
+                            set: { model.setSpokenEditEnabled($0) }
+                        )
+                    )
+                    Text("While holding to talk, drag to the pencil on either side. What you say becomes an instruction for the text already in the field, and the Mac rewrites it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {

@@ -116,9 +116,13 @@ final class MacRemoteAppModel: ObservableObject {
     private let speechServer: NemotronServer
     private let screenVocabularyReader: AXScreenVocabularyReader
     private let normalizer = S1MiniNormalizer()
+    /// Experimental: only ever reached when the phone marks an utterance as an
+    /// instruction, which its own setting gates.
+    private let editor = QwenTranscriptEditor()
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
     private let focusedTextReader = AXFocusedTextReader()
+    private let deleteScrub: DeleteScrubCoordinator
 
     init() {
         let vocabularyCache = VocabularyCache()
@@ -154,6 +158,10 @@ final class MacRemoteAppModel: ObservableObject {
             offerController: pairingOffer
         )
         self.injector = injector
+        self.deleteScrub = DeleteScrubCoordinator(
+            submitter: injector,
+            focusedText: focusedTextReader
+        )
         self.reliableInput = ReliableInputCoordinator(
             injector: injector,
             heartbeatTimeout: Self.heartbeatTimeout
@@ -163,6 +171,7 @@ final class MacRemoteAppModel: ObservableObject {
             sessions: speechServer,
             insertionSink: injector,
             normalizer: normalizer,
+            editor: editor,
             focusedText: focusedTextReader,
             vocabulary: vocabularyCache
         )
@@ -618,6 +627,11 @@ final class MacRemoteAppModel: ObservableObject {
                 if injector.submit(command) != .applied { applied = false }
             }
             lastApplicationMessage = applied ? "appSwitcher \(value.phase)" : "appSwitcher blocked"
+        case let .deleteScrub(value):
+            // Several messages make up one press, so this needs the memory the
+            // coordinator holds; every event it posts still goes through the
+            // injector and the same policy checks.
+            lastApplicationMessage = deleteScrub.handle(value)
         default:
             let isCursor = payload.messageType == .pointerDelta
                 || payload.messageType == .scrollDelta
@@ -690,6 +704,9 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func clearHandshakeState() {
+        // A press whose end never arrived must not restore its characters into
+        // whatever the next session is pointed at.
+        deleteScrub.abandon()
         pairingServer = nil
         pairingID = nil
         pairingDeviceName = nil
@@ -756,6 +773,7 @@ final class MacRemoteAppModel: ObservableObject {
             lastPairingFailure: lastPairingFailure,
             visiblePeripheralName: visiblePeripheralName,
             lastApplicationMessage: lastApplicationMessage,
+            deleteScrub: deleteScrub.lastSlide.isEmpty ? nil : deleteScrub.lastSlide,
             keyPostMs: inputSink.lastKeyBurstMilliseconds,
             cursorEvents: cursorEvents,
             audioPhase: voice.phase.rawValue,

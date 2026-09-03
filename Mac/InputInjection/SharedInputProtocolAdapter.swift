@@ -105,7 +105,8 @@ public enum SharedInputProtocolAdapter {
             return .text(text)
         case let .hotkey(value):
             return .hotkey(localHotkey(value.action))
-        case .heartbeat, .appSwitcher, .audioChunk, .acknowledgement, .connectionStatus, .error, .ping, .pong:
+        case .heartbeat, .appSwitcher, .deleteScrub, .audioChunk, .acknowledgement,
+             .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
         }
     }
