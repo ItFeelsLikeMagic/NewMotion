@@ -84,6 +84,8 @@ public enum SharedKeyboardProtocolAdapter {
         case .arrowLeft: return .arrowLeft
         case .arrowRight: return .arrowRight
         case .deleteBackward: return .deleteBackward
+        case .deleteWordBackward: return .deleteWordBackward
+        case .deleteLineBackward: return .deleteLineBackward
         }
     }
 }

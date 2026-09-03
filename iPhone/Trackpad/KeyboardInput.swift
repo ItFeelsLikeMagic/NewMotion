@@ -85,6 +85,8 @@ public enum RemoteHotkey: String, CaseIterable, Equatable, Hashable, Sendable {
     case arrowLeft
     case arrowRight
     case deleteBackward
+    case deleteWordBackward
+    case deleteLineBackward
 }
 
 public enum KeyboardOutput: Equatable, Sendable {

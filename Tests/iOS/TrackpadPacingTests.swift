@@ -48,6 +48,82 @@ final class TrackpadPacingTests: XCTestCase {
         XCTAssertEqual(total, 3)
     }
 
+    func testAirMouseTravelSharesTheTrackpadPacer() {
+        let coalescer = TrackpadOutputCoalescer()
+        var seen: [TrackpadOutput] = []
+        var deferred: [() -> Void] = []
+        coalescer.onOutput = { seen.append($0) }
+        coalescer.pointerCoalescer.now = { 0 }
+        coalescer.pointerCoalescer.execute = { _, work in deferred.append(work) }
+
+        coalescer.handlePointer(TrackpadPointerDelta(x: 1.5, y: 0))
+        coalescer.handle([.pointer(TrackpadPointerDelta(x: 2, y: 1))])
+        coalescer.handlePointer(TrackpadPointerDelta(x: 0.5, y: 0))
+
+        // One packet for both sensors, not one each.
+        XCTAssertEqual(deferred.count, 1)
+        deferred.removeFirst()()
+        XCTAssertEqual(seen, [.pointer(TrackpadPointerDelta(x: 4, y: 1))])
+    }
+
+    func testCursorTravelKeepsTheFractionAndTheOverflow() {
+        var travel = CursorTravel()
+        // A tenth of a point on its own moves nothing.
+        travel.add(x: 0.1, y: 0)
+        XCTAssertEqual(travel.wholePoints.x, 0)
+
+        // Ten of them must add up to a whole point, not to nothing.
+        var sent = 0
+        for _ in 0..<9 {
+            travel.add(x: 0.1, y: 0)
+            let step = travel.wholePoints
+            travel.take(x: step.x, y: step.y)
+            sent += Int(step.x)
+        }
+        XCTAssertEqual(sent, 1)
+        XCTAssertEqual(travel.wholePoints.x, 0)
+
+        // Travel past what one frame carries waits rather than vanishing.
+        travel.clear()
+        travel.add(x: Double(Int16.max) + 40, y: 0)
+        let capped = travel.wholePoints
+        XCTAssertEqual(capped.x, Int16.max)
+        travel.take(x: capped.x, y: capped.y)
+        XCTAssertEqual(travel.wholePoints.x, 40)
+    }
+
+    func testMotionGainIsFinerWhenSlowAndFasterWhenSweeping() {
+        // Gain is output points per radian of turn. The curve must give a slow
+        // aim less of it than a fast sweep, and both must still move.
+        func gain(degreesPerSecond: Double) -> Double {
+            var filter = MotionPointerFilter()
+            filter.setClutch(active: true)
+            let perSample = degreesPerSecond * .pi / 180 / 100
+            var timestamp = 0.0
+            var output = 0.0
+            var turned = 0.0
+            for step in 0...40 {
+                timestamp = Double(step) / 100
+                let angle = perSample * Double(step)
+                let delta = filter.process(MotionSample(
+                    timestamp: timestamp,
+                    attitude: MotionQuaternion(w: cos(angle / 2), x: 0, y: 0, z: sin(angle / 2))
+                ))
+                // The first accepted sample only sets the reference.
+                if step > 1 { turned += perSample }
+                output += abs(delta?.x ?? 0)
+            }
+            return output / turned
+        }
+
+        let slow = gain(degreesPerSecond: 5)
+        let aiming = gain(degreesPerSecond: 30)
+        let sweep = gain(degreesPerSecond: 300)
+        XCTAssertGreaterThan(slow, 0)
+        XCTAssertLessThan(slow, aiming)
+        XCTAssertGreaterThan(sweep, aiming)
+    }
+
     func testCoalescerSumsPointerTravelAndKeepsDiscreteEventsBehindIt() {
         let coalescer = TrackpadOutputCoalescer()
         var seen: [TrackpadOutput] = []

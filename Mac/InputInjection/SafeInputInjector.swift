@@ -169,6 +169,8 @@ public enum HotkeyPhysicalSequence {
         case .arrowLeft: key = 123; modifiers = []
         case .arrowRight: key = 124; modifiers = []
         case .deleteBackward: key = 51; modifiers = []
+        case .deleteWordBackward: key = 51; modifiers = [58] // Option + Delete
+        case .deleteLineBackward: key = 51; modifiers = [commandKey]
         case .shiftTab: key = 48; modifiers = [56]
         }
 

@@ -12,8 +12,8 @@ private func iPhoneDebugStamp() -> String {
 @MainActor
 final class IPhoneDebugLog: ObservableObject {
     static let shared = IPhoneDebugLog()
-    static let fileName = "phoneremote-debug.jsonl"
-    static let snapshotName = "phoneremote-debug-state.json"
+    nonisolated static let fileName = "phoneremote-debug.jsonl"
+    nonisolated static let snapshotName = "phoneremote-debug-state.json"
 
     @Published private(set) var lines: [String] = []
     private var snapshot: [String: String] = [:]
@@ -42,21 +42,32 @@ final class IPhoneDebugLog: ObservableObject {
         for (key, value) in safe { snapshot["\(name).\(key)"] = value }
         snapshot["lastEvent"] = name
         snapshot["lastLine"] = line
-        appendFile(line)
-        writeSnapshot()
+        Self.write(line: line, snapshot: snapshot)
     }
 
     func note(_ key: String, _ value: String) {
         let lower = key.lowercased()
         guard !iPhoneDebugBlockedKeys.contains(where: { lower.contains($0) }) else { return }
         snapshot[key] = value
-        writeSnapshot()
+        Self.write(line: nil, snapshot: snapshot)
     }
 
     var onScreen: String { lines.suffix(8).joined(separator: "\n") }
 
-    private func appendFile(_ line: String) {
-        guard let url = Self.documentsURL?.appendingPathComponent(Self.fileName) else { return }
+    /// Two file writes per event are far too slow for the main thread, and the
+    /// press path is timed through this log.  The serial queue keeps the file
+    /// in event order.
+    private nonisolated static let io = DispatchQueue(label: "phoneremote.debuglog", qos: .utility)
+
+    private nonisolated static func write(line: String?, snapshot: [String: String]) {
+        io.async {
+            if let line { appendFile(line) }
+            writeSnapshot(snapshot)
+        }
+    }
+
+    private nonisolated static func appendFile(_ line: String) {
+        guard let url = documentsURL?.appendingPathComponent(fileName) else { return }
         let data = (line + "\n").data(using: .utf8) ?? Data()
         if FileManager.default.fileExists(atPath: url.path) {
             if let handle = try? FileHandle(forWritingTo: url) {
@@ -69,13 +80,13 @@ final class IPhoneDebugLog: ObservableObject {
         }
     }
 
-    private func writeSnapshot() {
-        guard let url = Self.documentsURL?.appendingPathComponent(Self.snapshotName) else { return }
+    private nonisolated static func writeSnapshot(_ snapshot: [String: String]) {
+        guard let url = documentsURL?.appendingPathComponent(snapshotName) else { return }
         let body = snapshot.keys.sorted().map { "\($0)=\(snapshot[$0] ?? "")" }.joined(separator: "\n")
         try? (body + "\n").data(using: .utf8)?.write(to: url)
     }
 
-    private static var documentsURL: URL? {
+    private nonisolated static var documentsURL: URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 }

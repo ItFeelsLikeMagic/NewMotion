@@ -95,6 +95,9 @@ final class PushToTalkController: ObservableObject {
 struct PushToTalkButton: View {
     @ObservedObject var controller: PushToTalkController
     @State private var isPressed = false
+    // Kept alive across presses; an unprepared generator takes about 100 ms to
+    // fire, which is the delay this is meant to cover.
+    @State private var haptics = UIImpactFeedbackGenerator(style: .medium)
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -105,21 +108,14 @@ struct PushToTalkButton: View {
                 .background(isPressed ? Color.red : Color.accentColor)
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { _ in
-                            guard !isPressed else { return }
-                            isPressed = true
-                            controller.pressed()
-                        }
-                        .onEnded { _ in release() }
-                )
-                // DragGesture.onEnded does not fire when the system cancels the
-                // touch (incoming call, app switcher), so the hold would stick.
+                .overlay { PushToTalkTouchSurface(press: press, release: release) }
+                // A cancelled touch (incoming call, app switcher) reaches the
+                // touch view, but a suspended app never delivers one at all.
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { release() }
                 }
                 .accessibilityLabel("Push to talk")
+                .onAppear { haptics.prepare() }
 
             if !controller.status.isEmpty {
                 Text(controller.status)
@@ -130,9 +126,19 @@ struct PushToTalkButton: View {
         }
     }
 
+    private func press() {
+        guard !isPressed else { return }
+        isPressed = true
+        haptics.impactOccurred()
+        haptics.prepare()
+        controller.pressed()
+    }
+
     private func release() {
         guard isPressed else { return }
         isPressed = false
+        haptics.impactOccurred(intensity: 0.5)
+        haptics.prepare()
         controller.released()
     }
 }

@@ -32,13 +32,22 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     @Published var latestAction = "Not paired"
     @Published var isPaired = false
-    @Published var airMouseStatus = "Air mouse idle"
+    @Published var airMouseStatus = "Air mouse off"
+    @Published var airMouseEnabled = UserDefaults.standard.bool(forKey: "airMouseEnabled")
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
+    @Published var appSwitcherSensitivity = UserDefaults.standard.object(forKey: "appSwitcherSensitivity") as? Double ?? 2.0
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
     @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
     @Published var pairingState: IPhonePairingScannerState = .idle
     @Published var bluetoothState: BLEPeripheralLifecycleState = .idle
     @Published var trustedMacName: String?
+    /// Round trip over Bluetooth, measured end to end from this app.
+    @Published var linkLatency = "Not measured"
+
+
+    private static let pingBurstCount = 5
+    private var pingSentAt: [TimeInterval] = []
+    private var pingSamples: [Double] = []
 
     private let audioController: LocalPushToTalkAudioController
     private(set) lazy var pushToTalk = PushToTalkController(
@@ -53,11 +62,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     )
     private let motionSink: DeltaCoalescer<MotionPointerDelta>
     private let trackpadOutputs = TrackpadOutputCoalescer()
-    /// Cursor travel the radio has not taken yet, in whole points.
-    private var pendingPointerX = 0
-    private var pendingPointerY = 0
-    private var pendingScrollX = 0
-    private var pendingScrollY = 0
+    /// The trackpad surface is the only screen the air mouse runs on.
+    private var trackpadVisible = false
+    private var pointerTravel = CursorTravel()
+    private var scrollTravel = CursorTravel()
     private lazy var keyboardForwarder = KeyboardOutputForwarder { [weak self] output in
         self?.sendKeyboardOutput(output)
     }
@@ -71,7 +79,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var pairingClient: PairingHandshakeClient?
     private var pairingToken: PairingToken?
     private var authenticatedSession: PairingSession? {
-        didSet { voiceUplink.setSession(authenticatedSession, maximumValueLength: peripheral.maximumUpdateValueLength) }
+        didSet {
+            voiceUplink.setSession(authenticatedSession, maximumValueLength: peripheral.maximumUpdateValueLength)
+            refreshAirMouse()
+        }
     }
     private var inboundReassembler: BLEReassembler?
     private var controlReassembler: BLEReassembler?
@@ -205,6 +216,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             }
         ]
         motionSession.updateFilter(MotionFilterConfiguration(sensitivity: airMouseSensitivity))
+        refreshAirMouse()
         IPhoneDebugLog.emit("app_init", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
             "screenCaptured": UIScreen.main.isCaptured ? "yes" : "no"
@@ -286,6 +298,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .active:
             _ = lifecycle.handle(.foreground)
             motionSession.setAppActive(true)
+            refreshAirMouse()
             reconnectFailures = 0
             if isPairingVisible {
                 // QR scan owns the radio. A saved-Mac reconnect hello would
@@ -332,21 +345,52 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    func airMouseChanged(_ held: Bool) {
-        guard authenticatedSession != nil, peripheral.state == .ready else {
+    func setAirMouseEnabled(_ enabled: Bool) {
+        airMouseEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "airMouseEnabled")
+        refreshAirMouse()
+        latestAction = airMouseStatus
+    }
+
+    /// The air mouse only tracks while the trackpad surface is on screen, so
+    /// the settings and pairing screens cannot move the cursor.
+    func setTrackpadVisible(_ visible: Bool) {
+        guard trackpadVisible != visible else { return }
+        trackpadVisible = visible
+        refreshAirMouse()
+    }
+
+    private func refreshAirMouse() {
+        guard airMouseEnabled else {
             _ = motionSession.setClutchHeld(false)
-            airMouseStatus = held ? "Pair before using air mouse" : "Air mouse idle"
-            latestAction = airMouseStatus
+            airMouseStatus = "Air mouse off"
             return
         }
-        let result = motionSession.setClutchHeld(held)
-        if held {
-            airMouseStatus = result == .started ? "Air mouse active" : "Air mouse unavailable"
-            latestAction = airMouseStatus
-        } else {
-            airMouseStatus = "Air mouse idle"
-            latestAction = "Air mouse released"
+        guard isControllable else {
+            _ = motionSession.setClutchHeld(false)
+            airMouseStatus = "Pair before using air mouse"
+            return
         }
+        guard trackpadVisible else {
+            _ = motionSession.setClutchHeld(false)
+            airMouseStatus = "Air mouse starts on the trackpad"
+            return
+        }
+        switch motionSession.setClutchHeld(true) {
+        case .started:
+            airMouseStatus = "Air mouse active"
+        case .unavailable:
+            airMouseStatus = "This phone has no motion sensor"
+        case .inactive, .none:
+            airMouseStatus = "Air mouse waits for the app"
+        case .failed:
+            airMouseStatus = "Air mouse could not start"
+        }
+    }
+
+    func setAppSwitcherSensitivity(_ value: Double) {
+        appSwitcherSensitivity = value
+        UserDefaults.standard.set(value, forKey: "appSwitcherSensitivity")
     }
 
     func setAirMouseSensitivity(_ value: Double) {
@@ -383,6 +427,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             _ = lifecycle.handle(.bluetoothPoweredOn)
             if authenticatedSession != nil {
                 latestAction = "Paired with Mac"
+                refreshAirMouse()
             } else if pairingClient != nil {
                 sendHandshakeHelloIfNeeded()
             }
@@ -468,18 +513,54 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
+    /// A burst rather than a single ping, because one sample cannot tell a
+    /// typical hop from one that waited out a slow connection slot. Pongs carry
+    /// no identifier, so they are matched to sends in order; the spacing is far
+    /// wider than the round trip, which keeps that honest.
     func sendPing() {
-        guard authenticatedSession != nil, peripheral.state == .ready else {
+        guard isControllable else {
             latestAction = "Pair first"
             return
         }
+        pingSamples.removeAll()
+        pingSentAt.removeAll()
+        linkLatency = "Measuring…"
+        latestAction = "Measuring link"
+        for index in 0..<Self.pingBurstCount {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(index * 250))
+                self?.sendOnePing()
+            }
+        }
+    }
+
+    private func sendOnePing() {
+        guard isControllable else { return }
         do {
+            pingSentAt.append(ProcessInfo.processInfo.systemUptime)
             try sendApplication(.ping(PingPayload()))
-            latestAction = "Ping sent"
             IPhoneDebugLog.emit("ping_sent", ["ble": bluetoothState.label])
         } catch {
+            pingSentAt.removeLast()
             latestAction = "Ping failed"
         }
+    }
+
+    private func recordPong() {
+        guard !pingSentAt.isEmpty else { return }
+        let sent = pingSentAt.removeFirst()
+        let roundTrip = (ProcessInfo.processInfo.systemUptime - sent) * 1_000
+        pingSamples.append(roundTrip)
+        let best = pingSamples.min() ?? roundTrip
+        let average = pingSamples.reduce(0, +) / Double(pingSamples.count)
+        linkLatency = String(
+            format: "%.0f ms average, %.0f ms best, %d of %d",
+            average,
+            best,
+            pingSamples.count,
+            Self.pingBurstCount
+        )
+        IPhoneDebugLog.emit("ping_rtt", ["ms": String(format: "%.1f", roundTrip)])
     }
 
     private func handleIncomingFrame(channel: BLETransportChannel, data: Data) {
@@ -553,6 +634,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 guard kind == .data else { return }
                 let envelope = try session.unwrapApplication(payload)
                 if case .pong = envelope.payload {
+                    recordPong()
                     latestAction = "Pong from Mac"
                 }
             }
@@ -650,13 +732,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         latestAction = "Pairing failed; scan a new Mac QR code"
     }
 
+    /// The air mouse shares the trackpad's compact frame, its busy-link retry,
+    /// and now its pacer as well: two sensors moving one cursor must not each
+    /// spend a full packet budget.  Travel stays fractional this far in.
     func handleMotionDelta(_ delta: MotionPointerDelta) {
-        guard authenticatedSession != nil, peripheral.state == .ready else { return }
-        do {
-            try sendApplication(try SharedMotionProtocolAdapter.payload(for: delta, sampleRateHz: 100))
-        } catch {
+        guard isControllable else { return }
+        guard delta.x.isFinite, delta.y.isFinite else {
             airMouseStatus = "Air mouse send failed"
+            return
         }
+        trackpadOutputs.handlePointer(TrackpadPointerDelta(x: delta.x, y: delta.y))
     }
 
     func setTrackpadSensitivity(x: Double? = nil, y: Double? = nil) {
@@ -731,7 +816,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private func sendTrackpadOutput(_ output: TrackpadOutput) {
         let label: String
         switch output {
-        case .pointer: label = "Trackpad pointer"
+        case .pointer: label = "Cursor move"
         case .scroll: label = "Trackpad scroll"
         case .leftClick: label = "Left click"
         case .rightClick: label = "Right click"
@@ -744,12 +829,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
         switch output {
         case let .pointer(delta):
-            pendingPointerX += Int(delta.x)
-            pendingPointerY += Int(delta.y)
+            pointerTravel.add(x: delta.x, y: delta.y)
             flushCursorStream()
         case let .scroll(delta):
-            pendingScrollX += Int(delta.x.rounded())
-            pendingScrollY += Int(delta.y.rounded())
+            scrollTravel.add(x: delta.x, y: delta.y)
             flushCursorStream()
         case .leftClick, .rightClick, .doubleClick, .dragBegan, .dragEnded:
             // A button must never land ahead of the travel that preceded it.
@@ -771,20 +854,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     /// follows it cannot overtake it.
     private func flushCursorStream(force: Bool = false) {
         var items: [PointerStreamItem] = []
-        if pendingPointerX != 0 || pendingPointerY != 0 {
-            items.append(PointerStreamItem(
-                kind: .pointer,
-                deltaX: clampedInt16(pendingPointerX),
-                deltaY: clampedInt16(pendingPointerY)
-            ))
+        let pointer = pointerTravel.wholePoints
+        if pointer.x != 0 || pointer.y != 0 {
+            items.append(PointerStreamItem(kind: .pointer, deltaX: pointer.x, deltaY: pointer.y))
         }
-        if pendingScrollX != 0 || pendingScrollY != 0 {
-            items.append(PointerStreamItem(
-                kind: .scroll,
-                deltaX: clampedInt16(pendingScrollX),
-                deltaY: clampedInt16(pendingScrollY)
-            ))
+        let scroll = scrollTravel.wholePoints
+        if scroll.x != 0 || scroll.y != 0 {
+            items.append(PointerStreamItem(kind: .scroll, deltaX: scroll.x, deltaY: scroll.y))
         }
+        // Travel under half a point is not dropped; it stays pending and rides
+        // out with a later packet once it adds up to a whole one.
         guard !items.isEmpty else { return }
         guard let session = authenticatedSession, peripheral.state == .ready else {
             clearPendingCursor()
@@ -815,22 +894,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                     return
                 }
             }
-            clearPendingCursor()
+            pointerTravel.take(x: pointer.x, y: pointer.y)
+            scrollTravel.take(x: scroll.x, y: scroll.y)
         } catch {
             clearPendingCursor()
-            latestAction = "Trackpad send failed"
+            latestAction = "Cursor send failed"
         }
     }
 
     private func clearPendingCursor() {
-        pendingPointerX = 0
-        pendingPointerY = 0
-        pendingScrollX = 0
-        pendingScrollY = 0
-    }
-
-    private func clampedInt16(_ value: Int) -> Int16 {
-        Int16(min(max(value, Int(Int16.min)), Int(Int16.max)))
+        pointerTravel.clear()
+        scrollTravel.clear()
     }
 }
 
@@ -871,7 +945,11 @@ private struct TrackpadSurface: UIViewRepresentable {
     }
 }
 
+/// An invisible responder.  It carries no size of its own; showing it is only
+/// a matter of taking the responder, which raises the system keyboard and lets
+/// the layout below shrink around it while the trackpad stays live.
 private struct RemoteKeyboardSurface: UIViewRepresentable {
+    @Binding var isShowing: Bool
     let onText: (String) -> Void
     let onHotkey: (RemoteHotkey) -> Void
 
@@ -889,6 +967,23 @@ private struct RemoteKeyboardSurface: UIViewRepresentable {
         view.onText = onText
         view.onReturn = { onHotkey(.return) }
         view.onDeleteBackward = { onHotkey(.deleteBackward) }
+        // The button follows the responder, so a keyboard the system takes
+        // away still leaves the toggle telling the truth.
+        view.onActiveChange = { active in
+            DispatchQueue.main.async {
+                if isShowing != active { isShowing = active }
+            }
+        }
+        let wanted = isShowing
+        // The view is not in a window yet during make, and changing the
+        // responder inside a SwiftUI update is not allowed.
+        DispatchQueue.main.async {
+            if wanted {
+                view.becomeFirstResponder()
+            } else {
+                view.resignFirstResponder()
+            }
+        }
     }
 }
 
@@ -898,6 +993,8 @@ extension RemoteHotkey {
         case .escape: return "esc"
         case .return: return "return"
         case .deleteBackward: return "delete"
+        case .deleteWordBackward: return "⌥⌫"
+        case .deleteLineBackward: return "⌘⌫"
         case .copy: return "copy"
         case .paste: return "paste"
         case .undo: return "undo"
@@ -915,6 +1012,9 @@ extension RemoteHotkey {
         switch self {
         case .escape: return "Escape"
         case .return: return "Return"
+        case .deleteBackward: return "Backspace"
+        case .deleteWordBackward: return "Backspace word"
+        case .deleteLineBackward: return "Backspace line"
         default: return buttonTitle
         }
     }
@@ -924,13 +1024,17 @@ extension RemoteHotkey {
 /// atomic actions the protocol already carries; no key script is possible.
 private struct HotkeyBar: View {
     let send: (RemoteHotkey) -> Void
+    let switcherSensitivity: Double
     let switcher: (AppSwitcherPhase) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             key(.escape) { Text(RemoteHotkey.escape.buttonTitle) }
-            AppSwitcherButton(send: switcher)
+            AppSwitcherButton(sensitivity: switcherSensitivity, send: switcher)
             key(.return) { Image(systemName: "return") }
+            key(.deleteBackward) { Image(systemName: "delete.left") }
+            key(.deleteWordBackward) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) }
+            key(.deleteLineBackward) { Text(RemoteHotkey.deleteLineBackward.buttonTitle) }
         }
     }
 
@@ -946,10 +1050,11 @@ private struct HotkeyBar: View {
 /// A plain tap is the ordinary flip to the last app, because begin already
 /// highlights it.
 private struct AppSwitcherButton: View {
-    /// Roughly a thumb's width of travel per app, so a small wobble while
-    /// holding does not step.
-    private static let stepWidth: Double = 44
+    /// Travel per app at 1x.  Roughly a thumb's width, so a wobble while
+    /// holding does not step; the sensitivity setting divides it.
+    static let baseStepWidth: Double = 44
 
+    let sensitivity: Double
     let send: (AppSwitcherPhase) -> Void
     @State private var isHeld = false
     @State private var steps = 0
@@ -970,7 +1075,7 @@ private struct AppSwitcherButton: View {
                             steps = 0
                             send(.begin)
                         }
-                        step(to: Int((value.translation.width / Self.stepWidth).rounded(.towardZero)))
+                        step(to: Int((value.translation.width / stepWidth).rounded(.towardZero)))
                     }
                     .onEnded { _ in finish(.commit) }
             )
@@ -980,6 +1085,10 @@ private struct AppSwitcherButton: View {
                 if phase != .active { finish(.cancel) }
             }
             .accessibilityLabel("App switcher. Hold and slide to choose.")
+    }
+
+    private var stepWidth: Double {
+        Self.baseStepWidth / min(max(sensitivity, 0.5), 4)
     }
 
     private func step(to target: Int) {
@@ -1023,79 +1132,76 @@ struct PhoneRemoteControlView: View {
 }
 
 private struct RemoteControlTab: View {
-    private enum Mode: String, CaseIterable, Identifiable {
-        case trackpad = "Trackpad"
-        case airMouse = "Air Mouse"
-        case keyboard = "Keyboard"
-
-        var id: Self { self }
-    }
-
     @ObservedObject var model: PhoneRemoteFeatureModel
-    @State private var mode: Mode = .trackpad
+    @State private var isKeyboardShowing = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
-                Picker("Control mode", selection: $mode) {
-                    ForEach(Mode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
+                TrackpadSurface(
+                    pointerSensitivityX: model.trackpadSensitivityX,
+                    pointerSensitivityY: model.trackpadSensitivityY
+                ) { outputs in
+                    model.handleTrackpadOutputs(outputs)
                 }
-                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
+                .overlay {
+                    Text("Tap, two-finger tap, double tap")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
+                }
 
-                if mode == .trackpad {
-                    TrackpadSurface(
-                        pointerSensitivityX: model.trackpadSensitivityX,
-                        pointerSensitivityY: model.trackpadSensitivityY
-                    ) { outputs in
-                        model.handleTrackpadOutputs(outputs)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
-                    .overlay {
-                        Text("Tap, two-finger tap, double tap")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .allowsHitTesting(false)
-                    }
+                HotkeyBar(
+                    send: { model.sendHotkey($0) },
+                    switcherSensitivity: model.appSwitcherSensitivity,
+                    switcher: { model.sendAppSwitcher($0) }
+                )
 
-                    HotkeyBar(
-                        send: { model.sendHotkey($0) },
-                        switcher: { model.sendAppSwitcher($0) }
-                    )
-                } else if mode == .keyboard {
+                ZStack(alignment: .bottomTrailing) {
+                    PushToTalkButton(controller: model.pushToTalk)
+                        .frame(maxWidth: .infinity)
+                    KeyboardToggleButton(isShowing: $isKeyboardShowing)
+                }
+                .overlay(alignment: .bottom) {
                     RemoteKeyboardSurface(
+                        isShowing: $isKeyboardShowing,
                         onText: { model.typeText($0) },
                         onHotkey: { model.sendHotkey($0) }
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
-                    .overlay {
-                        Text("Type here. Keys go straight to the Mac.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .allowsHitTesting(false)
-                    }
-
-                    HotkeyBar(
-                        send: { model.sendHotkey($0) },
-                        switcher: { model.sendAppSwitcher($0) }
-                    )
-                } else {
-                    AirMouseClutchButton { held in
-                        model.airMouseChanged(held)
-                    }
-                    Text(model.airMouseStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
                 }
-
-                PushToTalkButton(controller: model.pushToTalk)
             }
             .padding()
+            .onAppear { model.setTrackpadVisible(true) }
+            .onDisappear {
+                isKeyboardShowing = false
+                model.setTrackpadVisible(false)
+            }
         }
+    }
+}
+
+/// Sits in the bottom right corner beside push to talk.  It only opens and
+/// closes the system keyboard; the trackpad above stays live either way.
+private struct KeyboardToggleButton: View {
+    @Binding var isShowing: Bool
+
+    var body: some View {
+        Button {
+            isShowing.toggle()
+        } label: {
+            Image(systemName: isShowing ? "keyboard.chevron.compact.down" : "keyboard")
+                .font(.title3)
+                .frame(width: 52, height: 52)
+                .contentShape(Rectangle())
+        }
+        .background(isShowing ? Color.accentColor : Color(.secondarySystemFill))
+        .foregroundStyle(isShowing ? Color.white : Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel(isShowing ? "Hide keyboard" : "Show keyboard")
     }
 }
 
@@ -1148,6 +1254,7 @@ private struct RemoteSettingsTab: View {
                     }
 
                     LabeledContent("Bluetooth", value: model.bluetoothState.label)
+                    LabeledContent("Link round trip", value: model.linkLatency)
                     if let trustedMacName = model.trustedMacName {
                         LabeledContent("Trusted Mac", value: trustedMacName)
                     }
@@ -1185,7 +1292,40 @@ private struct RemoteSettingsTab: View {
                     }
                 }
 
-                Section("Air mouse sensitivity") {
+                Section {
+                    VStack(alignment: .leading) {
+                        Text("Slide sensitivity \(model.appSwitcherSensitivity.formatted(.number.precision(.fractionLength(1))))x")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { model.appSwitcherSensitivity },
+                                set: { model.setAppSwitcherSensitivity($0) }
+                            ),
+                            in: 0.5...4,
+                            step: 0.1
+                        )
+                        Text("One app per \(Int((AppSwitcherButton.baseStepWidth / model.appSwitcherSensitivity).rounded())) points of slide")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("App switcher")
+                } footer: {
+                    Text("How far you slide sideways, holding the app switcher button, to move one app.")
+                }
+
+                Section {
+                    Toggle(
+                        "Point the phone to move the cursor",
+                        isOn: Binding(
+                            get: { model.airMouseEnabled },
+                            set: { model.setAirMouseEnabled($0) }
+                        )
+                    )
+                    Text(model.airMouseStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     VStack(alignment: .leading) {
                         Text("Pointer speed \(Int(model.airMouseSensitivity))")
                             .font(.caption)
@@ -1199,6 +1339,11 @@ private struct RemoteSettingsTab: View {
                             step: 100
                         )
                     }
+                    .disabled(!model.airMouseEnabled)
+                } header: {
+                    Text("Air mouse")
+                } footer: {
+                    Text("Works on the Trackpad screen. Tap the trackpad to click while you aim.")
                 }
 
                 Section("Debug log") {

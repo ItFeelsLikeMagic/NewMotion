@@ -101,12 +101,18 @@ public struct MotionPointerDelta: Equatable, Sendable {
 
 /// Per-sample rotation at 100 Hz: a slow 5 deg/s wrist turn is about 0.0009 rad
 /// per sample, so the dead zone must stay well under that or slow aiming
-/// never registers. Gain is linear so slow moves keep their precision.
+/// never registers.  Gain follows a curve around `accelerationReference`: below
+/// it a wrist turn covers less screen and aims finer, above it a sweep covers
+/// more.  The curve is bounded at both ends so neither behaviour runs away.
 public struct MotionFilterConfiguration: Equatable, Sendable {
     public var sensitivity: Double
     public var deadZoneRadians: Double
     public var smoothingAlpha: Double
     public var accelerationExponent: Double
+    /// Rotation per sample at which the curve neither helps nor hinders, so
+    /// `sensitivity` still describes the feel of an ordinary aiming sweep.
+    /// 0.0052 rad per sample is about 30 deg/s at 100 Hz.
+    public var accelerationReference: Double
     public var accelerationScale: Double
     public var maxOutputPerSample: Double
     public var maximumSampleGap: TimeInterval
@@ -116,7 +122,8 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
         sensitivity: Double = 2_400,
         deadZoneRadians: Double = 0.0004,
         smoothingAlpha: Double = 0.88,
-        accelerationExponent: Double = 1.0,
+        accelerationExponent: Double = 1.25,
+        accelerationReference: Double = 0.0052,
         accelerationScale: Double = 1.0,
         maxOutputPerSample: Double = 400,
         maximumSampleGap: TimeInterval = 0.20,
@@ -126,6 +133,7 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
         self.deadZoneRadians = min(max(deadZoneRadians, 0), 0.25)
         self.smoothingAlpha = min(max(smoothingAlpha, 0.01), 1)
         self.accelerationExponent = min(max(accelerationExponent, 1), 2.5)
+        self.accelerationReference = min(max(accelerationReference, 1e-5), 1)
         self.accelerationScale = min(max(accelerationScale, 0), 10)
         self.maxOutputPerSample = min(max(maxOutputPerSample, 1), 1_000)
         self.maximumSampleGap = min(max(maximumSampleGap, 0.02), 2)
@@ -229,8 +237,11 @@ public struct MotionPointerFilter: Sendable {
         smoothedDelta = smoothedDelta * (1 - configuration.smoothingAlpha) +
             deadZoned * configuration.smoothingAlpha
 
-        let outputX = accelerated(smoothedDelta.x)
-        let outputY = accelerated(smoothedDelta.y)
+        // One gain for the whole sample. Per-axis gain would make a diagonal
+        // turn faster than the same speed along one axis.
+        let gain = pointerGain(forSpeed: (smoothedDelta.x * smoothedDelta.x + smoothedDelta.y * smoothedDelta.y).squareRoot())
+        let outputX = smoothedDelta.x * gain
+        let outputY = smoothedDelta.y * gain
         guard outputX != 0 || outputY != 0 else { return nil }
         return MotionPointerDelta(x: clamp(outputX), y: clamp(outputY))
     }
@@ -242,11 +253,19 @@ public struct MotionPointerFilter: Sendable {
         return value.sign == .minus ? -(magnitude - configuration.deadZoneRadians) : magnitude - configuration.deadZoneRadians
     }
 
-    private func accelerated(_ value: Double) -> Double {
-        guard value.isFinite, value != 0 else { return 0 }
-        let magnitude = pow(abs(value), configuration.accelerationExponent) *
-            configuration.sensitivity * configuration.accelerationScale
-        return value.sign == .minus ? -magnitude : magnitude
+    /// Slowest the curve may aim, and fastest it may sweep, relative to the
+    /// straight-line gain.  Without the floor a crawl would stall; without the
+    /// ceiling a flick would cross the screen before the hand stopped.
+    private static let minimumGainScale = 0.6
+    private static let maximumGainScale = 1.8
+
+    private func pointerGain(forSpeed speed: Double) -> Double {
+        let base = configuration.sensitivity * configuration.accelerationScale
+        guard speed.isFinite, speed > 0, configuration.accelerationExponent > 1 else { return base }
+        let ratio = speed / configuration.accelerationReference
+        let scale = pow(ratio, configuration.accelerationExponent - 1)
+        guard scale.isFinite else { return base }
+        return base * min(max(scale, Self.minimumGainScale), Self.maximumGainScale)
     }
 
     private func clamp(_ value: Double) -> Double {
