@@ -36,6 +36,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var airMouseEnabled = UserDefaults.standard.bool(forKey: "airMouseEnabled")
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
     @Published var appSwitcherSensitivity = UserDefaults.standard.object(forKey: "appSwitcherSensitivity") as? Double ?? 2.0
+    @Published var edgeScrollEnabled = UserDefaults.standard.bool(forKey: "edgeScrollEnabled")
+    @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
     @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
     @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
@@ -64,6 +66,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     )
     private let motionSink: DeltaCoalescer<MotionPointerDelta>
     private let cursorMixer = CursorMixer()
+    private var scrollClutchEngaged = false
+    /// The air mouse has no finger to flick, so its scroll coasts off the same
+    /// curve as the trackpad's, released when the clutch finger lifts.
+    private let clutchMomentum = ScrollMomentumDriver()
     private let inputLink: BLEInputLink
     private let inputUplink: InputUplink
     /// The trackpad surface is the only screen the air mouse runs on.
@@ -197,6 +203,12 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         cursorMixer.onEvent = { [weak self] event in
             MainActor.assumeIsolated {
                 self?.sendInputEvent(event)
+            }
+        }
+        clutchMomentum.strength = scrollMomentum
+        clutchMomentum.onStep = { [weak self] delta in
+            MainActor.assumeIsolated {
+                self?.cursorMixer.handleScrollTravel(CursorDelta(x: 0, y: delta.y))
             }
         }
         let uplink = voiceUplink
@@ -363,6 +375,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
 
     private func refreshAirMouse() {
+        if !airMouseEnabled || !trackpadVisible { clutchMomentum.stop() }
         guard airMouseEnabled else {
             _ = motionSession.setClutchHeld(false)
             airMouseStatus = "Air mouse off"
@@ -387,6 +400,30 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             airMouseStatus = "Air mouse waits for the app"
         case .failed:
             airMouseStatus = "Air mouse could not start"
+        }
+    }
+
+    func setEdgeScrollEnabled(_ enabled: Bool) {
+        edgeScrollEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "edgeScrollEnabled")
+    }
+
+    func setHoldScrollEnabled(_ enabled: Bool) {
+        holdScrollEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "holdScrollEnabled")
+        if !enabled { setScrollClutch(false) }
+    }
+
+    /// A finger resting on the glass turns every sensor's travel into scroll,
+    /// which is what makes the air mouse usable as a scroll wheel.  Taking the
+    /// clutch stops any glide still running; letting go starts one.
+    func setScrollClutch(_ engaged: Bool) {
+        guard scrollClutchEngaged != engaged else { return }
+        scrollClutchEngaged = engaged
+        if engaged {
+            clutchMomentum.stop()
+        } else {
+            clutchMomentum.release(at: ProcessInfo.processInfo.systemUptime)
         }
     }
 
@@ -710,7 +747,13 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             airMouseStatus = "Air mouse send failed"
             return
         }
-        cursorMixer.handleTravel(CursorDelta(x: delta.x, y: delta.y))
+        let travel = CursorDelta(x: delta.x, y: delta.y)
+        if scrollClutchEngaged {
+            clutchMomentum.track(travel: travel.y, at: ProcessInfo.processInfo.systemUptime)
+            cursorMixer.handleScrollTravel(travel)
+        } else {
+            cursorMixer.handleTravel(travel)
+        }
     }
 
     func setTrackpadSensitivity(x: Double? = nil, y: Double? = nil, scroll: Double? = nil) {
@@ -730,6 +773,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     func setScrollMomentum(_ value: Double) {
         scrollMomentum = value
+        clutchMomentum.strength = value
         UserDefaults.standard.set(value, forKey: "scrollMomentum")
     }
 
@@ -850,21 +894,33 @@ private struct AppSwitcherTouchSurface: UIViewRepresentable {
 }
 
 private struct TrackpadSurface: UIViewRepresentable {
+    /// A thumb's width in from each side, so the strips are findable without
+    /// looking and still leave most of the glass for the cursor.
+    static let edgeScrollWidth: Double = 44
+    /// Just past `tapMaximumDuration`, so taking the clutch can never also
+    /// read as a tap.
+    static let holdScrollDelay: TimeInterval = 0.35
+
     let pointerSensitivityX: Double
     let pointerSensitivityY: Double
     let scrollSensitivity: Double
     let momentumStrength: Double
+    let edgeScrollEnabled: Bool
+    let holdScrollEnabled: Bool
+    let onScrollClutch: (Bool) -> Void
     let onOutputs: ([RemoteInputEvent]) -> Void
 
     func makeUIView(context: Context) -> TrackpadTouchCaptureView {
         let view = TrackpadTouchCaptureView(frame: .zero)
         view.onOutputs = onOutputs
+        view.onScrollClutchChanged = onScrollClutch
         apply(to: view)
         return view
     }
 
     func updateUIView(_ uiView: TrackpadTouchCaptureView, context: Context) {
         uiView.onOutputs = onOutputs
+        uiView.onScrollClutchChanged = onScrollClutch
         apply(to: uiView)
     }
 
@@ -873,6 +929,10 @@ private struct TrackpadSurface: UIViewRepresentable {
             pointerX: pointerSensitivityX,
             pointerY: pointerSensitivityY,
             scroll: scrollSensitivity
+        )
+        view.engine.setScrollGestures(
+            edgeScrollWidth: edgeScrollEnabled ? Self.edgeScrollWidth : 0,
+            holdScrollDelay: holdScrollEnabled ? Self.holdScrollDelay : 0
         )
         view.momentumStrength = momentumStrength
     }
@@ -1073,6 +1133,10 @@ struct PhoneRemoteControlView: View {
 }
 
 private struct RemoteControlTab: View {
+    /// Spelled out rather than left to `.padding()` so the trackpad can cancel
+    /// exactly this much and reach the sides of the screen.
+    private static let contentPadding: Double = 16
+
     @ObservedObject var model: PhoneRemoteFeatureModel
     @State private var isKeyboardShowing = false
 
@@ -1083,7 +1147,10 @@ private struct RemoteControlTab: View {
                     pointerSensitivityX: model.trackpadSensitivityX,
                     pointerSensitivityY: model.trackpadSensitivityY,
                     scrollSensitivity: model.trackpadScrollSensitivity,
-                    momentumStrength: model.scrollMomentum
+                    momentumStrength: model.scrollMomentum,
+                    edgeScrollEnabled: model.edgeScrollEnabled,
+                    holdScrollEnabled: model.holdScrollEnabled,
+                    onScrollClutch: { model.setScrollClutch($0) }
                 ) { outputs in
                     model.handleRemoteInputEvents(outputs)
                 }
@@ -1095,6 +1162,10 @@ private struct RemoteControlTab: View {
                         .foregroundStyle(.secondary)
                         .allowsHitTesting(false)
                 }
+                // The scroll strips are the thing a thumb reaches for without
+                // looking, so they run to the side of the screen rather than
+                // stopping short of it and leaving a dead margin.
+                .padding(.horizontal, -Self.contentPadding)
 
                 HotkeyBar(
                     send: { model.sendHotkey($0) },
@@ -1117,7 +1188,7 @@ private struct RemoteControlTab: View {
                     .allowsHitTesting(false)
                 }
             }
-            .padding()
+            .padding(Self.contentPadding)
             .onAppear { model.setTrackpadVisible(true) }
             .onDisappear {
                 isKeyboardShowing = false
@@ -1318,6 +1389,33 @@ private struct RemoteSettingsTab: View {
                     Text("Air mouse")
                 } footer: {
                     Text("Works on the Trackpad screen. Tap the trackpad to click while you aim.")
+                }
+
+                Section {
+                    Toggle(
+                        "Scroll from the side edges",
+                        isOn: Binding(
+                            get: { model.edgeScrollEnabled },
+                            set: { model.setEdgeScrollEnabled($0) }
+                        )
+                    )
+                    Text("Drag in the left or right margin of the trackpad to scroll.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle(
+                        "Hold a finger to scroll",
+                        isOn: Binding(
+                            get: { model.holdScrollEnabled },
+                            set: { model.setHoldScrollEnabled($0) }
+                        )
+                    )
+                    Text("Rest a finger, then move. With the air mouse on, hold and aim to scroll.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Experimental")
+                } footer: {
+                    Text("Both are off by default and may change or go away.")
                 }
 
                 Section("Debug log") {
