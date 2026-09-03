@@ -276,6 +276,12 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding, @unchecked 
                 options: [.mixWithOthers, .defaultToSpeaker]
             )
             try session.setPreferredIOBufferDuration(0.02)
+            // The session is held open for the whole app run, and iOS mutes the
+            // Taptic Engine for as long as one is recording.  Without this every
+            // buzz in the UI is silently dropped, not just the ones while the
+            // microphone is live.  It resets whenever the category is set, so it
+            // belongs here rather than at launch.
+            try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
             sessionConfigured = true
         }
         try session.setActive(true)
@@ -292,6 +298,7 @@ public final class AVAudioMicrophoneInput: MicrophoneInputProviding, @unchecked 
             "ch": "\(inputFormat.channelCount)",
             "gain": "\(session.inputGain)",
             "avail": session.isInputAvailable ? "yes" : "no",
+            "haptics": session.allowHapticsAndSystemSoundsDuringRecording ? "yes" : "no",
         ])
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in

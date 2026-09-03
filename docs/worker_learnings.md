@@ -48,6 +48,9 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 - Signed phone builds pass the phone as the explicit destination
   `platform=iOS,id=<udid>`. Why: a generic device build can pick a profile for a
   different phone and fail at install.
+- `install-phone.sh` removes any other `*.phoneremote.ios` build from the device after it
+  installs. Why: the bundle prefix comes from `PHONE_REMOTE_BUNDLE_PREFIX`, so one run without
+  it leaves a second app with the same name and icon, and testing the wrong one wastes a session.
 - Build device apps outside the repo (`PHONE_REMOTE_DERIVED_DATA=/tmp/...`). Why: the
   repo is in iCloud Documents and codesign fails on Finder metadata there.
 - The Mac app you click must be `~/Applications/PhoneRemoteMac.app`, installed and

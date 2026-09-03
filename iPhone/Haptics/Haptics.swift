@@ -1,13 +1,16 @@
 #if canImport(UIKit) && os(iOS)
 import UIKit
 
-/// Every buzz the remote makes, in one place, so a press on the trackpad and a
-/// press on a key feel like the same device.  Generators are kept alive and
-/// re-prepared after each play: an unprepared generator takes about 100 ms to
-/// fire, which is most of the delay the buzz is there to hide.
+/// Every buzz the remote makes, in one place, so a key press and a gesture feel
+/// like the same device.  The generators are kept alive and re-prepared after
+/// each play: an unprepared one takes about 100 ms to fire, which is most of
+/// the delay the buzz is there to hide.
+///
+/// The app holds a recording audio session open, which mutes the Taptic Engine
+/// unless the session opts back in; see `AudioCaptureSession.bringUp`.
 @MainActor
 public enum Haptics {
-    public enum Feedback: Equatable, Sendable {
+    public enum Feedback {
         /// A key, toggle, or hold going down.
         case press
         /// The same control coming back up.  Softer, so a press and its release
@@ -24,25 +27,25 @@ public enum Haptics {
 
     /// Warms the generators for a screen that is about to be touched.
     public static func prepare() {
-        for style in ImpactStyle.allCases {
-            generator(for: style).prepare()
-        }
-        selection.prepare()
+        press.prepare()
+        gestureBegan.prepare()
+        gestureEnded.prepare()
+        step.prepare()
     }
 
     public static func play(_ feedback: Feedback) {
         switch feedback {
         case .press:
-            impact(.medium, intensity: 1.0)
+            impact(press, intensity: 1.0)
         case .release:
-            impact(.medium, intensity: 0.5)
+            impact(press, intensity: 0.5)
         case .gestureBegan:
-            impact(.rigid, intensity: 0.9)
+            impact(gestureBegan, intensity: 0.9)
         case .gestureEnded:
-            impact(.soft, intensity: 0.4)
+            impact(gestureEnded, intensity: 0.4)
         case .step:
-            selection.selectionChanged()
-            selection.prepare()
+            step.selectionChanged()
+            step.prepare()
         }
     }
 
@@ -55,34 +58,14 @@ public enum Haptics {
         }
     }
 
-    private enum ImpactStyle: CaseIterable {
-        case medium
-        case rigid
-        case soft
+    private static let press = UIImpactFeedbackGenerator(style: .medium)
+    private static let gestureBegan = UIImpactFeedbackGenerator(style: .rigid)
+    private static let gestureEnded = UIImpactFeedbackGenerator(style: .soft)
+    private static let step = UISelectionFeedbackGenerator()
 
-        var uiStyle: UIImpactFeedbackGenerator.FeedbackStyle {
-            switch self {
-            case .medium: return .medium
-            case .rigid: return .rigid
-            case .soft: return .soft
-            }
-        }
-    }
-
-    private static var impacts: [ImpactStyle: UIImpactFeedbackGenerator] = [:]
-    private static let selection = UISelectionFeedbackGenerator()
-
-    private static func impact(_ style: ImpactStyle, intensity: CGFloat) {
-        let generator = generator(for: style)
+    private static func impact(_ generator: UIImpactFeedbackGenerator, intensity: CGFloat) {
         generator.impactOccurred(intensity: intensity)
         generator.prepare()
-    }
-
-    private static func generator(for style: ImpactStyle) -> UIImpactFeedbackGenerator {
-        if let existing = impacts[style] { return existing }
-        let generator = UIImpactFeedbackGenerator(style: style.uiStyle)
-        impacts[style] = generator
-        return generator
     }
 }
 #endif
