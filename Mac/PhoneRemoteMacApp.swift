@@ -120,7 +120,8 @@ final class MacRemoteAppModel: ObservableObject {
         let voiceCoordinator = VoicePTTCoordinator(
             sessions: speechServer,
             insertionSink: injector,
-            normalizer: normalizer
+            normalizer: normalizer,
+            focusedText: AXFocusedTextReader()
         )
         self.voiceCoordinator = voiceCoordinator
         self.central = central
@@ -660,6 +661,7 @@ final class MacRemoteAppModel: ObservableObject {
             audioFrames: voice.health.receivedFrames,
             audioSamples: voice.health.receivedSamples,
             audioMissingChunks: voice.health.missingChunks,
+            audioMerge: voice.merge.rawValue,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
                 MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)

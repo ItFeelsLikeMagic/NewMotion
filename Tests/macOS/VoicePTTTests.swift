@@ -232,12 +232,92 @@ final class VoicePTTTests: XCTestCase {
         XCTAssertNil(S1MiniNormalizer.normalized(fromResponse: Data("not json".utf8)))
     }
 
+    func testExistingFieldTextIsNormalizedWithTheNewWords() throws {
+        let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
+        let (coordinator, factory, sink) = makeCoordinator(
+            normalizer: normalizer,
+            focusedText: FakeFocusedText(["Hello there."])
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("how are you"))
+        XCTAssertTrue(waitUntil { sink.values == [" How are you?"] })
+        XCTAssertEqual(normalizer.inputs, ["Hello there. how are you"])
+        XCTAssertEqual(sink.deletions, [])
+    }
+
+    func testRewordedFieldTextIsCorrectedInPlace() throws {
+        let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
+        let (coordinator, factory, sink) = makeCoordinator(
+            normalizer: normalizer,
+            focusedText: FakeFocusedText(["hello there"])
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("how are you"))
+        XCTAssertTrue(waitUntil { sink.values == ["Hello there. How are you?"] })
+        XCTAssertEqual(sink.deletions, ["hello there".count])
+    }
+
+    func testFieldChangingDuringNormalizationTypesOnlyTheNewWords() throws {
+        let normalizer = FakeNormalizer { _ in "Hello there. How are you?" }
+        let (coordinator, factory, sink) = makeCoordinator(
+            normalizer: normalizer,
+            focusedText: FakeFocusedText(["Hello there.", "Hello there. and more"])
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("how are you"))
+        XCTAssertTrue(waitUntil { sink.values == [" how are you"] })
+        XCTAssertEqual(sink.deletions, [])
+    }
+
+    func testUnreadableFieldKeepsThePlainPath() throws {
+        let normalizer = FakeNormalizer { _ in "How are you?" }
+        let (coordinator, factory, sink) = makeCoordinator(
+            normalizer: normalizer,
+            focusedText: FakeFocusedText([nil])
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: .end))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("how are you"))
+        XCTAssertTrue(waitUntil { sink.values == ["How are you?"] })
+        XCTAssertEqual(normalizer.inputs, ["how are you"])
+    }
+
+    func testMergeBuildsThePayloadAndTheSmallestEdit() {
+        XCTAssertEqual(TranscriptMerge.payload(existing: "Hi.", transcript: "there"), "Hi. there")
+        XCTAssertEqual(TranscriptMerge.payload(existing: "Hi.\n", transcript: "there"), "Hi.\nthere")
+        XCTAssertEqual(TranscriptMerge.payload(existing: "", transcript: "there"), "there")
+
+        XCTAssertEqual(
+            TranscriptMerge.edit(from: "Hi.", to: "Hi. There."),
+            TranscriptMerge.Edit(deletions: 0, insertion: " There.")
+        )
+        XCTAssertEqual(
+            TranscriptMerge.edit(from: "hi", to: "Hi. There."),
+            TranscriptMerge.Edit(deletions: 2, insertion: "Hi. There.")
+        )
+        // A rewrite that would rewind more than the budget is refused whole.
+        let long = String(repeating: "a", count: TranscriptMerge.maximumDeletions + 1)
+        XCTAssertNil(TranscriptMerge.edit(from: long, to: "something else"))
+    }
+
     // MARK: - Helpers
 
     private func makeCoordinator(
         idleTimeout: TimeInterval = 5,
         secureInput: Bool = false,
-        normalizer: TranscriptNormalizer? = nil
+        normalizer: TranscriptNormalizer? = nil,
+        focusedText: FocusedTextReading? = nil
     ) -> (VoicePTTCoordinator, FakeSessionFactory, RecordingSink) {
         let factory = FakeSessionFactory()
         let sink = RecordingSink()
@@ -245,6 +325,7 @@ final class VoicePTTTests: XCTestCase {
             sessions: factory,
             insertionSink: sink,
             normalizer: normalizer,
+            focusedText: focusedText,
             idleTimeout: idleTimeout,
             isSecureInputActive: { secureInput }
         )
@@ -336,9 +417,31 @@ private final class FakeNormalizer: TranscriptNormalizer, @unchecked Sendable {
 
 private final class RecordingSink: SafeTranscriptInsertionSink {
     var values: [String] = []
+    var deletions: [Int] = []
 
     func insertTranscript(_ text: String) -> Bool {
         values.append(text)
         return true
+    }
+
+    func deleteBackward(_ count: Int) -> Bool {
+        deletions.append(count)
+        return true
+    }
+}
+
+/// Answers with a scripted field, one reading per call, so a test can make the
+/// field change between the read that feeds the normalizer and the one that
+/// checks the field before typing.
+private final class FakeFocusedText: FocusedTextReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var readings: [String?]
+
+    init(_ readings: [String?]) {
+        self.readings = readings
+    }
+
+    func focusedText() -> String? {
+        lock.withLock { readings.count > 1 ? readings.removeFirst() : readings.first ?? nil }
     }
 }

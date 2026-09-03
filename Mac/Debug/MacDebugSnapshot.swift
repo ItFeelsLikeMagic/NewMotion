@@ -44,6 +44,9 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var audioFrames: UInt64
     public var audioSamples: UInt64
     public var audioMissingChunks: UInt64
+    /// Which path the last spoken utterance took into the field.  A label, not
+    /// text: the field's contents never reach this snapshot.
+    public var audioMerge: String
     public var appPath: String?
     public var pairedDevices: [MacDebugPairedDevice]
 
@@ -70,6 +73,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         audioFrames: UInt64 = 0,
         audioSamples: UInt64 = 0,
         audioMissingChunks: UInt64 = 0,
+        audioMerge: String = "none",
         appPath: String? = nil,
         pairedDevices: [MacDebugPairedDevice] = []
     ) {
@@ -95,6 +99,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.audioFrames = audioFrames
         self.audioSamples = audioSamples
         self.audioMissingChunks = audioMissingChunks
+        self.audioMerge = audioMerge
         self.appPath = appPath
         self.pairedDevices = pairedDevices
     }
