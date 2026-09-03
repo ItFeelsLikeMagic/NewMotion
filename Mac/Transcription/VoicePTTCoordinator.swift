@@ -12,21 +12,6 @@ public enum VoicePTTPhase: String, Equatable, Sendable {
     case failed
 }
 
-/// Which path the last utterance took into the field. A label only: it carries
-/// no field text, so it is safe for logs and the debug snapshot.
-public enum VoiceMergeOutcome: String, Equatable, Sendable {
-    case none
-    /// The field could not be read, so the spoken words went in on their own.
-    case unreadable
-    /// The field was read and had nothing in it yet.
-    case emptyField
-    /// The whole field went to the normalizer and its answer was applied.
-    case merged
-    /// The field moved while the normalizer worked, or its answer would have
-    /// rewound too much, so only the new words went in.
-    case appended
-}
-
 /// Counts for the newest utterance. Safe for logs and the debug snapshot.
 public struct AudioHealthSnapshot: Equatable, Sendable {
     public var receivedFrames: UInt64 = 0
@@ -42,7 +27,9 @@ public struct AudioHealthSnapshot: Equatable, Sendable {
 public struct VoicePTTState: Equatable, Sendable {
     public var phase: VoicePTTPhase = .idle
     public var health = AudioHealthSnapshot()
-    public var merge: VoiceMergeOutcome = .none
+    /// Which path the last utterance took into the field: `merged`, `appended`,
+    /// or the reason the field could not be joined. A label, never field text.
+    public var merge = "none"
     public var preview = ""
     public var lastFinalText: String?
 
@@ -146,6 +133,9 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
                 self?.queue.async { self?.finish(streamID, with: result) }
             }
         ))
+        // Asking now gives a field that needs waking the length of the sentence
+        // to become readable, rather than being asked once it is too late.
+        if let focusedText { DispatchQueue.main.async { focusedText.prepare() } }
         let utterance = Utterance(streamID: streamID, session: session, nextSequence: frame.sequence &+ 1)
         if !frame.isStart {
             // Sequence 0 is the start frame, so everything before this frame was lost.
@@ -207,17 +197,18 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         // The words already in the field travel with the new ones, so the
         // normalizer punctuates and spaces the join instead of treating every
         // press as the start of a sentence.
-        let field = focusedText?.focusedText()
-        let payload = TranscriptMerge.payload(existing: field ?? "", transcript: text)
-        normalizer.normalize(payload) { [weak self] normalized in
+        readFocusedField { [weak self] field in
             guard let self else { return }
-            self.queue.async {
-                self.apply(
-                    normalized.trimmingCharacters(in: .whitespacesAndNewlines),
-                    over: field,
-                    spoken: text,
-                    for: utterance
-                )
+            let existing = if case let .text(value) = field { value } else { "" }
+            normalizer.normalize(TranscriptMerge.payload(existing: existing, transcript: text)) { normalized in
+                self.queue.async {
+                    self.apply(
+                        normalized.trimmingCharacters(in: .whitespacesAndNewlines),
+                        over: field,
+                        spoken: text,
+                        for: utterance
+                    )
+                }
             }
         }
     }
@@ -225,25 +216,41 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     /// Applies the normalized whole as an edit against the field. The field is
     /// read again because normalizing took time; if it moved, or if the rewrite
     /// would rewind further than the budget allows, only the new words go in.
-    private func apply(_ merged: String, over field: String?, spoken: String, for utterance: Utterance) {
-        guard let existing = field, !existing.isEmpty else {
-            current.merge = field == nil ? .unreadable : .emptyField
+    private func apply(_ merged: String, over field: FocusedText, spoken: String, for utterance: Utterance) {
+        guard case let .text(existing) = field, !existing.isEmpty else {
+            current.merge = field.label
             type(merged, for: utterance)
             return
         }
         guard !merged.isEmpty else {
-            current.merge = .merged
+            current.merge = "merged"
             complete(utterance, phase: .idle)
             return
         }
-        guard focusedText?.focusedText() == existing,
-              let edit = TranscriptMerge.edit(from: existing, to: merged) else {
-            current.merge = .appended
-            type(TranscriptMerge.tail(existing: existing, transcript: spoken), for: utterance)
+        readFocusedField { [weak self] fresh in
+            guard let self else { return }
+            guard fresh == .text(existing),
+                  let edit = TranscriptMerge.edit(from: existing, to: merged) else {
+                self.current.merge = "appended"
+                self.type(TranscriptMerge.tail(existing: existing, transcript: spoken), for: utterance)
+                return
+            }
+            self.current.merge = "merged"
+            self.type(edit.insertion, deleting: edit.deletions, for: utterance)
+        }
+    }
+
+    /// Accessibility walks the live UI tree, so the read happens on the main
+    /// thread the way the typing does. The caller resumes on the queue.
+    private func readFocusedField(_ completion: @escaping @Sendable (FocusedText) -> Void) {
+        guard let focusedText else {
+            completion(.unavailable("noReader"))
             return
         }
-        current.merge = .merged
-        type(edit.insertion, deleting: edit.deletions, for: utterance)
+        DispatchQueue.main.async {
+            let field = focusedText.focusedText()
+            self.queue.async { completion(field) }
+        }
     }
 
     /// Normalizing filler-only speech correctly yields nothing to type.

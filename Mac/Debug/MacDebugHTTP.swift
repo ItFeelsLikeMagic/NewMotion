@@ -30,7 +30,11 @@ public enum MacDebugHTTP {
         }
     }
 
-    public static func handle(request: String, snapshot: MacDebugSnapshot) -> Response {
+    public static func handle(
+        request: String,
+        snapshot: MacDebugSnapshot,
+        focus: () -> [String: String] = { [:] }
+    ) -> Response {
         let lines = request.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
             return json(status: 400, object: ["error": "empty request"])
@@ -49,6 +53,10 @@ public enum MacDebugHTTP {
             return encode(snapshot)
         case "/health":
             return json(status: 200, object: ["ok": true, "app": "PhoneRemoteMac"])
+        // What Accessibility can see in the focused field right now.  Labels
+        // and error codes only; the field's text never leaves the app.
+        case "/focus":
+            return json(status: 200, object: focus())
         default:
             return json(status: 404, object: ["error": "not found"])
         }

@@ -1,6 +1,7 @@
 import Foundation
 
 #if os(macOS)
+import AppKit
 import ApplicationServices
 #endif
 
@@ -22,6 +23,15 @@ public enum FocusedText: Equatable, Sendable {
 /// Reads the text already sitting in the field that spoken words will join.
 public protocol FocusedTextReading: Sendable {
     func focusedText() -> FocusedText
+
+    /// Called when the speaker starts talking. A field that has to be woken
+    /// before it can be read gets that head start here instead of stalling the
+    /// read at the end of the sentence.
+    func prepare()
+}
+
+public extension FocusedTextReading {
+    func prepare() {}
 }
 
 /// Joins what is already in the field to what was just spoken, and works out
@@ -78,10 +88,13 @@ public final class AXFocusedTextReader: FocusedTextReading {
 
     public init() {}
 
+    public func prepare() {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else { return }
+        wakeAccessibilityTree(of: AXUIElementCreateApplication(frontmost.processIdentifier))
+    }
+
     public func focusedText() -> FocusedText {
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, Self.messagingTimeout)
-        let focused: (value: AXUIElement?, error: AXError) = copy(kAXFocusedUIElementAttribute, from: system)
+        let focused = focusedElement()
         guard let field = focused.value else { return .unavailable(label("focus", focused.error)) }
         AXUIElementSetMessagingTimeout(field, Self.messagingTimeout)
 
@@ -98,6 +111,56 @@ public final class AXFocusedTextReader: FocusedTextReading {
         guard AXValueGetValue(selected, .cfRange, &caret) else { return .unavailable("range:shape") }
         guard caret.length == 0, caret.location == units else { return .unavailable("caretNotAtEnd") }
         return .text(text)
+    }
+
+    /// A label-only account of what Accessibility can see right now, for the
+    /// debug server. Field text never appears here, only roles and error codes.
+    public func diagnostics() -> [String: String] {
+        var report = [
+            "trusted": AXIsProcessTrusted() ? "yes" : "no",
+            "result": focusedText().label
+        ]
+        if let frontmost = NSWorkspace.shared.frontmostApplication {
+            report["frontmost"] = frontmost.bundleIdentifier ?? "unknown"
+            let application = AXUIElementCreateApplication(frontmost.processIdentifier)
+            AXUIElementSetMessagingTimeout(application, Self.messagingTimeout)
+            report["appFocus"] = role(ofFocusedElementOf: application)
+        }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, Self.messagingTimeout)
+        report["systemFocus"] = role(ofFocusedElementOf: system)
+        return report
+    }
+
+    /// Asking the frontmost app for its focused element is more reliable than
+    /// asking the system-wide element, which answers "no value" for some apps.
+    /// The system-wide element stays as the fallback for the rest.
+    private func focusedElement() -> (value: AXUIElement?, error: AXError) {
+        if let frontmost = NSWorkspace.shared.frontmostApplication {
+            let application = AXUIElementCreateApplication(frontmost.processIdentifier)
+            AXUIElementSetMessagingTimeout(application, Self.messagingTimeout)
+            wakeAccessibilityTree(of: application)
+            let focused: (value: AXUIElement?, error: AXError) = copy(kAXFocusedUIElementAttribute, from: application)
+            if focused.value != nil { return focused }
+        }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, Self.messagingTimeout)
+        return copy(kAXFocusedUIElementAttribute, from: system)
+    }
+
+    private func role(ofFocusedElementOf element: AXUIElement) -> String {
+        let focused: (value: AXUIElement?, error: AXError) = copy(kAXFocusedUIElementAttribute, from: element)
+        guard let field = focused.value else { return label("focus", focused.error) }
+        let role: (value: String?, error: AXError) = copy(kAXRoleAttribute, from: field)
+        return role.value ?? label("role", role.error)
+    }
+
+    /// Chromium, and so every Electron app, keeps its accessibility tree off
+    /// until a client asks for it by name, and then builds it in its own time.
+    /// Without this an Electron text box reports no focused element at all.
+    /// Other apps ignore the attribute.
+    private func wakeAccessibilityTree(of application: AXUIElement) {
+        AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
 
     private func copy<T>(_ attribute: String, from element: AXUIElement) -> (value: T?, error: AXError) {

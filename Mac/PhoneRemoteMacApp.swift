@@ -88,6 +88,7 @@ final class MacRemoteAppModel: ObservableObject {
     private let normalizer = S1MiniNormalizer()
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
+    private let focusedTextReader = AXFocusedTextReader()
 
     init() {
         let trust = SystemAccessibilityTrust()
@@ -121,7 +122,7 @@ final class MacRemoteAppModel: ObservableObject {
             sessions: speechServer,
             insertionSink: injector,
             normalizer: normalizer,
-            focusedText: AXFocusedTextReader()
+            focusedText: focusedTextReader
         )
         self.voiceCoordinator = voiceCoordinator
         self.central = central
@@ -615,6 +616,8 @@ final class MacRemoteAppModel: ObservableObject {
         if MacHostRuntime.isInert { return }
         if ProcessInfo.processInfo.environment["PHONE_REMOTE_DEBUG_SERVER"] == "0" { return }
         let server = MacDebugHTTPServer(box: debugSnapshotBox)
+        let reader = focusedTextReader
+        server.focusProbe = { reader.diagnostics() }
         server.start()
         debugServer = server
     }
@@ -661,7 +664,7 @@ final class MacRemoteAppModel: ObservableObject {
             audioFrames: voice.health.receivedFrames,
             audioSamples: voice.health.receivedSamples,
             audioMissingChunks: voice.health.missingChunks,
-            audioMerge: voice.merge.rawValue,
+            audioMerge: voice.merge,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
                 MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)
