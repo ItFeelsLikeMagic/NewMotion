@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import SwiftUI
 import UIKit
 
 /// What a press on a hold-and-slide control is doing right now.  Translation
@@ -79,6 +80,24 @@ public final class HoldSlideCaptureView: UIView {
         trackedTouch = nil
         origin = nil
         onPhase?(phase)
+    }
+}
+
+/// Lays the capture view over a SwiftUI control.  Every hold-and-slide control
+/// takes its touches through this, so none of them are left on `DragGesture`.
+struct HoldSlideSurface: UIViewRepresentable {
+    let label: String
+    let onPhase: (HoldSlidePhase) -> Void
+
+    func makeUIView(context: Context) -> HoldSlideCaptureView {
+        let view = HoldSlideCaptureView(frame: .zero)
+        view.label = label
+        view.onPhase = onPhase
+        return view
+    }
+
+    func updateUIView(_ view: HoldSlideCaptureView, context: Context) {
+        view.onPhase = onPhase
     }
 }
 #endif

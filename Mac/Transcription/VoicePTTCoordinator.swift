@@ -45,6 +45,10 @@ public struct VoicePTTState: Equatable, Sendable {
 /// passes through `normalizer`, when one is set, before it is typed, together
 /// with whatever `focusedText` finds already in the field so that repeated
 /// presses read as one piece of writing.
+///
+/// A stream the phone ends as an edit takes the other path: its words are an
+/// instruction, never typed, and `editor` rewrites what is already in the field
+/// to follow them.
 public final class VoicePTTCoordinator: @unchecked Sendable {
     /// Wall-clock time between the stages of one utterance, starting at commit.
     private final class StageTimer {
@@ -77,6 +81,13 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         var typing = false
         var timer: StageTimer?
         var idleTimer: DispatchWorkItem?
+        /// The phone said the finger is hovering an edit target. Nothing is
+        /// typed while this is true and the hold has not ended.
+        var editHinted = false
+        var ended = false
+        /// Decided by the end frame: these words are an instruction.
+        var isEdit = false
+        var holdTimer: DispatchWorkItem?
 
         init(streamID: SessionID, session: TranscriptionSession, nextSequence: UInt32) {
             self.streamID = streamID
@@ -87,6 +98,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
 
     private static let outcomeDisplayTime: TimeInterval = 2
 
+
     public var onStateChange: (@Sendable (VoicePTTState) -> Void)?
     public var state: VoicePTTState { queue.sync { current } }
 
@@ -94,10 +106,15 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     private let sessions: TranscriptionSessionFactory
     private let insertionSink: SafeTranscriptInsertionSink
     private let normalizer: TranscriptNormalizer?
+    private let editor: TranscriptEditing?
     private let focusedText: FocusedTextReading?
     private let vocabulary: SpokenVocabularySink?
     private let isSecureInputActive: @Sendable () -> Bool
     private let idleTimeout: TimeInterval
+    /// How long a hinted utterance waits for the release to say what it is,
+    /// after its text is already in. Past this the release is assumed lost and
+    /// the words are typed the ordinary way.
+    private let editHintHoldTime: TimeInterval
     private var utterances: [Utterance] = []
     private var lastCommittedStream: SessionID?
     private var current = VoicePTTState()
@@ -108,17 +125,21 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         sessions: TranscriptionSessionFactory,
         insertionSink: SafeTranscriptInsertionSink,
         normalizer: TranscriptNormalizer? = nil,
+        editor: TranscriptEditing? = nil,
         focusedText: FocusedTextReading? = nil,
         vocabulary: SpokenVocabularySink? = nil,
         idleTimeout: TimeInterval = 1.5,
+        editHintHoldTime: TimeInterval = 3,
         isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
     ) {
         self.sessions = sessions
         self.insertionSink = insertionSink
         self.normalizer = normalizer
+        self.editor = editor
         self.focusedText = focusedText
         self.vocabulary = vocabulary
         self.idleTimeout = idleTimeout
+        self.editHintHoldTime = editHintHoldTime
         self.isSecureInputActive = isSecureInputActive
     }
 
@@ -127,6 +148,27 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     }
 
     private func handle(_ frame: VoiceStreamFrame) {
+        // Checked before the straggler guard: a cancel has to land even when a
+        // silent pause already committed the utterance.
+        if frame.isCancel {
+            discard(frame.streamID)
+            return
+        }
+        // Also before the straggler guard: a hint about a stream the idle
+        // timeout already committed is exactly the case the hold exists for.
+        if frame.isIntent {
+            hint(frame.streamID, edit: frame.isEdit)
+            return
+        }
+        // An end frame for a stream a silent pause already committed still gets
+        // to say what its words were for.
+        if frame.isEnd,
+           let held = utterances.first(where: { $0.streamID == frame.streamID }),
+           held.committed {
+            end(held, isEdit: frame.isEdit)
+            publish()
+            return
+        }
         // Frames that straggle in after the idle timeout committed their stream are dropped.
         guard frame.streamID != lastCommittedStream else { return }
         let utterance = utterances.last { $0.streamID == frame.streamID } ?? begin(frame)
@@ -142,11 +184,22 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         }
         current.health = utterance.health
         if frame.isEnd {
-            commit(utterance)
+            end(utterance, isEdit: frame.isEdit)
         } else {
             armIdleTimer(utterance)
         }
         publish()
+    }
+
+    /// The hold is over, and the flag it ended with settles whether the words
+    /// are text or an instruction.
+    private func end(_ utterance: Utterance, isEdit: Bool) {
+        utterance.ended = true
+        utterance.isEdit = isEdit
+        utterance.holdTimer?.cancel()
+        utterance.holdTimer = nil
+        commit(utterance)
+        typeNextIfReady()
     }
 
     private func begin(_ frame: VoiceStreamFrame) -> Utterance {
@@ -191,6 +244,40 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         utterance.session.commit()
     }
 
+    /// The speaker threw this utterance away. Its recognizer is torn down, the
+    /// preview goes, and nothing of it is typed. Later frames of the same
+    /// stream are dropped as stragglers.
+    private func discard(_ streamID: SessionID) {
+        lastCommittedStream = streamID
+        if let utterance = utterances.first(where: { $0.streamID == streamID }) {
+            utterance.idleTimer?.cancel()
+            utterance.idleTimer = nil
+            utterance.holdTimer?.cancel()
+            utterance.holdTimer = nil
+            utterance.committed = true
+            utterance.session.cancel()
+            utterances.removeAll { $0 === utterance }
+        }
+        outcome = .idle
+        outcomeGeneration += 1
+        current.merge = "cancelled"
+        publish()
+        typeNextIfReady()
+    }
+
+    /// The phone is telling us where the finger is hovering. An edit hint holds
+    /// the typing and starts loading the editor; clearing it lets go again.
+    private func hint(_ streamID: SessionID, edit: Bool) {
+        if edit { editor?.warmUp() }
+        guard let utterance = utterances.first(where: { $0.streamID == streamID }) else { return }
+        utterance.editHinted = edit
+        if !edit {
+            utterance.holdTimer?.cancel()
+            utterance.holdTimer = nil
+            typeNextIfReady()
+        }
+    }
+
     private func appendDelta(_ delta: String, to streamID: SessionID) {
         guard let utterance = utterances.last(where: { $0.streamID == streamID }) else { return }
         utterance.preview += delta
@@ -208,6 +295,12 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     /// here until it has been typed or has failed.
     private func typeNextIfReady() {
         guard let utterance = utterances.first, let result = utterance.result, !utterance.typing else { return }
+        // The finger is over an edit target and still down, so what these words
+        // are for is not settled yet.
+        if utterance.editHinted, !utterance.ended {
+            armHoldTimer(utterance)
+            return
+        }
         utterance.typing = true
         guard case let .success(raw) = result else {
             complete(utterance, phase: .failed)
@@ -216,6 +309,10 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             complete(utterance, phase: .idle)
+            return
+        }
+        guard !utterance.isEdit else {
+            applyEdit(instruction: text, for: utterance)
             return
         }
         // Saying a word is what earns it a long life in the boost list. This is
@@ -241,6 +338,85 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
                         spoken: text,
                         for: utterance
                     )
+                }
+            }
+        }
+    }
+
+    private func armHoldTimer(_ utterance: Utterance) {
+        guard utterance.holdTimer == nil else { return }
+        let timer = DispatchWorkItem {
+            utterance.holdTimer = nil
+            utterance.editHinted = false
+            self.typeNextIfReady()
+        }
+        utterance.holdTimer = timer
+        queue.asyncAfter(deadline: .now() + editHintHoldTime, execute: timer)
+    }
+
+    /// The spoken words are an instruction, so they are never typed. The field
+    /// is the thing being edited: it goes to the editor with the instruction and
+    /// comes back rewritten. Anything that goes wrong leaves the field alone.
+    private func applyEdit(instruction: String, for utterance: Utterance) {
+        guard let editor else {
+            current.merge = "edit:noEditor"
+            complete(utterance, phase: .failed)
+            return
+        }
+        readFocusedField { [weak self] field in
+            guard let self else { return }
+            utterance.timer?.mark("read")
+            guard case let .text(document) = field,
+                  !document.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.current.merge = "edit:" + field.label
+                self.complete(utterance, phase: .failed)
+                return
+            }
+            guard document.count <= QwenTranscriptEditor.maximumDocumentCharacters else {
+                self.current.merge = "edit:tooLong"
+                self.complete(utterance, phase: .failed)
+                return
+            }
+            editor.edit(document: document, instruction: instruction) { result in
+                self.queue.async {
+                    utterance.timer?.mark("edit")
+                    switch result {
+                    case let .success(edited) where edited != document:
+                        self.replace(document, with: edited, for: utterance)
+                    case .success:
+                        self.current.merge = "edit:noChange"
+                        self.complete(utterance, phase: .idle)
+                    case .failure:
+                        self.current.merge = "edit:failed"
+                        self.complete(utterance, phase: .failed)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The field is read again because the edit took seconds; if it moved in
+    /// the meantime the rewrite is dropped rather than typed over new work.
+    private func replace(_ document: String, with edited: String, for utterance: Utterance) {
+        guard !isSecureInputActive() else {
+            current.merge = "edit:secureInput"
+            complete(utterance, phase: .failed)
+            return
+        }
+        readFocusedField { [weak self] fresh in
+            guard let self else { return }
+            utterance.timer?.mark("recheck")
+            guard fresh == .text(document) else {
+                self.current.merge = "edit:fieldMoved"
+                self.complete(utterance, phase: .failed)
+                return
+            }
+            DispatchQueue.main.async {
+                let typed = self.insertionSink.replaceAll(with: edited)
+                self.queue.async {
+                    utterance.timer?.mark("type")
+                    self.current.merge = "edited"
+                    self.complete(utterance, phase: typed ? .typed : .failed, text: edited)
                 }
             }
         }
@@ -310,6 +486,8 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     }
 
     private func complete(_ utterance: Utterance, phase: VoicePTTPhase, text: String? = nil) {
+        utterance.holdTimer?.cancel()
+        utterance.holdTimer = nil
         utterances.removeAll { $0 === utterance }
         outcome = phase
         outcomeGeneration += 1

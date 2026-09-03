@@ -7,6 +7,7 @@ import UIKit
 /// dead time no audio change can recover.
 final class PushToTalkTouchView: UIView {
     var onPress: (() -> Void)?
+    var onDrag: ((CGPoint) -> Void)?
     var onRelease: (() -> Void)?
 
     override init(frame: CGRect) {
@@ -28,6 +29,14 @@ final class PushToTalkTouchView: UIView {
         onPress?()
     }
 
+    /// The touch keeps coming here once it leaves the button, which is what
+    /// lets a hold reach the cancel targets in the corners.  Window
+    /// coordinates, so the reported zone frames can be compared directly.
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        onDrag?(touch.location(in: nil))
+    }
+
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         onRelease?()
     }
@@ -39,17 +48,18 @@ final class PushToTalkTouchView: UIView {
 
 struct PushToTalkTouchSurface: UIViewRepresentable {
     let press: () -> Void
+    let drag: (CGPoint) -> Void
     let release: () -> Void
 
     func makeUIView(context: Context) -> PushToTalkTouchView {
         let view = PushToTalkTouchView(frame: .zero)
-        view.onPress = press
-        view.onRelease = release
+        updateUIView(view, context: context)
         return view
     }
 
     func updateUIView(_ view: PushToTalkTouchView, context: Context) {
         view.onPress = press
+        view.onDrag = drag
         view.onRelease = release
     }
 }

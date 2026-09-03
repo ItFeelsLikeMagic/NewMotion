@@ -26,6 +26,16 @@ public enum InputSinkError: Error, Equatable, Sendable {
 /// small and has no API for arbitrary key codes from the remote side.
 public protocol InputEventSink: AnyObject {
     func send(_ event: InjectedInputEvent) throws
+
+    /// Returns once everything already sent has reached the window server.
+    /// Keyboard events are paced on a queue of their own, so a caller that
+    /// wants to look at what its keys did has to wait for them first.
+    func waitForPostedInput()
+}
+
+public extension InputEventSink {
+    /// A sink that posts nothing has nothing to wait for.
+    func waitForPostedInput() {}
 }
 
 /// A deterministic sink for simulator/unit tests.  It never posts an event to
@@ -385,6 +395,12 @@ public final class CGEventInputSink: InputEventSink {
             }
             state.record(burst: Date().timeIntervalSince(start) * 1_000)
         }
+    }
+
+    /// Waits out the queue, including the pacing gaps still to be slept.  The
+    /// queue never calls back to the caller, so blocking on it cannot deadlock.
+    public func waitForPostedInput() {
+        queue.sync {}
     }
 
     /// A modifier reports itself as a flags change, not as a key press, which

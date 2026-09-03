@@ -35,9 +35,23 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     private var chunker: PCM16Chunker
     private var pendingRelease: DispatchWorkItem?
 
+    /// How the utterance leaves: typed, thrown away, or used as an instruction.
+    private enum Ending {
+        case send
+        case cancel
+        case edit
+    }
+
     public var onUtteranceStart: (@Sendable () -> Void)?
     public var onChunk: (@Sendable ([Int16]) -> Void)?
     public var onUtteranceEnd: (@Sendable () -> Void)?
+    /// The utterance was thrown away. Audio still in the chunker is dropped
+    /// rather than sent, and the Mac is told to forget the stream.
+    public var onUtteranceCancel: (@Sendable () -> Void)?
+    /// The utterance is an instruction for editing the field, not text to type.
+    public var onUtteranceEndAsEdit: (@Sendable () -> Void)?
+    /// Which way the hold is leaning, while it is still down.
+    public var onEditIntent: (@Sendable (Bool) -> Void)?
 
     /// `releaseGrace` keeps the microphone open briefly after the finger lifts,
     /// because people let go while the last syllable is still sounding.
@@ -110,15 +124,34 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     }
 
     public func pushToTalkReleased() {
+        release(ending: .send)
+    }
+
+    /// Released over an edit target: the words are an instruction, so they
+    /// still travel, but they are marked as one.
+    public func pushToTalkReleasedAsEdit() {
+        release(ending: .edit)
+    }
+
+    /// Only meaningful while the finger is down; the release decides what
+    /// actually happens to the utterance.
+    public func setEditIntent(_ edit: Bool) {
+        queue.async {
+            guard self.stateMachine.state == .capturing else { return }
+            self.onEditIntent?(edit)
+        }
+    }
+
+    private func release(ending: Ending) {
         queue.async {
             guard self.stateMachine.state == .capturing, self.pendingRelease == nil else { return }
             guard self.releaseGrace > 0 else {
-                self.apply(self.stateMachine.handle(.localPushToTalkReleased))
+                self.apply(self.stateMachine.handle(.localPushToTalkReleased), ending: ending)
                 return
             }
             let release = DispatchWorkItem {
                 self.pendingRelease = nil
-                self.apply(self.stateMachine.handle(.localPushToTalkReleased))
+                self.apply(self.stateMachine.handle(.localPushToTalkReleased), ending: ending)
             }
             self.pendingRelease = release
             self.queue.asyncAfter(deadline: .now() + self.releaseGrace, execute: release)
@@ -127,6 +160,16 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
 
     public func cancel() {
         queue.async { self.stopNow(.localCancel) }
+    }
+
+    /// The finger lifted over a cancel target. Same stop as a release, but the
+    /// trailing audio is discarded and the end of the stream says so.
+    public func pushToTalkCancelled() {
+        queue.async {
+            self.pendingRelease?.cancel()
+            self.pendingRelease = nil
+            self.apply(self.stateMachine.handle(.localCancel), ending: .cancel)
+        }
     }
 
     public func interruptionBegan() {
@@ -180,12 +223,16 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
         }
     }
 
-    private func apply(_ actions: [AudioCaptureAction]) {
+    private func apply(_ actions: [AudioCaptureAction], ending: Ending = .send) {
         for action in actions where action == .stopCapture {
-            if let chunk = chunker.flush() {
-                onChunk?(chunk)
+            let pending = chunker.flush()
+            switch ending {
+            case .cancel:
+                onUtteranceCancel?()
+            case .send, .edit:
+                if let pending { onChunk?(pending) }
+                if ending == .edit { onUtteranceEndAsEdit?() } else { onUtteranceEnd?() }
             }
-            onUtteranceEnd?()
             microphone.stop()
         }
     }

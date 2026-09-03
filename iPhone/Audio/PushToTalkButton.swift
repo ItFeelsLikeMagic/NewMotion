@@ -9,11 +9,20 @@ import SwiftUI
 @MainActor
 final class PushToTalkController: ObservableObject {
     @Published private(set) var status = ""
+    /// True from the moment the finger lands until it lifts; the cancel
+    /// targets are on screen for exactly this long.
+    @Published private(set) var isHolding = false
+    /// The target the finger is over right now, if any.  Releasing here throws
+    /// the utterance away, or turns it into an edit instruction.
+    @Published private(set) var armedZone: PushToTalkZone?
+    /// The edit targets are an experiment, off unless the setting says so.
+    @Published private(set) var editEnabled = false
 
     private let audio: LocalPushToTalkAudioController
     private let activity: @MainActor (String) -> Void
     private let logContext: @MainActor () -> [String: String]
     private var isHeld = false
+    private var zoneFrames: [PushToTalkZone: CGRect] = [:]
 
     init(
         audio: LocalPushToTalkAudioController,
@@ -27,13 +36,70 @@ final class PushToTalkController: ObservableObject {
 
     func pressed() {
         isHeld = true
+        isHolding = true
+        armedZone = nil
         start()
     }
 
-    func released() {
+    func setEditEnabled(_ enabled: Bool) {
+        editEnabled = enabled
+        if !enabled, armedZone?.isEdit == true { armedZone = nil }
+    }
+
+    /// Reported in window coordinates, which is the space the zone frames are
+    /// measured in.  The touch keeps arriving after it leaves the button.
+    func dragged(to point: CGPoint) {
+        guard isHeld else { return }
+        let zone = PushToTalkZone.allCases.first { covers($0, point) }
+        guard zone != armedZone else { return }
+        let wasEditing = armedZone?.isEdit == true
+        armedZone = zone
+        Haptics.play(zone == nil ? .gestureEnded : .gestureBegan)
+        // The Mac holds its typing while an edit is on the table, and starts
+        // loading the editor before the finger lifts.
+        if wasEditing != (zone?.isEdit == true) {
+            audio.setEditIntent(zone?.isEdit == true)
+        }
+    }
+
+    func setZoneFrame(_ zone: PushToTalkZone, _ frame: CGRect) {
+        zoneFrames[zone] = frame
+    }
+
+    /// The targets are drawn as circles, so the finger has to be inside the
+    /// disc the frame encloses rather than anywhere in its square.
+    private func covers(_ zone: PushToTalkZone, _ point: CGPoint) -> Bool {
+        guard !zone.isEdit || editEnabled else { return false }
+        guard let frame = zoneFrames[zone], frame.width > 0, frame.height > 0 else { return false }
+        let x = (point.x - frame.midX) / (frame.width / 2)
+        let y = (point.y - frame.midY) / (frame.height / 2)
+        return x * x + y * y <= 1
+    }
+
+    /// The target the finger lifted over, if any, so the caller can pick the
+    /// buzz that goes with it.
+    @discardableResult
+    func released() -> PushToTalkZone? {
         isHeld = false
-        audio.pushToTalkReleased()
-        activity("Push to talk released")
+        isHolding = false
+        let zone = armedZone
+        armedZone = nil
+        switch zone {
+        case .some(let zone) where zone.isEdit:
+            audio.pushToTalkReleasedAsEdit()
+            status = ""
+            activity("Push to talk sent an edit")
+            IPhoneDebugLog.emit("ptt_edit", logContext())
+        case .some:
+            audio.pushToTalkCancelled()
+            status = ""
+            activity("Push to talk cancelled")
+            IPhoneDebugLog.emit("ptt_cancel", logContext())
+        case .none:
+            audio.pushToTalkReleased()
+            activity("Push to talk released")
+        }
+        return zone
     }
 
     private func start() {
@@ -99,19 +165,22 @@ struct PushToTalkButton: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            Text(isPressed ? "Release to stop" : "Hold to talk")
-                .frame(minWidth: 160, minHeight: 52)
+            Image(systemName: icon)
+                .font(.system(size: 34, weight: .medium))
+                // Fills the gap between the two key clusters, at their full
+                // height, so it is the easiest thing on screen to hit.
+                .frame(maxWidth: .infinity, minHeight: RemoteKeyMetrics.clusterHeight)
                 .contentShape(Rectangle())
-                .background(isPressed ? Color.red : Color.accentColor)
+                .background(tint)
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay { PushToTalkTouchSurface(press: press, release: release) }
+                .overlay { PushToTalkTouchSurface(press: press, drag: controller.dragged(to:), release: release) }
                 // A cancelled touch (incoming call, app switcher) reaches the
                 // touch view, but a suspended app never delivers one at all.
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { release() }
                 }
-                .accessibilityLabel("Push to talk")
+                .accessibilityLabel(spokenState)
                 .onAppear { Haptics.prepare() }
 
             if !controller.status.isEmpty {
@@ -121,6 +190,25 @@ struct PushToTalkButton: View {
                     .multilineTextAlignment(.center)
             }
         }
+    }
+
+    /// The same icon as the target the finger is over, so the button under the
+    /// thumb and the circle it is sitting on say one thing.
+    private var icon: String {
+        guard let zone = controller.armedZone else { return isPressed ? "waveform" : "mic.fill" }
+        return zone.isEdit ? "pencil" : "trash.fill"
+    }
+
+    /// Green means the words are being recorded.  Red is only ever cancel, and
+    /// it is the red of the circle the finger has landed on.
+    private var tint: Color {
+        guard let zone = controller.armedZone else { return isPressed ? .green : .accentColor }
+        return zone.isEdit ? .accentColor : .red
+    }
+
+    private var spokenState: String {
+        guard let zone = controller.armedZone else { return isPressed ? "Recording" : "Push to talk" }
+        return zone.isEdit ? "Release to edit" : "Release to cancel"
     }
 
     private func press() {
@@ -133,8 +221,8 @@ struct PushToTalkButton: View {
     private func release() {
         guard isPressed else { return }
         isPressed = false
-        Haptics.play(.release)
-        controller.released()
+        let zone = controller.released()
+        Haptics.play(zone == nil ? .release : .press)
     }
 }
 #endif

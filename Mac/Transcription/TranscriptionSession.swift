@@ -11,6 +11,13 @@ public enum TranscriptionError: Error, Equatable, Sendable {
 public protocol TranscriptionSession: AnyObject {
     func send(pcm16: [Int16])
     func commit()
+    /// The speaker threw the utterance away. The session is torn down without
+    /// asking for text, and its handlers must not fire again.
+    func cancel()
+}
+
+public extension TranscriptionSession {
+    func cancel() {}
 }
 
 public struct TranscriptionSessionHandlers: Sendable {

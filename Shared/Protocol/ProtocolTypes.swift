@@ -34,13 +34,14 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case pong = 13
     case mouseDoubleClick = 14
     case appSwitcher = 15
+    case deleteScrub = 16
 
     public var deliveryClass: DeliveryClass {
         switch self {
         case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta, .audioChunk:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .appSwitcher,
-             .acknowledgement, .connectionStatus, .error, .ping, .pong:
+             .deleteScrub, .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
     }
@@ -361,6 +362,35 @@ public struct AppSwitcherPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// A delete key that is being held and slid sideways, one notch at a time.
+/// The phone counts the notches; it cannot know what is in the field, so it
+/// never says how much text a notch stands for.
+public enum DeleteScrubPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    /// The key went down. Nothing is deleted yet; it only gives the Mac a head
+    /// start on waking the focused field.
+    case begin = 1
+    case delete = 2
+    case restore = 3
+    /// The key came up, so what this press deleted can no longer be restored.
+    case end = 4
+}
+
+/// What one notch stands for. The two delete keys differ in nothing else.
+public enum DeleteScrubGranularity: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    case character = 1
+    case word = 2
+}
+
+public struct DeleteScrubPayload: Codable, Equatable, Sendable {
+    public let phase: DeleteScrubPhase
+    public let granularity: DeleteScrubGranularity
+
+    public init(phase: DeleteScrubPhase, granularity: DeleteScrubGranularity) {
+        self.phase = phase
+        self.granularity = granularity
+    }
+}
+
 public struct HotkeyPayload: Codable, Equatable, Sendable {
     public let action: HotkeyAction
 
@@ -532,6 +562,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case textInput(TextInputPayload)
     case hotkey(HotkeyPayload)
     case appSwitcher(AppSwitcherPayload)
+    case deleteScrub(DeleteScrubPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case audioChunk(AudioChunkPayload)
     case acknowledgement(AcknowledgementPayload)
@@ -550,6 +581,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .textInput: return .textInput
         case .hotkey: return .hotkey
         case .appSwitcher: return .appSwitcher
+        case .deleteScrub: return .deleteScrub
         case .motionPointerDelta: return .motionPointerDelta
         case .audioChunk: return .audioChunk
         case .acknowledgement: return .acknowledgement
@@ -589,6 +621,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .hotkey(try container.decode(HotkeyPayload.self, forKey: .value))
         case .appSwitcher:
             self = .appSwitcher(try container.decode(AppSwitcherPayload.self, forKey: .value))
+        case .deleteScrub:
+            self = .deleteScrub(try container.decode(DeleteScrubPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .audioChunk:
@@ -619,6 +653,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .textInput(let value): try container.encode(value, forKey: .value)
         case .hotkey(let value): try container.encode(value, forKey: .value)
         case .appSwitcher(let value): try container.encode(value, forKey: .value)
+        case .deleteScrub(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .audioChunk(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
@@ -654,7 +689,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey, .appSwitcher:
+        case .hotkey, .appSwitcher, .deleteScrub:
             break
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")

@@ -14,6 +14,12 @@ public protocol SafeTranscriptInsertionSink: AnyObject {
     /// so a normalizer that reworded settled text can correct it in place.
     @discardableResult
     func deleteBackward(_ count: Int) -> Bool
+
+    /// Selects everything in the field and types `text` over it, which is how a
+    /// spoken edit lands: one undo step, and no rewinding character by
+    /// character through a whole paragraph.
+    @discardableResult
+    func replaceAll(with text: String) -> Bool
 }
 
 /// Keeps Speech insertion on the existing SAFE-001/SAFE-002 policy path.
@@ -29,6 +35,12 @@ extension SafeInputInjector: SafeTranscriptInsertionSink {
             guard submit(.hotkey(.deleteBackward)) == .applied else { return false }
         }
         return true
+    }
+
+    @discardableResult
+    public func replaceAll(with text: String) -> Bool {
+        guard submit(.hotkey(.selectAll)) == .applied else { return false }
+        return submit(.text(text)) == .applied
     }
 }
 

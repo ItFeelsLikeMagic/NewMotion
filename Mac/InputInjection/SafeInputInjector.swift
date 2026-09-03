@@ -75,6 +75,13 @@ public final class SafeInputInjector {
 
     /// Releases all physical button/modifier state.  This is safe to call for
     /// disconnect, sleep, shutdown, watchdog expiry, and repeated callbacks.
+    /// Returns once every event this has already posted has reached the window
+    /// server.  A caller that wants to read back what its keys did has to wait
+    /// for them; the pacing runs on a queue of its own.
+    public func waitForPostedInput() {
+        sink.waitForPostedInput()
+    }
+
     @discardableResult
     public func releaseAllInputs(reason: ReleaseReason = .explicit) -> InputInjectionResult {
         let heldBefore = policy.held

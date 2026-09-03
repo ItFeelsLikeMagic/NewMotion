@@ -57,6 +57,175 @@ final class VoicePTTTests: XCTestCase {
         XCTAssertFalse(waitUntil(timeout: 0.2) { sink.values.count > 1 })
     }
 
+    func testCancelDropsTheUtteranceWithoutTyping() throws {
+        let (coordinator, factory, sink) = makeCoordinator()
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, samples: [1, 2, 3, 4]))
+        XCTAssertTrue(waitUntil { factory.sessions.count == 1 })
+        factory.sessions[0].handlers.onDelta("throw this away")
+        XCTAssertTrue(waitUntil { coordinator.state.preview == "throw this away" })
+
+        coordinator.receive(try frame(streamA, sequence: 2, flags: [.end, .cancel]))
+        XCTAssertTrue(waitUntil { factory.sessions[0].cancelled })
+        XCTAssertFalse(factory.sessions[0].committed)
+        XCTAssertTrue(waitUntil { coordinator.state.phase == .idle && coordinator.state.preview == "" })
+
+        // A final that was already in flight when the cancel landed types nothing.
+        factory.sessions[0].handlers.onResult(.success("throw this away"))
+        XCTAssertFalse(waitUntil(timeout: 0.2) { !sink.values.isEmpty })
+    }
+
+    func testCancelLandsAfterASilentPauseAlreadyCommitted() throws {
+        let (coordinator, factory, sink) = makeCoordinator(idleTimeout: 0.05)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, samples: [1, 2, 3, 4]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        coordinator.receive(try frame(streamA, sequence: 2, flags: [.end, .cancel]))
+        XCTAssertTrue(waitUntil { factory.sessions[0].cancelled })
+        factory.sessions[0].handlers.onResult(.success("hello world"))
+        XCTAssertFalse(waitUntil(timeout: 0.2) { !sink.values.isEmpty })
+    }
+
+    func testEditRewritesTheFieldAndNeverTypesTheInstruction() throws {
+        let editor = FakeEditor { document, _ in .success(document.replacingOccurrences(of: " We should revert it.", with: "")) }
+        let field = FakeFocusedText([.text("The build is broken. We should revert it.")])
+        let (coordinator, factory, sink) = makeCoordinator(editor: editor, focusedText: field)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, samples: [1, 2, 3, 4]))
+        coordinator.receive(try frame(streamA, sequence: 2, flags: [.end, .edit]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+
+        factory.sessions[0].handlers.onResult(.success("delete the last sentence"))
+        XCTAssertTrue(waitUntil { sink.replacements == ["The build is broken."] })
+        // The spoken words were the instruction, so nothing was typed.
+        XCTAssertTrue(sink.values.isEmpty)
+        XCTAssertEqual(editor.calls.count, 1)
+        XCTAssertEqual(editor.calls[0].document, "The build is broken. We should revert it.")
+        XCTAssertEqual(editor.calls[0].instruction, "delete the last sentence")
+        XCTAssertEqual(coordinator.state.merge, "edited")
+        XCTAssertEqual(coordinator.state.phase, .typed)
+    }
+
+    func testEditLeavesAnEmptyOrUnreadableFieldAlone() throws {
+        for field in [FocusedText.text("   "), .unavailable("noFocus")] {
+            let editor = FakeEditor { _, _ in .success("rewritten") }
+            let (coordinator, factory, sink) = makeCoordinator(editor: editor, focusedText: FakeFocusedText([field]))
+            coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+            coordinator.receive(try frame(streamA, sequence: 1, flags: [.end, .edit]))
+            XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+            factory.sessions[0].handlers.onResult(.success("make it shorter"))
+            XCTAssertTrue(waitUntil { coordinator.state.phase == .failed })
+            XCTAssertTrue(sink.replacements.isEmpty)
+            XCTAssertTrue(sink.values.isEmpty)
+            XCTAssertTrue(editor.calls.isEmpty)
+        }
+    }
+
+    func testEditThatFailsOrChangesNothingLeavesTheFieldAlone() throws {
+        for answer in [Result<String, TranscriptEditError>.failure(.editorUnavailable), .success("keep me")] {
+            let editor = FakeEditor { _, _ in answer }
+            let (coordinator, factory, sink) = makeCoordinator(
+                editor: editor,
+                focusedText: FakeFocusedText([.text("keep me")])
+            )
+            coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+            coordinator.receive(try frame(streamA, sequence: 1, flags: [.end, .edit]))
+            XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+            factory.sessions[0].handlers.onResult(.success("leave it alone"))
+            XCTAssertTrue(waitUntil { coordinator.state.merge.hasPrefix("edit:") })
+            XCTAssertTrue(sink.replacements.isEmpty)
+            XCTAssertTrue(sink.values.isEmpty)
+        }
+    }
+
+    /// A field that moved while the model was thinking is not typed over.
+    func testEditIsDroppedWhenTheFieldMovedWhileEditing() throws {
+        let editor = FakeEditor { _, _ in .success("rewritten") }
+        let field = FakeFocusedText([.text("before"), .text("someone else typed this")])
+        let (coordinator, factory, sink) = makeCoordinator(editor: editor, focusedText: field)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: [.end, .edit]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+        factory.sessions[0].handlers.onResult(.success("make it shorter"))
+        XCTAssertTrue(waitUntil { coordinator.state.merge == "edit:fieldMoved" })
+        XCTAssertTrue(sink.replacements.isEmpty)
+    }
+
+    /// The hint is what keeps a silent pause from typing the instruction: the
+    /// idle timeout still commits, but nothing lands until the release says
+    /// what the words were for.
+    func testEditHintHoldsTypingUntilTheReleaseDecides() throws {
+        let editor = FakeEditor { _, instruction in .success("edited by: " + instruction) }
+        let (coordinator, factory, sink) = makeCoordinator(
+            idleTimeout: 0.05,
+            editor: editor,
+            focusedText: FakeFocusedText([.text("some words")])
+        )
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: [.intent, .edit]))
+        XCTAssertTrue(waitUntil { editor.warmUps == 1 })
+        coordinator.receive(try frame(streamA, sequence: 2, samples: [1, 2, 3, 4]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+        factory.sessions[0].handlers.onResult(.success("make it shorter"))
+        XCTAssertFalse(waitUntil(timeout: 0.2) { !sink.values.isEmpty || !sink.replacements.isEmpty })
+
+        coordinator.receive(try frame(streamA, sequence: 3, flags: [.end, .edit]))
+        XCTAssertTrue(waitUntil { sink.replacements == ["edited by: make it shorter"] })
+        XCTAssertTrue(sink.values.isEmpty)
+    }
+
+    func testClearedEditHintTypesTheWordsTheOrdinaryWay() throws {
+        let (coordinator, factory, sink) = makeCoordinator(idleTimeout: 0.05)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: [.intent, .edit]))
+        coordinator.receive(try frame(streamA, sequence: 2, samples: [1, 2, 3, 4]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+        factory.sessions[0].handlers.onResult(.success("hello world"))
+        XCTAssertFalse(waitUntil(timeout: 0.2) { !sink.values.isEmpty })
+
+        coordinator.receive(try frame(streamA, sequence: 3, flags: .intent))
+        XCTAssertTrue(waitUntil { sink.values == ["hello world"] })
+    }
+
+    /// If the release never arrives, a hinted utterance is not held for ever.
+    func testEditHintGivesUpAndTypesWhenTheReleaseNeverArrives() throws {
+        let (coordinator, factory, sink) = makeCoordinator(idleTimeout: 0.05, editHintHoldTime: 0.1)
+        coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
+        coordinator.receive(try frame(streamA, sequence: 1, flags: [.intent, .edit]))
+        coordinator.receive(try frame(streamA, sequence: 2, samples: [1, 2, 3, 4]))
+        XCTAssertTrue(waitUntil { factory.sessions.first?.committed == true })
+        factory.sessions[0].handlers.onResult(.success("hello world"))
+        XCTAssertTrue(waitUntil { sink.values == ["hello world"] })
+    }
+
+    func testEditPromptCarriesTheDocumentAndInstructionInTaggedBlocks() {
+        let messages = QwenTranscriptEditor.messages(document: "hello there", instruction: "make it formal")
+        XCTAssertEqual(messages.first?["role"], "system")
+        XCTAssertEqual(messages.count, 2 + QwenTranscriptEditor.examples.count * 2)
+        XCTAssertEqual(messages.last?["role"], "user")
+        XCTAssertEqual(
+            messages.last?["content"],
+            "<document>\nhello there\n</document>\n<instruction>\nmake it formal\n</instruction>"
+        )
+        // The examples teach the shape, so they use the same blocks.
+        XCTAssertEqual(messages[1]["role"], "user")
+        XCTAssertTrue(messages[1]["content"]?.contains("<instruction>") == true)
+        XCTAssertEqual(messages[2]["role"], "assistant")
+    }
+
+    func testEditorReadsTheAnswerAndCleansItUp() throws {
+        let plain = try JSONSerialization.data(withJSONObject: ["message": ["content": " hello \n"]])
+        XCTAssertEqual(QwenTranscriptEditor.edited(fromResponse: plain), "hello")
+        let fenced = try JSONSerialization.data(withJSONObject: ["message": ["content": "```\nhello\nthere\n```"]])
+        XCTAssertEqual(QwenTranscriptEditor.edited(fromResponse: fenced), "hello\nthere")
+        // Markdown line breaks the model adds to kept lines are not wanted in a field.
+        let padded = try JSONSerialization.data(withJSONObject: ["message": ["content": "Hi team  \nStay online  "]])
+        XCTAssertEqual(QwenTranscriptEditor.edited(fromResponse: padded), "Hi team\nStay online")
+        let wrong = try JSONSerialization.data(withJSONObject: ["done": true])
+        XCTAssertNil(QwenTranscriptEditor.edited(fromResponse: wrong))
+    }
+
     func testIdleTimeoutCommits() throws {
         let (coordinator, factory, _) = makeCoordinator(idleTimeout: 0.05)
         coordinator.receive(try frame(streamA, sequence: 0, flags: .start))
@@ -492,8 +661,10 @@ final class VoicePTTTests: XCTestCase {
 
     private func makeCoordinator(
         idleTimeout: TimeInterval = 5,
+        editHintHoldTime: TimeInterval = 3,
         secureInput: Bool = false,
         normalizer: TranscriptNormalizer? = nil,
+        editor: TranscriptEditing? = nil,
         focusedText: FocusedTextReading? = nil
     ) -> (VoicePTTCoordinator, FakeSessionFactory, RecordingSink) {
         let factory = FakeSessionFactory()
@@ -502,8 +673,10 @@ final class VoicePTTTests: XCTestCase {
             sessions: factory,
             insertionSink: sink,
             normalizer: normalizer,
+            editor: editor,
             focusedText: focusedText,
             idleTimeout: idleTimeout,
+            editHintHoldTime: editHintHoldTime,
             isSecureInputActive: { secureInput }
         )
         return (coordinator, factory, sink)
@@ -540,6 +713,7 @@ private final class FakeSession: TranscriptionSession, @unchecked Sendable {
     private let lock = NSLock()
     private var _sampleCount = 0
     private var _committed = false
+    private var _cancelled = false
 
     init(handlers: TranscriptionSessionHandlers) {
         self.handlers = handlers
@@ -547,6 +721,7 @@ private final class FakeSession: TranscriptionSession, @unchecked Sendable {
 
     var sampleCount: Int { lock.withLock { _sampleCount } }
     var committed: Bool { lock.withLock { _committed } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
 
     func send(pcm16: [Int16]) {
         lock.withLock { _sampleCount += pcm16.count }
@@ -554,6 +729,37 @@ private final class FakeSession: TranscriptionSession, @unchecked Sendable {
 
     func commit() {
         lock.withLock { _committed = true }
+    }
+
+    func cancel() {
+        lock.withLock { _cancelled = true }
+    }
+}
+
+private final class FakeEditor: TranscriptEditing, @unchecked Sendable {
+    private let lock = NSLock()
+    private let answer: @Sendable (String, String) -> Result<String, TranscriptEditError>
+    private var _calls: [(document: String, instruction: String)] = []
+    private var _warmUps = 0
+
+    init(_ answer: @escaping @Sendable (String, String) -> Result<String, TranscriptEditError>) {
+        self.answer = answer
+    }
+
+    var calls: [(document: String, instruction: String)] { lock.withLock { _calls } }
+    var warmUps: Int { lock.withLock { _warmUps } }
+
+    func edit(
+        document: String,
+        instruction: String,
+        completion: @escaping @Sendable (Result<String, TranscriptEditError>) -> Void
+    ) {
+        lock.withLock { _calls.append((document, instruction)) }
+        completion(answer(document, instruction))
+    }
+
+    func warmUp() {
+        lock.withLock { _warmUps += 1 }
     }
 }
 
@@ -595,6 +801,12 @@ private final class FakeNormalizer: TranscriptNormalizer, @unchecked Sendable {
 private final class RecordingSink: SafeTranscriptInsertionSink {
     var values: [String] = []
     var deletions: [Int] = []
+    var replacements: [String] = []
+
+    func replaceAll(with text: String) -> Bool {
+        replacements.append(text)
+        return true
+    }
 
     func insertTranscript(_ text: String) -> Bool {
         values.append(text)
