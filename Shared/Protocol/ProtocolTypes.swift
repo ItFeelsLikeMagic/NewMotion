@@ -231,6 +231,8 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case shiftTab = 15
     case deleteWordBackward = 16
     case deleteLineBackward = 17
+    case missionControl = 18
+    case appExpose = 19
 }
 
 /// The app switcher is a held gesture, not a chord: Command stays down from

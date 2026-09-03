@@ -16,7 +16,7 @@ final class SafetyFeatureTests: XCTestCase {
         let pointer = engine.handle([
             TrackpadTouch(id: 1, location: TrackpadPoint(x: 20, y: 13), phase: .moved, timestamp: 0.01)
         ])
-        XCTAssertEqual(pointer, [.pointer(TrackpadPointerDelta(x: 10, y: 3))])
+        XCTAssertEqual(pointer, [.pointer(CursorDelta(x: 10, y: 3))])
         XCTAssertEqual(engine.handle([
             TrackpadTouch(id: 1, location: TrackpadPoint(x: 20, y: 13), phase: .ended, timestamp: 0.02)
         ]), [])
@@ -31,7 +31,7 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(engine.handle([
             TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 20), phase: .moved, timestamp: 1.02),
             TrackpadTouch(id: 3, location: TrackpadPoint(x: 10, y: 20), phase: .moved, timestamp: 1.02)
-        ]), [.scroll(TrackpadScrollDelta(x: 0, y: 20))])
+        ]), [.scroll(ScrollDelta(x: 0, y: 20))])
         XCTAssertEqual(engine.handle([
             TrackpadTouch(id: 2, location: TrackpadPoint(x: 0, y: 20), phase: .ended, timestamp: 1.03),
             TrackpadTouch(id: 3, location: TrackpadPoint(x: 10, y: 20), phase: .ended, timestamp: 1.03)
@@ -88,7 +88,7 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(engine.handle([
             TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 40), phase: .moved, timestamp: 0.02),
             TrackpadTouch(id: 2, location: TrackpadPoint(x: 12, y: 40), phase: .moved, timestamp: 0.02)
-        ]), [.scroll(TrackpadScrollDelta(x: 0, y: 40))])
+        ]), [.scroll(ScrollDelta(x: 0, y: 40))])
 
         _ = engine.handle([
             TrackpadTouch(id: 1, location: TrackpadPoint(x: 0, y: 40), phase: .ended, timestamp: 0.04)
@@ -104,7 +104,7 @@ final class SafetyFeatureTests: XCTestCase {
 
     func testSecondTapIsADoubleClickOnlyWhenItIsQuickAndClose() {
         var engine = TrackpadGestureEngine()
-        func tap(_ id: UInt64, at point: TrackpadPoint, start: TimeInterval) -> [TrackpadOutput] {
+        func tap(_ id: UInt64, at point: TrackpadPoint, start: TimeInterval) -> [RemoteInputEvent] {
             _ = engine.handle([TrackpadTouch(id: id, location: point, phase: .began, timestamp: start)])
             return engine.handle([TrackpadTouch(id: id, location: point, phase: .ended, timestamp: start + 0.05)])
         }
@@ -116,6 +116,88 @@ final class SafetyFeatureTests: XCTestCase {
         // Too far away, and too late, are both ordinary clicks.
         XCTAssertEqual(tap(4, at: TrackpadPoint(x: 90, y: 90), start: 0.45), [.leftClick])
         XCTAssertEqual(tap(5, at: TrackpadPoint(x: 90, y: 90), start: 1.5), [.leftClick])
+    }
+
+    func testThreeFingerSwipeUpOpensMissionControlOnceAndNeverScrolls() {
+        var engine = TrackpadGestureEngine()
+        func fingers(_ y: Double, phase: TrackpadTouchPhase, at timestamp: TimeInterval) -> [TrackpadTouch] {
+            [0, 1, 2].map { index in
+                TrackpadTouch(
+                    id: UInt64(index + 1),
+                    location: TrackpadPoint(x: 20 + Double(index) * 30, y: y),
+                    phase: phase,
+                    timestamp: timestamp
+                )
+            }
+        }
+
+        XCTAssertEqual(engine.handle(fingers(300, phase: .began, at: 0)), [])
+        // Short of the threshold nothing is sent, and never a scroll.
+        XCTAssertEqual(engine.handle(fingers(280, phase: .moved, at: 0.02)), [])
+        XCTAssertEqual(engine.handle(fingers(250, phase: .moved, at: 0.04)), [.missionControl])
+        // One swipe is one Mission Control, however far the hand keeps going.
+        XCTAssertEqual(engine.handle(fingers(180, phase: .moved, at: 0.06)), [])
+        // A staggered lift must not leak a scroll or a click.
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 1, location: TrackpadPoint(x: 20, y: 180), phase: .ended, timestamp: 0.08)
+        ]), [])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 50, y: 160), phase: .moved, timestamp: 0.09)
+        ]), [])
+        XCTAssertEqual(engine.handle([
+            TrackpadTouch(id: 2, location: TrackpadPoint(x: 50, y: 160), phase: .ended, timestamp: 0.10),
+            TrackpadTouch(id: 3, location: TrackpadPoint(x: 80, y: 180), phase: .ended, timestamp: 0.10)
+        ]), [])
+    }
+
+    func testThreeFingersPickMissionControlOrAppWindowsByDirection() {
+        func gesture(dx: Double, dy: Double) -> [RemoteInputEvent] {
+            var engine = TrackpadGestureEngine()
+            func fingers(_ offset: Double, phase: TrackpadTouchPhase, at timestamp: TimeInterval) -> [TrackpadTouch] {
+                [0, 1, 2].map { index in
+                    TrackpadTouch(
+                        id: UInt64(index + 1),
+                        location: TrackpadPoint(x: 20 + Double(index) * 30 + dx * offset, y: 300 + dy * offset),
+                        phase: phase,
+                        timestamp: timestamp
+                    )
+                }
+            }
+            _ = engine.handle(fingers(0, phase: .began, at: 0))
+            var outputs = engine.handle(fingers(1, phase: .moved, at: 0.03))
+            outputs += engine.handle(fingers(1, phase: .ended, at: 0.05))
+            return outputs
+        }
+
+        XCTAssertEqual(gesture(dx: 0, dy: -80), [.missionControl])
+        XCTAssertEqual(gesture(dx: 0, dy: 80), [.appExpose])
+        // Sideways means something else on a Mac, so it stays unclaimed.
+        XCTAssertEqual(gesture(dx: 80, dy: -20), [])
+        XCTAssertEqual(gesture(dx: -80, dy: 20), [])
+    }
+
+    func testThreeFingerTapIsNotARightClick() {
+        var engine = TrackpadGestureEngine()
+        let points = [TrackpadPoint(x: 20, y: 300), TrackpadPoint(x: 50, y: 300), TrackpadPoint(x: 80, y: 300)]
+        let began = points.enumerated().map {
+            TrackpadTouch(id: UInt64($0.offset + 1), location: $0.element, phase: .began, timestamp: 0)
+        }
+        let ended = points.enumerated().map {
+            TrackpadTouch(id: UInt64($0.offset + 1), location: $0.element, phase: .ended, timestamp: 0.06)
+        }
+        XCTAssertEqual(engine.handle(began), [])
+        XCTAssertEqual(engine.handle(ended), [])
+    }
+
+    func testThreeFingerSwipesReachTheSharedProtocolAsHotkeys() throws {
+        XCTAssertEqual(
+            try SharedTrackpadProtocolAdapter.payloads(for: .missionControl),
+            [.hotkey(HotkeyPayload(action: .missionControl))]
+        )
+        XCTAssertEqual(
+            try SharedTrackpadProtocolAdapter.payloads(for: .appExpose),
+            [.hotkey(HotkeyPayload(action: .appExpose))]
+        )
     }
 
     func testScrollMomentumCoastsThenStops() {
@@ -501,28 +583,28 @@ final class SafetyFeatureTests: XCTestCase {
     }
 
     func testTrackpadCoalescerSumsPointerDeltasAndKeepsClickOrder() {
-        let coalescer = TrackpadOutputCoalescer(interval: 0.05)
+        let coalescer = CursorMixer(interval: 0.05)
         var clock = 1.0
-        coalescer.pointerCoalescer.now = { clock }
+        coalescer.travelCoalescer.now = { clock }
         var queued: [(TimeInterval, () -> Void)] = []
-        coalescer.pointerCoalescer.execute = { delay, work in queued.append((delay, work)) }
-        var outputs: [TrackpadOutput] = []
-        coalescer.onOutput = { outputs.append($0) }
+        coalescer.travelCoalescer.execute = { delay, work in queued.append((delay, work)) }
+        var outputs: [RemoteInputEvent] = []
+        coalescer.onEvent = { outputs.append($0) }
 
-        coalescer.handle([.pointer(TrackpadPointerDelta(x: 1, y: 2))])
-        coalescer.handle([.pointer(TrackpadPointerDelta(x: 3, y: 4))])
+        coalescer.handle([.pointer(CursorDelta(x: 1, y: 2))])
+        coalescer.handle([.pointer(CursorDelta(x: 3, y: 4))])
         XCTAssertEqual(queued.count, 1)
         XCTAssertTrue(outputs.isEmpty)
 
         queued.removeFirst().1()
-        XCTAssertEqual(outputs, [.pointer(TrackpadPointerDelta(x: 4, y: 6))])
+        XCTAssertEqual(outputs, [.pointer(CursorDelta(x: 4, y: 6))])
 
         // A click inside the interval flushes the motion that preceded it.
         clock = 1.01
-        coalescer.handle([.pointer(TrackpadPointerDelta(x: 5, y: 0)), .leftClick])
+        coalescer.handle([.pointer(CursorDelta(x: 5, y: 0)), .leftClick])
         XCTAssertEqual(outputs, [
-            .pointer(TrackpadPointerDelta(x: 4, y: 6)),
-            .pointer(TrackpadPointerDelta(x: 5, y: 0)),
+            .pointer(CursorDelta(x: 4, y: 6)),
+            .pointer(CursorDelta(x: 5, y: 0)),
             .leftClick
         ])
     }

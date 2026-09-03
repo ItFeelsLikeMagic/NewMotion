@@ -26,6 +26,7 @@ public protocol MacCentralManagerAdapter: AnyObject {
     var onConnectionFailed: ((UUID, Error?) -> Void)? { get set }
     var onDisconnected: ((UUID, Error?) -> Void)? { get set }
     var onServicesDiscovered: ((UUID, Set<UUID>, Error?) -> Void)? { get set }
+    var onServicesInvalidated: ((UUID, Set<UUID>) -> Void)? { get set }
     var onCharacteristicsDiscovered: ((UUID, UUID, Set<UUID>, Error?) -> Void)? { get set }
     var onNotificationState: ((UUID, UUID, Bool, Error?) -> Void)? { get set }
     var onValue: ((UUID, UUID, Data?, Error?) -> Void)? { get set }
@@ -65,9 +66,11 @@ public final class MacBLECentralTransport {
 
     private let adapter: MacCentralManagerAdapter
     private let connectionTimeout: TimeInterval
+    private let authenticationTimeout: TimeInterval
     private let now: () -> Date
     private var pendingPeripheral: BLEDiscoveredPeripheral?
     private var pendingDeadline: Date?
+    private var readyDeadline: Date?
     private var pendingSubscriptions: Set<UUID> = []
     private var subscribed: Set<UUID> = []
     private var writeQueue: [(Data, UUID, BLEWriteType)] = []
@@ -77,11 +80,13 @@ public final class MacBLECentralTransport {
     public init(
         adapter: MacCentralManagerAdapter,
         connectionTimeout: TimeInterval = 10,
+        authenticationTimeout: TimeInterval = 12,
         writeQueueLimit: Int = BLEFramingLimits.maximumQueuedFrames,
         now: @escaping () -> Date = Date.init
     ) {
         self.adapter = adapter
         self.connectionTimeout = max(1, connectionTimeout)
+        self.authenticationTimeout = max(1, authenticationTimeout)
         self.writeQueueLimit = max(1, writeQueueLimit)
         self.now = now
         adapter.onStateChange = { [weak self] state in self?.handleState(state) }
@@ -90,6 +95,7 @@ public final class MacBLECentralTransport {
         adapter.onConnectionFailed = { [weak self] peripheralID, error in self?.handleConnectionFailure(peripheralID, error: error) }
         adapter.onDisconnected = { [weak self] peripheralID, error in self?.handleDisconnected(peripheralID, error: error) }
         adapter.onServicesDiscovered = { [weak self] peripheralID, services, error in self?.handleServices(peripheralID, services: services, error: error) }
+        adapter.onServicesInvalidated = { [weak self] peripheralID, services in self?.handleServicesInvalidated(peripheralID, services: services) }
         adapter.onCharacteristicsDiscovered = { [weak self] peripheralID, serviceUUID, characteristics, error in self?.handleCharacteristics(peripheralID, serviceUUID: serviceUUID, characteristics: characteristics, error: error) }
         adapter.onNotificationState = { [weak self] peripheralID, characteristicUUID, enabled, error in self?.handleNotification(peripheralID, characteristicUUID: characteristicUUID, enabled: enabled, error: error) }
         adapter.onValue = { [weak self] peripheralID, characteristicUUID, data, error in self?.handleValue(peripheralID, characteristicUUID: characteristicUUID, data: data, error: error) }
@@ -105,6 +111,7 @@ public final class MacBLECentralTransport {
         }
         pendingPeripheral = nil
         pendingDeadline = nil
+        readyDeadline = nil
         connectedPeripheral = nil
         discoveredCharacteristics.removeAll()
         subscribed.removeAll()
@@ -122,14 +129,32 @@ public final class MacBLECentralTransport {
         transition(to: .stopped)
     }
 
-    /// Called about once a second. Enforces the connection timeout, and while
-    /// scanning keeps polling for a phone the system already holds a link to.
+    /// Called about once a second. Enforces the connection and authentication
+    /// timeouts, and while scanning keeps polling for a phone the system
+    /// already holds a link to.
     public func tick() {
         if let deadline = pendingDeadline, now() >= deadline {
             failLink(error: nil, resumeScan: true)
             return
         }
+        if let deadline = readyDeadline, now() >= deadline {
+            onStatus?("phone never authenticated; dropping the link")
+            failLink(error: nil, resumeScan: true)
+            return
+        }
         if state == .scanning { adoptSystemConnectedPeripheral() }
+    }
+
+    /// The transport cannot tell a healthy idle link from a dead one, so an
+    /// unauthenticated `.ready` is the only state it times out on. That is
+    /// exactly the state a stale link gets stuck in: subscriptions look live,
+    /// but the phone's handshake never arrives.
+    public func setLinkAuthenticated(_ authenticated: Bool) {
+        if authenticated {
+            readyDeadline = nil
+        } else if state == .ready {
+            readyDeadline = now().addingTimeInterval(authenticationTimeout)
+        }
     }
 
     /// macOS keeps the BLE link to a paired iPhone alive after the phone app
@@ -222,6 +247,29 @@ public final class MacBLECentralTransport {
         )
     }
 
+    /// The phone republished its GATT table, so every cached characteristic
+    /// handle is dead. The link itself is still up, and a peripheral the system
+    /// is connected to never shows up in a scan, so the only way back is to
+    /// rediscover in place.
+    private func handleServicesInvalidated(_ peripheralID: UUID, services: Set<UUID>) {
+        guard let peripheral = connectedPeripheral ?? pendingPeripheral,
+              peripheral.identifier == peripheralID,
+              services.contains(serviceUUID) else { return }
+        onStatus?("phone republished its service; rediscovering")
+        adapter.stopScan()
+        connectedPeripheral = nil
+        pendingPeripheral = peripheral
+        discoveredCharacteristics.removeAll()
+        pendingSubscriptions.removeAll()
+        subscribed.removeAll()
+        writeQueue.removeAll(keepingCapacity: true)
+        reliableWriteInFlight = false
+        readyDeadline = nil
+        pendingDeadline = now().addingTimeInterval(connectionTimeout)
+        transition(to: .discovering)
+        adapter.discoverServices(peripheralID: peripheralID, serviceUUID: serviceUUID)
+    }
+
     private func handleCharacteristics(_ peripheralID: UUID, serviceUUID: UUID, characteristics: Set<UUID>, error: Error?) {
         guard state == .subscribing, pendingPeripheral?.identifier == peripheralID, serviceUUID == self.serviceUUID else { return }
         guard error == nil, characteristics.isSuperset(of: PhoneRemoteGATT.allCharacteristicUUIDs) else {
@@ -248,6 +296,7 @@ public final class MacBLECentralTransport {
             connectedPeripheral = pendingPeripheral
             pendingPeripheral = nil
             pendingDeadline = nil
+            readyDeadline = now().addingTimeInterval(authenticationTimeout)
             maximumWriteValueLength = max(
                 BLEFramingLimits.minimumValueLength,
                 adapter.maximumWriteValueLength(peripheralID: peripheralID, characteristicUUID: PhoneRemoteGATT.macToPhoneDataUUID)
@@ -320,6 +369,7 @@ public final class MacBLECentralTransport {
     private func clearConnection() {
         pendingPeripheral = nil
         pendingDeadline = nil
+        readyDeadline = nil
         connectedPeripheral = nil
         discoveredCharacteristics.removeAll()
         pendingSubscriptions.removeAll()

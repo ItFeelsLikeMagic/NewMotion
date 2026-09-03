@@ -3,7 +3,7 @@ import XCTest
 @testable import PhoneRemote_iOS
 @testable import PhoneRemoteShared
 
-/// The gesture engine no longer rate limits; `TrackpadOutputCoalescer` is the
+/// The gesture engine no longer rate limits; `CursorMixer` is the
 /// only pacer on the way to the link.
 final class TrackpadPacingTests: XCTestCase {
     func testEveryTouchBatchEmitsRegardlessOfSpacing() {
@@ -46,24 +46,6 @@ final class TrackpadPacingTests: XCTestCase {
             }
         }
         XCTAssertEqual(total, 3)
-    }
-
-    func testAirMouseTravelSharesTheTrackpadPacer() {
-        let coalescer = TrackpadOutputCoalescer()
-        var seen: [TrackpadOutput] = []
-        var deferred: [() -> Void] = []
-        coalescer.onOutput = { seen.append($0) }
-        coalescer.pointerCoalescer.now = { 0 }
-        coalescer.pointerCoalescer.execute = { _, work in deferred.append(work) }
-
-        coalescer.handlePointer(TrackpadPointerDelta(x: 1.5, y: 0))
-        coalescer.handle([.pointer(TrackpadPointerDelta(x: 2, y: 1))])
-        coalescer.handlePointer(TrackpadPointerDelta(x: 0.5, y: 0))
-
-        // One packet for both sensors, not one each.
-        XCTAssertEqual(deferred.count, 1)
-        deferred.removeFirst()()
-        XCTAssertEqual(seen, [.pointer(TrackpadPointerDelta(x: 4, y: 1))])
     }
 
     func testCursorTravelKeepsTheFractionAndTheOverflow() {
@@ -125,20 +107,20 @@ final class TrackpadPacingTests: XCTestCase {
     }
 
     func testCoalescerSumsPointerTravelAndKeepsDiscreteEventsBehindIt() {
-        let coalescer = TrackpadOutputCoalescer()
-        var seen: [TrackpadOutput] = []
+        let coalescer = CursorMixer()
+        var seen: [RemoteInputEvent] = []
         var deferred: [() -> Void] = []
-        coalescer.onOutput = { seen.append($0) }
-        coalescer.pointerCoalescer.now = { 0 }
-        coalescer.pointerCoalescer.execute = { _, work in deferred.append(work) }
+        coalescer.onEvent = { seen.append($0) }
+        coalescer.travelCoalescer.now = { 0 }
+        coalescer.travelCoalescer.execute = { _, work in deferred.append(work) }
 
         coalescer.handle([
-            .pointer(TrackpadPointerDelta(x: 3, y: 1)),
-            .pointer(TrackpadPointerDelta(x: 4, y: 1)),
+            .pointer(CursorDelta(x: 3, y: 1)),
+            .pointer(CursorDelta(x: 4, y: 1)),
             .leftClick
         ])
         XCTAssertEqual(seen, [
-            .pointer(TrackpadPointerDelta(x: 7, y: 2)),
+            .pointer(CursorDelta(x: 7, y: 2)),
             .leftClick
         ])
         XCTAssertEqual(deferred.count, 1)

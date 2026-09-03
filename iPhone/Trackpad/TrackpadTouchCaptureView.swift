@@ -9,11 +9,28 @@ public final class TrackpadTouchCaptureView: UIView {
     /// had already stopped, so it should not coast.
     private static let flickWindow: TimeInterval = 0.06
 
-    public var onOutputs: (([TrackpadOutput]) -> Void)?
+    public var onOutputs: (([RemoteInputEvent]) -> Void)?
     public var onLifecycle: ((TrackpadLifecycle) -> Void)?
     public var engine = TrackpadGestureEngine()
 
     private var momentum = ScrollMomentum()
+    /// Zero means a flick simply stops when the finger lifts.
+    public var momentumStrength: Double = TrackpadTouchCaptureView.defaultMomentumStrength {
+        didSet {
+            guard momentumStrength != oldValue else { return }
+            momentum = ScrollMomentum(configuration: Self.momentumConfiguration(for: momentumStrength))
+        }
+    }
+
+    public static let defaultMomentumStrength = 0.5
+
+    /// Maps a 0 to 1 dial onto the share of speed that survives a second of
+    /// coasting.  The curve is exponential because glide length is felt that
+    /// way, and 0.5 lands on the value the glide shipped with.
+    static func momentumConfiguration(for strength: Double) -> ScrollMomentum.Configuration {
+        let clamped = min(max(strength, 0), 1)
+        return ScrollMomentum.Configuration(retainedPerSecond: 0.002 * pow(250, clamped))
+    }
     /// The run loop retains the link's target, so leaving the window must
     /// invalidate it or the view would keep itself alive.
     private var displayLink: CADisplayLink?
@@ -23,6 +40,10 @@ public final class TrackpadTouchCaptureView: UIView {
     /// The touch that stops a glide must not also click, the same way stopping
     /// a scrolling list on iOS does not tap what is under the finger.
     private var suppressClicks = false
+    /// Three fingers are the one gesture whose silence is ambiguous: nothing
+    /// downstream fires unless the swipe is long enough, so the count itself is
+    /// logged to separate a short swipe from touches that never arrived.
+    private var peakTouches = 0
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -91,6 +112,7 @@ public final class TrackpadTouchCaptureView: UIView {
         }
 
         var outputs = engine.handle(values)
+        peakTouches = max(peakTouches, engine.activeTouchCount)
         trackScrollVelocity(in: outputs, at: timestamp)
 
         let gestureEnded = engine.activeTouchCount == 0
@@ -102,11 +124,15 @@ public final class TrackpadTouchCaptureView: UIView {
         }
         if gestureEnded {
             suppressClicks = false
+            if peakTouches >= 3 {
+                IPhoneDebugLog.emit("trackpad_multitouch", ["peak": "\(peakTouches)"])
+            }
+            peakTouches = 0
         }
         onOutputs?(outputs)
     }
 
-    private func trackScrollVelocity(in outputs: [TrackpadOutput], at timestamp: TimeInterval) {
+    private func trackScrollVelocity(in outputs: [RemoteInputEvent], at timestamp: TimeInterval) {
         let travel = outputs.reduce(into: 0.0) { total, output in
             if case let .scroll(delta) = output { total += delta.y }
         }
@@ -124,6 +150,8 @@ public final class TrackpadTouchCaptureView: UIView {
             scrollVelocity = 0
             lastScrollTime = nil
         }
+        // After the defer, so turning glide off still clears the flick state.
+        guard momentumStrength > 0 else { return }
         guard let lastScrollTime, timestamp - lastScrollTime <= Self.flickWindow else { return }
         guard momentum.begin(velocity: scrollVelocity) else { return }
         lastFrameTime = CACurrentMediaTime()
@@ -152,12 +180,12 @@ public final class TrackpadTouchCaptureView: UIView {
     }
 }
 
-private extension TrackpadOutput {
+private extension RemoteInputEvent {
     var isClick: Bool {
         switch self {
         case .leftClick, .rightClick, .doubleClick:
             return true
-        case .pointer, .scroll, .dragBegan, .dragEnded:
+        case .pointer, .scroll, .dragBegan, .dragEnded, .missionControl, .appExpose:
             return false
         }
     }

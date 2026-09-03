@@ -126,7 +126,7 @@ public final class KeyboardInputController {
     }
 }
 
-/// Mirrors TrackpadOutputForwarder so the feature model can receive keyboard
+/// Mirrors RemoteInputEventForwarder so the feature model can receive keyboard
 /// output without the controller knowing about the transport.
 public final class KeyboardOutputForwarder: KeyboardOutputSink {
     public typealias Handler = (KeyboardOutput) -> Void

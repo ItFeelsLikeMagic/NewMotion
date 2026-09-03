@@ -40,8 +40,84 @@ final class BluetoothPeripheralTests: XCTestCase {
 
         transport.setForeground(false)
         XCTAssertEqual(transport.state, .stopped)
-        XCTAssertTrue(transport.subscriberIDs.isEmpty)
         XCTAssertTrue(adapter.stopAdvertisingCalled)
+    }
+
+    func testBackgroundKeepsTheServiceAndResumesTheSameLink() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setForeground(true)
+        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.state, .ready)
+        let published = adapter.published.count
+        let advertised = adapter.startAdvertisingCount
+
+        transport.setForeground(false)
+        XCTAssertEqual(transport.state, .stopped)
+        XCTAssertFalse(adapter.removeAllServicesCalled)
+        XCTAssertEqual(transport.subscriberIDs, Set(["mac-test"]))
+
+        transport.setForeground(true)
+        XCTAssertEqual(transport.state, .ready)
+        XCTAssertEqual(adapter.published.count, published)
+        XCTAssertEqual(adapter.startAdvertisingCount, advertised)
+    }
+
+    func testForegroundAdvertisesAgainWhenTheMacLeftDuringBackground() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setForeground(true)
+        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        transport.setForeground(false)
+
+        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        transport.setForeground(true)
+
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertEqual(adapter.startAdvertisingCount, 2)
+        XCTAssertEqual(adapter.published.count, 1)
+    }
+
+    func testLosingTheLastSubscriberRelightsTheBeacon() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setForeground(true)
+        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(adapter.startAdvertisingCount, 1)
+
+        // The Mac is one subscriber; dropping either channel ends the link.
+        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertEqual(adapter.startAdvertisingCount, 2)
+
+        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(adapter.startAdvertisingCount, 2)
+    }
+
+    func testAFreshCentralReplacesAStaleSubscriberAndForcesAHandshake() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        var states: [BLEPeripheralLifecycleState] = []
+        transport.onStateChange = { states.append($0) }
+        transport.setForeground(true)
+        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitSubscribe("mac-old", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-old", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.state, .ready)
+        states.removeAll()
+
+        adapter.emitSubscribe("mac-new", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        XCTAssertEqual(states, [.advertising, .connected])
+        XCTAssertEqual(transport.subscriberIDs, Set(["mac-new"]))
+        adapter.emitSubscribe("mac-new", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.state, .ready)
     }
 
     func testPeripheralQueueIsBoundedAndDisconnectClearsFrames() {
@@ -132,7 +208,7 @@ final class BluetoothPeripheralTests: XCTestCase {
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
         adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        transport.setForeground(false)
+        transport.stop()
         XCTAssertEqual(transport.state, .stopped)
 
         transport.setForeground(true)
@@ -219,6 +295,7 @@ private final class FakePeripheralAdapter: IPhonePeripheralManagerAdapter {
     var advertisedService: UUID?
     var startAdvertisingCount = 0
     var stopAdvertisingCalled = false
+    var removeAllServicesCalled = false
     var updateResult: Bool
 
     init(state: BLEPeripheralManagerState, updateResult: Bool = true) {
@@ -240,7 +317,7 @@ private final class FakePeripheralAdapter: IPhonePeripheralManagerAdapter {
         advertisedService = nil
     }
 
-    func removeAllServices() {}
+    func removeAllServices() { removeAllServicesCalled = true }
 
     @discardableResult
     func updateValue(_ data: Data, characteristicUUID: UUID) -> Bool {
@@ -249,6 +326,7 @@ private final class FakePeripheralAdapter: IPhonePeripheralManagerAdapter {
 
     func emitServicePublished(_ uuid: UUID) { onServicePublished?(uuid, nil) }
     func emitSubscribe(_ subscriber: String, characteristic: UUID) { onSubscribe?(subscriber, characteristic) }
+    func emitUnsubscribe(_ subscriber: String, characteristic: UUID) { onUnsubscribe?(subscriber, characteristic) }
     func emitWrite(_ write: BLEPeripheralWrite) { onWrite?(write) }
     func emitAdvertisingStarted(error: Error?) { onAdvertisingStarted?(error) }
 }

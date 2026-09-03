@@ -13,6 +13,7 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
     public var onConnectionFailed: ((UUID, Error?) -> Void)?
     public var onDisconnected: ((UUID, Error?) -> Void)?
     public var onServicesDiscovered: ((UUID, Set<UUID>, Error?) -> Void)?
+    public var onServicesInvalidated: ((UUID, Set<UUID>) -> Void)?
     public var onCharacteristicsDiscovered: ((UUID, UUID, Set<UUID>, Error?) -> Void)?
     public var onNotificationState: ((UUID, UUID, Bool, Error?) -> Void)?
     public var onValue: ((UUID, UUID, Data?, Error?) -> Void)?
@@ -140,7 +141,18 @@ extension CoreBluetoothCentralManagerAdapter: CBPeripheralDelegate {
             return (uuid, service)
         })
         services[peripheral.identifier] = serviceMap
+        // Handles from the previous discovery belong to services that are gone.
+        characteristics[peripheral.identifier] = [:]
         onServicesDiscovered?(peripheral.identifier, Set(serviceMap.keys), error)
+    }
+
+    /// Fires when the phone republishes its GATT table. Everything cached for
+    /// this peripheral is now a dangling handle.
+    public func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        let invalidated = Set(invalidatedServices.compactMap { UUID(uuidString: $0.uuid.uuidString) })
+        for uuid in invalidated { services[peripheral.identifier]?[uuid] = nil }
+        characteristics[peripheral.identifier] = [:]
+        onServicesInvalidated?(peripheral.identifier, invalidated)
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {

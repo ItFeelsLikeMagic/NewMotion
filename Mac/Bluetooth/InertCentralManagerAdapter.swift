@@ -15,6 +15,7 @@ public final class InertCentralManagerAdapter: MacCentralManagerAdapter {
     public var onConnectionFailed: ((UUID, Error?) -> Void)?
     public var onDisconnected: ((UUID, Error?) -> Void)?
     public var onServicesDiscovered: ((UUID, Set<UUID>, Error?) -> Void)?
+    public var onServicesInvalidated: ((UUID, Set<UUID>) -> Void)?
     public var onCharacteristicsDiscovered: ((UUID, UUID, Set<UUID>, Error?) -> Void)?
     public var onNotificationState: ((UUID, UUID, Bool, Error?) -> Void)?
     public var onValue: ((UUID, UUID, Data?, Error?) -> Void)?
