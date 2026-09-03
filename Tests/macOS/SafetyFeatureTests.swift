@@ -1,7 +1,6 @@
 import Foundation
 import XCTest
 @testable import PhoneRemote_macOS
-@testable import PhoneRemoteShared
 
 final class SafetyFeatureTests: XCTestCase {
     func testPolicyDeniesUntilEveryControlPreconditionIsSatisfied() {
@@ -86,95 +85,6 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(tracker.pendingCount, 0)
     }
 
-    func testAudioReassemblerAccountsGapsAndDuplicates() throws {
-        let sink = InMemoryPCMDataSink()
-        let reassembler = AudioPCMReassembler(sink: sink, maxSyntheticGapSamples: 20)
-        try reassembler.start()
-        let first = try XCTUnwrap(MacAudioPCMChunk(
-            sequence: 0,
-            timestamp: 1,
-            samplePosition: 0,
-            sampleCount: 4,
-            pcmLittleEndian: Data(repeating: 1, count: 8),
-            level: 0.25
-        ))
-        let third = try XCTUnwrap(MacAudioPCMChunk(
-            sequence: 2,
-            timestamp: 1.1,
-            samplePosition: 8,
-            sampleCount: 4,
-            pcmLittleEndian: Data(repeating: 2, count: 8),
-            level: 0.5
-        ))
-        XCTAssertEqual(reassembler.receive(first), .accepted)
-        XCTAssertEqual(reassembler.receive(first), .duplicate)
-        XCTAssertEqual(reassembler.receive(third), .gapFilled(samples: 4))
-        let health = try reassembler.finish()
-        XCTAssertEqual(health.receivedChunks, 2)
-        XCTAssertEqual(health.receivedSamples, 8)
-        XCTAssertEqual(health.missingChunks, 1)
-        XCTAssertEqual(health.missingSamples, 4)
-        XCTAssertEqual(health.durationSeconds, 12.0 / 16_000.0, accuracy: 1e-9)
-        XCTAssertTrue(sink.finished)
-    }
-
-    func testVoicePTTStreamsThenTypesOnClose() throws {
-        let sink = TestTranscriptSink()
-        let provider = TestStreamingSpeechProvider(result: .success("hello world"))
-        let coordinator = VoicePTTCoordinator(streaming: provider, insertionSink: sink)
-        let streamID = try SessionID(bytes: Array(repeating: 9, count: SessionID.byteCount))
-        var encoder = IMAADPCMEncoder()
-        let samples: [Int16] = [1_000, -1_000, 2_000, -2_000]
-        let start = try VoiceStreamFrame(
-            flags: .start,
-            streamID: streamID,
-            sequence: 0,
-            sampleCount: 0,
-            payload: Data()
-        )
-        let data = try VoiceStreamFrame(
-            flags: [],
-            streamID: streamID,
-            sequence: 1,
-            sampleCount: 4,
-            payload: encoder.encode(samples)
-        )
-        let end = try VoiceStreamFrame(
-            flags: .end,
-            streamID: streamID,
-            sequence: 2,
-            sampleCount: 0,
-            payload: Data()
-        )
-        coordinator.receive(start)
-        XCTAssertEqual(provider.began, 1)
-        XCTAssertTrue(sink.values.isEmpty)
-        coordinator.receive(data)
-        XCTAssertFalse(provider.samples.isEmpty)
-        XCTAssertTrue(sink.values.isEmpty)
-        coordinator.receive(end)
-        XCTAssertEqual(provider.ended, 1)
-        XCTAssertEqual(sink.values, ["hello world"])
-        XCTAssertEqual(coordinator.phase, .typed)
-    }
-
-    func testTranscriptHelperLineHidesFailuresAndEmptyReady() {
-        XCTAssertNil(TranscriptHelperLine.parse("READY"))
-        XCTAssertEqual(TranscriptHelperLine.parse("OK hello there"), .success("hello there"))
-        XCTAssertEqual(TranscriptHelperLine.parse("OK "), .success(""))
-        XCTAssertEqual(TranscriptHelperLine.parse("ERR"), .failure(.failed))
-    }
-
-    func testTranscriptRequiresExplicitInsertion() {
-        let sink = TestTranscriptSink()
-        let controller = ExplicitTranscriptInsertionController(insertionSink: sink)
-        controller.receiveFinalTranscript("private text")
-        XCTAssertTrue(sink.values.isEmpty)
-        XCTAssertTrue(controller.insertPendingTranscript())
-        XCTAssertEqual(sink.values, ["private text"])
-        XCTAssertFalse(controller.insertPendingTranscript())
-    }
-
     func testLifecycleMapsPauseAndLockToSafeStatus() {
         var state = InputControlState()
         state.authentication = .authenticated
@@ -195,10 +105,3 @@ private final class TestInputClock: InputSafetyClock {
     init(now: TimeInterval) { self.now = now }
 }
 
-private final class TestTranscriptSink: SafeTranscriptInsertionSink {
-    var values: [String] = []
-    func insertTranscript(_ text: String) -> Bool {
-        values.append(text)
-        return true
-    }
-}

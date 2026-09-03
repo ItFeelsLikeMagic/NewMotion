@@ -58,10 +58,9 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var pairingExpiry: Date? { didSet { publishDebugState() } }
     @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
-    @Published private(set) var audioPhase: VoicePTTPhase = .idle { didSet { publishDebugState() } }
-    @Published private(set) var audioHealth: AudioHealthSnapshot?
-    @Published private(set) var lastAudioEvent: String?
+    @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
     private let voiceCoordinator: VoicePTTCoordinator
+    private let speechServer = NemotronServer()
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
 
@@ -77,13 +76,7 @@ final class MacRemoteAppModel: ObservableObject {
         )
         self.injector = injector
         self.lifecycle = MacLifecycleCoordinator(injector: injector)
-        let streaming: StreamingSpeechProviding = DeferredStreamingSpeechProvider {
-            NemotronSpeechTranscriptionProvider()
-        }
-        let voiceCoordinator = VoicePTTCoordinator(
-            streaming: streaming,
-            insertionSink: injector
-        )
+        let voiceCoordinator = VoicePTTCoordinator(sessions: speechServer, insertionSink: injector)
         self.voiceCoordinator = voiceCoordinator
         self.central = central
         self.pairingOffer = pairingOffer
@@ -135,12 +128,13 @@ final class MacRemoteAppModel: ObservableObject {
             }
         }
 
-        voiceCoordinator.onPhaseChange = { [weak self] phase in
+        voiceCoordinator.onStateChange = { [weak self] state in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.audioPhase = phase
-                self.audioHealth = self.voiceCoordinator.health
-                switch phase {
+                let phaseChanged = state.phase != self.voice.phase
+                self.voice = state
+                guard phaseChanged else { return }
+                switch state.phase {
                 case .listening:
                     self.lastApplicationMessage = "Listening"
                 case .transcribing:
@@ -154,6 +148,10 @@ final class MacRemoteAppModel: ObservableObject {
                 }
             }
         }
+        speechServer.start()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { [speechServer] _ in speechServer.stop() }
 
         _ = lifecycle.handle(.startup)
         refreshAccessibility(prompt: false)
@@ -374,7 +372,6 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func handleTransportError() {
-        voiceCoordinator.disconnect()
         if authenticatedSession != nil {
             clearHandshakeState()
             _ = lifecycle.handle(.disconnected)
@@ -431,11 +428,7 @@ final class MacRemoteAppModel: ObservableObject {
                 let decrypted = try session.decrypt(payload)
                 if decrypted.messageType == MessageType.audioChunk.rawValue,
                    decrypted.plaintext.starts(with: VoiceStreamFrame.magic) {
-                    let frame = try VoiceStreamFrame.decode(decrypted.plaintext)
-                    voiceCoordinator.receive(frame)
-                    audioHealth = voiceCoordinator.health
-                    lastAudioEvent = frame.isEnd ? "end" : (frame.isStart ? "start" : "data")
-                    publishDebugState()
+                    voiceCoordinator.receive(try VoiceStreamFrame.decode(decrypted.plaintext))
                     return
                 }
                 let envelope = try ProtocolCodec.decode(Array(decrypted.plaintext))
@@ -449,9 +442,6 @@ final class MacRemoteAppModel: ObservableObject {
     private func dispatchApplication(_ payload: MessagePayload) throws {
         switch payload {
         case .ping:
-            if audioPhase == .listening {
-                voiceCoordinator.finishNow()
-            }
             try sendApplication(.pong(PongPayload()))
             lastApplicationMessage = "Pong sent"
         case .pong:
@@ -505,7 +495,6 @@ final class MacRemoteAppModel: ObservableObject {
         lastApplicationMessage = nil
         inboundReassembler?.reset()
         controlReassembler?.reset()
-        voiceCoordinator.disconnect()
         publishDebugState()
     }
 
@@ -545,10 +534,10 @@ final class MacRemoteAppModel: ObservableObject {
             lastPairingFailure: lastPairingFailure,
             visiblePeripheralName: visiblePeripheralName,
             lastApplicationMessage: lastApplicationMessage,
-            audioPhase: audioPhase.rawValue,
-            audioFrames: voiceCoordinator.receivedFrames,
-            audioSamples: voiceCoordinator.receivedSamples,
-            lastAudioEvent: lastAudioEvent,
+            audioPhase: voice.phase.rawValue,
+            audioFrames: voice.health.receivedFrames,
+            audioSamples: voice.health.receivedSamples,
+            audioMissingChunks: voice.health.missingChunks,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
                 MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)
@@ -601,13 +590,21 @@ struct MacRemoteStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if model.audioPhase != .idle {
-                Text(model.audioPhase.rawValue.capitalized)
+            if model.voice.phase != .idle {
+                Text(model.voice.phase.rawValue.capitalized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                AudioHealthIndicatorView(health: model.voice.health)
             }
-            if let health = model.audioHealth {
-                AudioHealthIndicatorView(health: health)
+            if !model.voice.preview.isEmpty {
+                Text(model.voice.preview)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let final = model.voice.lastFinalText {
+                Text(final)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button(model.isPaused ? "Resume Remote Control" : "Pause Remote Control") {

@@ -50,6 +50,29 @@ public protocol AccessibilityTrustProviding: AnyObject {
     func isTrusted(prompt: Bool) -> Bool
 }
 
+/// Splits text into the UTF-16 runs posted per keyDown/keyUp pair.
+public enum UnicodeKeyEvents {
+    public static let maximumUnits = 4_096
+    /// Some apps only honour the first 20 units of a keyboard event's string.
+    public static let unitsPerEvent = 20
+
+    public static func chunks(of value: String) -> [[UInt16]] {
+        let units = Array(value.utf16)
+        var chunks: [[UInt16]] = []
+        var start = 0
+        while start < units.count {
+            var end = min(start + unitsPerEvent, units.count)
+            // Never split a surrogate pair across events.
+            if end < units.count, UTF16.isLeadSurrogate(units[end - 1]) {
+                end -= 1
+            }
+            chunks.append(Array(units[start..<end]))
+            start = end
+        }
+        return chunks
+    }
+}
+
 #if os(macOS)
 import ApplicationServices
 import CoreGraphics
@@ -155,30 +178,22 @@ public final class CGEventInputSink: InputEventSink {
     }
 
     private func postUnicode(_ value: String) throws {
-        // Keep each CGEvent bounded.  Iterating UTF-16 preserves the exact
-        // scalar sequence expected by keyboardSetUnicodeString.
-        let units = Array(value.utf16)
-        guard units.count <= 4_096 else { throw InputSinkError.eventCreationFailed }
-        var mutableUnits = units
-        guard let down = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0,
-            keyDown: true
-        ), let up = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0,
-            keyDown: false
-        ) else { throw InputSinkError.eventCreationFailed }
-        down.keyboardSetUnicodeString(
-            stringLength: mutableUnits.count,
-            unicodeString: &mutableUnits
-        )
-        up.keyboardSetUnicodeString(
-            stringLength: mutableUnits.count,
-            unicodeString: &mutableUnits
-        )
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        guard value.utf16.count <= UnicodeKeyEvents.maximumUnits else { throw InputSinkError.eventCreationFailed }
+        for var units in UnicodeKeyEvents.chunks(of: value) {
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: true
+            ), let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: false
+            ) else { throw InputSinkError.eventCreationFailed }
+            down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
     }
 
     private static let modifierKeyCodes: [MacModifierKey: CGKeyCode] = [

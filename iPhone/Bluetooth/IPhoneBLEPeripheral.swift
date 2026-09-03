@@ -170,6 +170,13 @@ public final class IPhoneBLEPeripheralTransport {
 
     public var queuedFrameCount: Int { outbound.values.reduce(0) { $0 + $1.count } }
 
+    /// Free outbound slots while the Mac is subscribed.  Callers use it to
+    /// drop a multi-fragment message whole instead of sending part of it.
+    public func queueCapacity(on channel: BLETransportChannel) -> Int {
+        guard state == .ready else { return 0 }
+        return queueLimit - (outbound[channel]?.count ?? 0)
+    }
+
     private func handleManagerState(_ managerState: BLEPeripheralManagerState) {
         switch managerState {
         case .poweredOn:

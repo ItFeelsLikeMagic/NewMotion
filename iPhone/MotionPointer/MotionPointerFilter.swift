@@ -99,6 +99,9 @@ public struct MotionPointerDelta: Equatable, Sendable {
     }
 }
 
+/// Per-sample rotation at 100 Hz: a slow 5 deg/s wrist turn is about 0.0009 rad
+/// per sample, so the dead zone must stay well under that or slow aiming
+/// never registers. Gain is linear so slow moves keep their precision.
 public struct MotionFilterConfiguration: Equatable, Sendable {
     public var sensitivity: Double
     public var deadZoneRadians: Double
@@ -110,10 +113,10 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
     public var maximumRotationPerSample: Double
 
     public init(
-        sensitivity: Double = 1_200,
-        deadZoneRadians: Double = 0.002,
+        sensitivity: Double = 2_400,
+        deadZoneRadians: Double = 0.0004,
         smoothingAlpha: Double = 0.88,
-        accelerationExponent: Double = 1.12,
+        accelerationExponent: Double = 1.0,
         accelerationScale: Double = 1.0,
         maxOutputPerSample: Double = 400,
         maximumSampleGap: TimeInterval = 0.20,

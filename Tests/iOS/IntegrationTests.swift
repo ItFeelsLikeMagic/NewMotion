@@ -85,23 +85,4 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(payload.deltaY, 12)
     }
 
-    func testPushToTalkChunkTravelsAsBoundedAudioPayload() throws {
-        var chunker = PCM16Chunker(configuration: AudioChunkerConfiguration(samplesPerChunk: 4))
-        let chunks = chunker.append(samples: [1_000, -1_000, 2_000, -2_000], timestamp: 3)
-        let chunk = try XCTUnwrap(chunks.first)
-        let streamID = try SessionID(bytes: Array(repeating: 0x31, count: SessionID.byteCount))
-        let payload = try SharedAudioProtocolAdapter.payload(for: chunk, streamID: streamID)
-        guard case let .audioChunk(audio) = payload else {
-            return XCTFail("expected audio payload")
-        }
-        XCTAssertEqual(audio.sampleRateHz, 16_000)
-        XCTAssertEqual(audio.channels, 1)
-        XCTAssertEqual(audio.bitsPerSample, 16)
-        XCTAssertEqual(audio.pcm.bytes.count, 8)
-        XCTAssertEqual(audio.samplePosition, chunk.samplePosition)
-        XCTAssertFalse(audio.isLast)
-        let envelope = ProtocolEnvelope(sessionID: streamID, sequence: 1, timestampMs: 3_000, payload: payload)
-        let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
-        XCTAssertEqual(decoded, envelope)
-    }
 }

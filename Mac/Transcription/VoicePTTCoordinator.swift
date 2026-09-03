@@ -12,102 +12,205 @@ public enum VoicePTTPhase: String, Equatable, Sendable {
     case failed
 }
 
-/// Live PTT stream: ASR starts on the first frame, S1+type run on close.
-/// Transcript text is never stored on the debug snapshot.
-public final class VoicePTTCoordinator: @unchecked Sendable {
-    public private(set) var phase: VoicePTTPhase = .idle
-    public private(set) var receivedFrames: UInt64 = 0
-    public private(set) var receivedSamples: UInt64 = 0
-    public var health: AudioHealthSnapshot {
-        AudioHealthSnapshot(
-            receivedChunks: receivedFrames,
-            receivedSamples: receivedSamples,
-            missingChunks: 0,
-            missingSamples: 0,
-            duplicateChunks: 0,
-            lateChunks: 0,
-            durationSeconds: Double(receivedSamples) / 16_000.0,
-            lastLevel: 0
-        )
-    }
-    public var onPhaseChange: (@Sendable (VoicePTTPhase) -> Void)?
+/// Counts for the newest utterance. Safe for logs and the debug snapshot.
+public struct AudioHealthSnapshot: Equatable, Sendable {
+    public var receivedFrames: UInt64 = 0
+    public var receivedSamples: UInt64 = 0
+    public var missingChunks: UInt64 = 0
+    public var durationSeconds: Double { Double(receivedSamples) / 16_000 }
 
-    private let streaming: StreamingSpeechProviding
+    public init() {}
+}
+
+/// UI state. `preview` and `lastFinalText` are for display only and must
+/// never be logged or written to the debug snapshot.
+public struct VoicePTTState: Equatable, Sendable {
+    public var phase: VoicePTTPhase = .idle
+    public var health = AudioHealthSnapshot()
+    public var preview = ""
+    public var lastFinalText: String?
+
+    public init() {}
+}
+
+/// One transcription session per PTT stream. Audio is forwarded frame by
+/// frame; `.end` (or 1.5 s without frames) commits. Overlapping utterances
+/// each transcribe on their own; typed output stays in start order.
+public final class VoicePTTCoordinator: @unchecked Sendable {
+    /// Mutated only on the coordinator queue; the main-thread hop just carries it back.
+    private final class Utterance: @unchecked Sendable {
+        let streamID: SessionID
+        let session: TranscriptionSession
+        var health = AudioHealthSnapshot()
+        var nextSequence: UInt32
+        var preview = ""
+        var committed = false
+        var result: Result<String, TranscriptionError>?
+        var typing = false
+        var idleTimer: DispatchWorkItem?
+
+        init(streamID: SessionID, session: TranscriptionSession, nextSequence: UInt32) {
+            self.streamID = streamID
+            self.session = session
+            self.nextSequence = nextSequence
+        }
+    }
+
+    private static let outcomeDisplayTime: TimeInterval = 2
+
+    public var onStateChange: (@Sendable (VoicePTTState) -> Void)?
+    public var state: VoicePTTState { queue.sync { current } }
+
+    private let queue = DispatchQueue(label: "phoneremote.voice-ptt")
+    private let sessions: TranscriptionSessionFactory
     private let insertionSink: SafeTranscriptInsertionSink
-    private var currentStream: SessionID?
+    private let isSecureInputActive: @Sendable () -> Bool
+    private let idleTimeout: TimeInterval
+    private var utterances: [Utterance] = []
+    private var lastCommittedStream: SessionID?
+    private var current = VoicePTTState()
+    private var outcome: VoicePTTPhase = .idle
+    private var outcomeGeneration = 0
 
     public init(
-        streaming: StreamingSpeechProviding,
-        insertionSink: SafeTranscriptInsertionSink
+        sessions: TranscriptionSessionFactory,
+        insertionSink: SafeTranscriptInsertionSink,
+        idleTimeout: TimeInterval = 1.5,
+        isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
     ) {
-        self.streaming = streaming
+        self.sessions = sessions
         self.insertionSink = insertionSink
+        self.idleTimeout = idleTimeout
+        self.isSecureInputActive = isSecureInputActive
     }
 
     public func receive(_ frame: VoiceStreamFrame) {
-        if currentStream == nil || currentStream != frame.streamID {
-            if phase == .listening || phase == .transcribing {
-                streaming.cancelUtterance()
-            }
-            currentStream = frame.streamID
-            receivedFrames = 0
-            receivedSamples = 0
-            streaming.beginUtterance()
-            setPhase(.listening)
-        }
+        queue.async { self.handle(frame) }
+    }
 
+    private func handle(_ frame: VoiceStreamFrame) {
+        // Frames that straggle in after the idle timeout committed their stream are dropped.
+        guard frame.streamID != lastCommittedStream else { return }
+        let utterance = utterances.last { $0.streamID == frame.streamID } ?? begin(frame)
+        if frame.sequence > utterance.nextSequence {
+            utterance.health.missingChunks += UInt64(frame.sequence - utterance.nextSequence)
+        }
+        utterance.nextSequence = max(utterance.nextSequence, frame.sequence &+ 1)
+        utterance.health.receivedFrames += 1
         if frame.sampleCount > 0, !frame.payload.isEmpty {
             let samples = IMAADPCM.decode(payload: frame.payload, sampleCount: Int(frame.sampleCount))
-            if !samples.isEmpty {
-                streaming.appendPCM16(samples)
-                receivedSamples += UInt64(samples.count)
-            }
+            utterance.health.receivedSamples += UInt64(samples.count)
+            utterance.session.send(pcm16: samples)
         }
-        receivedFrames += 1
-
+        current.health = utterance.health
         if frame.isEnd {
-            finishListening()
+            commit(utterance)
+        } else {
+            armIdleTimer(utterance)
         }
+        publish()
     }
 
-    public func disconnect() {
-        if phase == .listening || phase == .transcribing {
-            streaming.cancelUtterance()
+    private func begin(_ frame: VoiceStreamFrame) -> Utterance {
+        let streamID = frame.streamID
+        let session = sessions.makeSession(handlers: TranscriptionSessionHandlers(
+            onDelta: { [weak self] delta in
+                self?.queue.async { self?.appendDelta(delta, to: streamID) }
+            },
+            onResult: { [weak self] result in
+                self?.queue.async { self?.finish(streamID, with: result) }
+            }
+        ))
+        let utterance = Utterance(streamID: streamID, session: session, nextSequence: frame.sequence &+ 1)
+        if !frame.isStart {
+            // Sequence 0 is the start frame, so everything before this frame was lost.
+            utterance.health.missingChunks = UInt64(max(frame.sequence, 1) - 1)
         }
-        currentStream = nil
-        setPhase(.idle)
+        utterances.append(utterance)
+        return utterance
     }
 
-    public func finishNow() {
-        finishListening()
+    private func armIdleTimer(_ utterance: Utterance) {
+        utterance.idleTimer?.cancel()
+        let timer = DispatchWorkItem {
+            self.commit(utterance)
+            self.publish()
+        }
+        utterance.idleTimer = timer
+        queue.asyncAfter(deadline: .now() + idleTimeout, execute: timer)
     }
 
-    private func finishListening() {
-        guard phase == .listening else { return }
-        currentStream = nil
-        setPhase(.transcribing)
-        streaming.endUtterance { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case let .success(text):
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
-                    self.setPhase(.idle)
-                    return
-                }
-                if self.insertionSink.insertTranscript(trimmed) {
-                    self.setPhase(.typed)
-                } else {
-                    self.setPhase(.failed)
-                }
-            case .failure:
-                self.setPhase(.failed)
+    private func commit(_ utterance: Utterance) {
+        guard !utterance.committed else { return }
+        utterance.committed = true
+        utterance.idleTimer?.cancel()
+        utterance.idleTimer = nil
+        lastCommittedStream = utterance.streamID
+        utterance.session.commit()
+    }
+
+    private func appendDelta(_ delta: String, to streamID: SessionID) {
+        guard let utterance = utterances.last(where: { $0.streamID == streamID }) else { return }
+        utterance.preview += delta
+        publish()
+    }
+
+    private func finish(_ streamID: SessionID, with result: Result<String, TranscriptionError>) {
+        guard let utterance = utterances.first(where: { $0.streamID == streamID }) else { return }
+        utterance.result = result
+        typeNextIfReady()
+    }
+
+    /// Types the oldest utterance once its final text is in. Later finals wait
+    /// here until it has been typed or has failed.
+    private func typeNextIfReady() {
+        guard let utterance = utterances.first, let result = utterance.result, !utterance.typing else { return }
+        utterance.typing = true
+        guard case let .success(raw) = result else {
+            complete(utterance, phase: .failed)
+            return
+        }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            complete(utterance, phase: .idle)
+            return
+        }
+        guard !isSecureInputActive() else {
+            complete(utterance, phase: .failed)
+            return
+        }
+        DispatchQueue.main.async {
+            let typed = self.insertionSink.insertTranscript(text)
+            self.queue.async {
+                self.complete(utterance, phase: typed ? .typed : .failed, text: text)
             }
         }
     }
 
-    private func setPhase(_ phase: VoicePTTPhase) {
-        self.phase = phase
-        onPhaseChange?(phase)
+    private func complete(_ utterance: Utterance, phase: VoicePTTPhase, text: String? = nil) {
+        utterances.removeAll { $0 === utterance }
+        outcome = phase
+        outcomeGeneration += 1
+        let generation = outcomeGeneration
+        if let text { current.lastFinalText = text }
+        publish()
+        typeNextIfReady()
+        queue.asyncAfter(deadline: .now() + Self.outcomeDisplayTime) {
+            guard generation == self.outcomeGeneration else { return }
+            self.outcome = .idle
+            self.publish()
+        }
+    }
+
+    private func publish() {
+        if utterances.contains(where: { !$0.committed }) {
+            current.phase = .listening
+        } else if !utterances.isEmpty {
+            current.phase = .transcribing
+        } else {
+            current.phase = outcome
+        }
+        current.preview = utterances.last?.preview ?? ""
+        onStateChange?(current)
     }
 }

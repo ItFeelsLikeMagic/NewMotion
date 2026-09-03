@@ -1,73 +1,113 @@
 # Development environment
 
-This prototype is pinned to the following toolchain and test matrix. The values describe the environment used to validate the foundation on 2026-09-02; update this document with a ticket when the pin changes.
+Pinned toolchain, devices, commands, and the local log contract. Validated on
+the host below on 2026-09-03. Update this file with a ticket when a pin changes.
 
-## Pinned inputs
+## Pinned toolchain
 
-| Input | Pin | Notes |
+| Input | Pin |
+| --- | --- |
+| Xcode | 27.0 beta, build `27A5252f` |
+| Swift | 6.4 (`swiftlang-6.4.0.33.1`), strict concurrency `complete` |
+| XcodeGen | Not installed. `scripts/generate.sh` falls back to `scripts/generate_fallback.py`. `project.yml` needs 2.38.0 or newer. |
+| Deployment targets | iOS 18.0, macOS 15.0 |
+| Default bundle prefix | `com.example.phoneremote` (in `project.yml` and the fallback generator) |
+
+## Device matrix
+
+| Role | Device | OS |
 | --- | --- | --- |
-| Xcode | 27.0 beta, build `27A5252f` | Use the selected full-Xcode developer directory configured on the validation host; its local filesystem path is intentionally not part of the project contract. |
-| Swift | 6.4 (`swiftlang-6.4.0.33.1`) | Supplied by the pinned Xcode toolchain. |
-| XcodeGen | 2.38.0 or newer compatible with `project.yml` | `xcodegen` was not installed on the validation host. `scripts/generate.sh` uses the checked-in fallback generator until XcodeGen is installed. Exact XcodeGen version remains **TBD** (owner: foundation maintainer; blocking ticket: FND-002 follow-up). |
-| iOS deployment target | 18.0 | Chosen to keep the prototype below the current test OS while retaining current Core Bluetooth/Motion APIs. Revisit only with a target-matrix ticket. |
-| macOS deployment target | 15.0 | Same policy as the iOS target. |
-| Bundle-ID prefix | `com.example.phoneremote` | Placeholder development prefix only; the signing team must select a real prefix locally. Never commit a team ID or signing identity. |
+| iPhone | dliao's iPhone 15 Pro Max (iPhone16,2) | iOS 27 beta |
+| Mac host | Apple-silicon MacBook Pro (M1 Max) | macOS 27.0, build `26A5388g` |
+| Simulators | iPhone 17, 17 Pro, 17 Pro Max, 17e, Air | iOS 27.0 runtime |
 
-## Target device matrix
+The phone UDID comes from `xcrun devicectl list devices`. The signing team ID comes
+from Xcode Accounts. Both are passed only through the environment and never written
+into the repo. Developer Mode is on. Keep the phone unlocked and on-screen for
+`devicectl` install and DDI checks.
 
-| Role | Target | OS | Status |
-| --- | --- | --- | --- |
-| iPhone | iPhone 15 Pro Max (iPhone16,2) | iOS 27.0, build `24A5380h` | Owner enabled Developer Mode and restarted; DDI is compatible/usable, and the signed app installs/launches with the local Apple Development team. |
-| Mac | Apple-silicon MacBook Pro (MacBookPro18,2, M1 Max) | macOS 27.0, build `26A5388g` | Host used for CLI builds and unit tests. |
+## Bundle prefix on the phone
 
-The physical iPhone's UDID, serial number, Apple ID, team ID, and signing material are intentionally omitted. Supply a local `IPHONE_UDID` only when running device scripts.
+The installed phone app uses prefix `com.davidliao.phoneremote`. It was built
+with `PHONE_REMOTE_BUNDLE_PREFIX=com.davidliao.phoneremote`. Only the fallback
+generator reads that variable, and only for the shared framework and the iOS
+app. `debug-phone.sh` and `launch-phone.sh` default to the `com.example`
+bundle ID, so set `PHONE_REMOTE_IOS_BUNDLE_ID=com.davidliao.phoneremote.ios`
+for both. The Mac app stays `com.example.phoneremote.macos`.
 
-## CLI versus GUI steps
+## Commands
 
-### CLI-only steps
+Simulator and macOS tests. No signing.
 
-These are the repeatable commands exposed by the repository scripts:
-
-```sh
+```bash
 ./scripts/generate.sh
 ./scripts/build.sh
-./scripts/test.sh
-./scripts/install-phone.sh --udid "$IPHONE_UDID"
-./scripts/launch-phone.sh --udid "$IPHONE_UDID"
-./scripts/logs-phone.sh --udid "$IPHONE_UDID"
-./scripts/logs-mac.sh
+PHONE_REMOTE_RUN_IOS_TESTS=1 ./scripts/test.sh
+./scripts/fuzz-protocol.sh
 ```
 
-Voice typing streams compressed audio over BLE. The Mac helper starts a local
-`nemo-speech serve` realtime socket and S1-mini. Override with
-`PHONE_REMOTE_STT_ROOT`, `PHONE_REMOTE_NEMO_PORT`, `PHONE_REMOTE_STT_PYTHON`, or
-`PHONE_REMOTE_TRANSCRIBE` if those paths move. Do not log transcripts.
+`test.sh` picks the first available iPhone simulator. Set
+`PHONE_REMOTE_IOS_DESTINATION='platform=iOS Simulator,id=<uuid>'` to choose one.
 
-The scripts do not create signing identities, provision profiles, Apple IDs, or credentials. Build/test defaults disable signing for local simulator/macOS checks; a physical device run requires a developer-selected team/signing identity in an untracked local override.
+Phone install. The repo lives in iCloud Documents, so codesign fails on Finder
+metadata there. Build outside the repo.
 
-### Unavoidable Apple GUI steps
+```bash
+export IPHONE_UDID=<from devicectl list devices>
+export PHONE_REMOTE_SIGNING=1
+export PHONE_REMOTE_DEVELOPMENT_TEAM=<your team id>
+export PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemotePhoneInstall
+export PHONE_REMOTE_BUNDLE_PREFIX=com.davidliao.phoneremote
+./scripts/install-phone.sh
+```
 
-- Sign into Xcode with the developer's Apple ID and select the development team in the local project settings. The Apple ID and team ID must never be committed.
-- On first connection, approve the iPhone's “Trust This Computer” prompt and enter the device passcode.
-- Enable Developer Mode in **Settings → Privacy & Security → Developer Mode** on the iPhone, then confirm the reboot prompt. This was completed for the current target; keep the phone unlocked while validating DDI services.
-- If Xcode reports a signing or device-registration issue, resolve it in Xcode's Accounts/Signing UI; do not weaken the CLI scripts or commit provisioning artifacts.
-- Use Xcode's debugger only for occasional device-specific diagnosis; normal generation, build, tests, install, launch, and log collection remain scriptable.
+Phone launch and log pull.
 
-## Open uncertainties
+```bash
+export IPHONE_UDID=<from devicectl list devices>
+export PHONE_REMOTE_IOS_BUNDLE_ID=com.davidliao.phoneremote.ios
+./scripts/launch-phone.sh
+./scripts/debug-phone.sh
+```
 
-- **TBD — exact XcodeGen release:** owner: foundation maintainer; blocking ticket: FND-002 follow-up. Until pinned, the fallback generator is the reproducible path.
-- **TBD — production bundle prefix:** owner: project owner; blocking ticket: target-matrix review after Gate A. A local development team is configured for the current physical smoke test, but the placeholder prefix is not a distribution identity.
-- **TBD — final minimum OS versions:** owner: project owner; blocking ticket: target-matrix review after Gate A. The current 18.0/15.0 values are prototype build inputs, not a distribution promise.
+`debug-phone.sh` finds the phone by name (`dliao's iPhone`, override
+`PHONE_REMOTE_DEVICE_NAME`) and copies to `/tmp/phoneremote-phone-debug`.
+`logs-phone.sh` (sysdiagnose) fails with `DiagnoseError error 0` on this toolchain.
 
-## Latest capability probe
+Mac install and logs.
 
-On 2026-09-02, after the owner enabled Developer Mode and restarted, the
-latest `xcrun devicectl list devices` probe saw the target physical iPhone as
-**available (paired)** and `device info ddiServices` reported compatible,
-usable DDI content. Xcode local signing was configured, a target-specific
-signed build installed successfully, and `launch-phone.sh` left the app process
-running. `logs-phone.sh` remains blocked by Xcode 27's generic
-`CoreDeviceCLISupport.DiagnoseError error 0`; a second physical phone was
-unavailable. Simulator runtimes were available for iPhone 17, iPhone 17 Pro,
-iPhone 17 Pro Max, iPhone 17e, and iPhone Air on iOS 27.0. Device identifiers
-are intentionally omitted.
+```bash
+export PHONE_REMOTE_SIGNING=1
+export PHONE_REMOTE_DEVELOPMENT_TEAM=<your team id>
+./scripts/install-mac.sh
+./scripts/debug-mac.sh            # GET /state; pass /health for liveness
+PHONE_REMOTE_LOG_WINDOW=5m ./scripts/logs-mac.sh
+```
+
+`install-mac.sh` replaces and launches `~/Applications/PhoneRemoteMac.app`. Grant
+Accessibility to that copy only, then click Refresh Accessibility. Never open a
+`/tmp` or DerivedData build.
+
+Voice typing talks straight to a local `nemo-speech serve` WebSocket
+(`~/.local/bin/nemo-speech`, Nemotron 0.6b GGUF from the Hugging Face hub cache).
+At launch the Mac app checks `GET /health` on `PHONE_REMOTE_NEMO_PORT` (default
+18766) and spawns the server itself when nothing answers; its output goes to
+`/tmp/phoneremote-nemo-speech.log` and the child is stopped on quit. Punctuation
+comes from Nemotron; there is no LLM cleanup step.
+`PHONE_REMOTE_DEBUG_SERVER=0` disables the Mac debug server.
+
+## CLI versus GUI
+
+Everything above is scriptable. GUI-only steps: Apple ID and team selection in
+Xcode, the iPhone "Trust This Computer" prompt, Developer Mode in Settings, the
+macOS Accessibility toggle, and signing or device registration repair in Xcode.
+Never commit a team ID, identity, or profile.
+
+## Log and observability contract
+
+- `MetricsRecorder` (Shared) is the only foundation logging API. It accepts message types, byte counts, sequence numbers, fixed enums, durations, and rates. It has no field for arbitrary strings.
+- It tracks connection and lifecycle transitions, packet counts by type, sequence gaps, duplicates, retries, acknowledgements, heartbeat releases, audio gaps and duration, motion sample and output rates, and a latency histogram with fixed buckets: 0-4, 5-9, 10-24, 25-49, 50-99, 100-249, 250+ ms.
+- iPhone debug log: `Documents/phoneremote-debug.jsonl` (events) and `Documents/phoneremote-debug-state.json` (latest snapshot). Events cover app init, scanner and camera state, camera diagnostics (`running`, `previewing`, `iso`, `lens`, `zoom`), BLE state, handshake steps, trust saves, reconnect, and push-to-talk press, send, release, and drop. Fields whose key contains `qr`, `secret`, `token`, `key`, `udid`, or `payload` are dropped before writing.
+- Mac debug snapshot (`GET /state`): status, paused, accessibility, Bluetooth state, pairing progress, authenticated flag, offer state, whether a QR is showing, last failure and probe, visible peripheral name, last application message type, audio phase and counters (`audioFrames`, `audioSamples`, `audioMissingChunks`), app path, and paired display names with pair time.
+- No log, snapshot, or metric may ever contain QR text, keys or handshake bytes, typed text, transcripts, audio bytes, or device identifiers.
+- There is no remote analytics sink. A future local file sink must keep bounded retention (default seven days), write only structured fields, and offer a Clear diagnostics action. Uninstalling the app removes persisted diagnostics today.

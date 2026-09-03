@@ -87,7 +87,8 @@ public enum TrackpadLifecycle: Equatable, Sendable {
 }
 
 public struct TrackpadConfiguration: Equatable, Sendable {
-    public var pointerSensitivity: Double
+    public var pointerSensitivityX: Double
+    public var pointerSensitivityY: Double
     public var scrollSensitivity: Double
     public var displayCadenceLimitHz: Double
     public var tapMaximumDuration: TimeInterval
@@ -96,7 +97,8 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     public var dragEnabled: Bool
 
     public init(
-        pointerSensitivity: Double = 1.0,
+        pointerSensitivityX: Double = 1.0,
+        pointerSensitivityY: Double = 1.0,
         scrollSensitivity: Double = 1.0,
         displayCadenceLimitHz: Double = 100,
         tapMaximumDuration: TimeInterval = 0.30,
@@ -104,7 +106,8 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         doubleTapInterval: TimeInterval = 0.35,
         dragEnabled: Bool = false
     ) {
-        self.pointerSensitivity = min(max(pointerSensitivity, 0.05), 10)
+        self.pointerSensitivityX = min(max(pointerSensitivityX, 0.05), 10)
+        self.pointerSensitivityY = min(max(pointerSensitivityY, 0.05), 10)
         self.scrollSensitivity = min(max(scrollSensitivity, 0.05), 10)
         self.displayCadenceLimitHz = min(max(displayCadenceLimitHz, 1), 100)
         self.tapMaximumDuration = min(max(tapMaximumDuration, 0.05), 1)
@@ -150,9 +153,12 @@ public struct TrackpadGestureEngine: Sendable {
 
     public var activeTouchCount: Int { active.count }
 
-    public mutating func setSensitivity(pointer: Double? = nil, scroll: Double? = nil) {
-        if let pointer {
-            configuration.pointerSensitivity = min(max(pointer, 0.05), 10)
+    public mutating func setSensitivity(pointerX: Double? = nil, pointerY: Double? = nil, scroll: Double? = nil) {
+        if let pointerX {
+            configuration.pointerSensitivityX = min(max(pointerX, 0.05), 10)
+        }
+        if let pointerY {
+            configuration.pointerSensitivityY = min(max(pointerY, 0.05), 10)
         }
         if let scroll {
             configuration.scrollSensitivity = min(max(scroll, 0.05), 10)
@@ -250,9 +256,9 @@ public struct TrackpadGestureEngine: Sendable {
 
             switch mode {
             case .dragging:
-                outputs.append(contentsOf: emitPointer(delta * configuration.pointerSensitivity, at: timestamp))
+                outputs.append(contentsOf: emitPointer(scaledPointer(delta), at: timestamp))
             case .oneFinger where active.count == 1:
-                outputs.append(contentsOf: emitPointer(delta * configuration.pointerSensitivity, at: timestamp))
+                outputs.append(contentsOf: emitPointer(scaledPointer(delta), at: timestamp))
             case .twoFinger where active.count >= 2:
                 // Vertical scrolling is the only two-finger continuous
                 // gesture in the MVP.  Horizontal movement is intentionally
@@ -336,6 +342,13 @@ public struct TrackpadGestureEngine: Sendable {
         guard !values.isEmpty else { return .zero }
         let sum = values.values.reduce(into: TrackpadPoint.zero) { $0 = $0 + $1.current }
         return sum / Double(values.count)
+    }
+
+    private func scaledPointer(_ delta: TrackpadPoint) -> TrackpadPoint {
+        TrackpadPoint(
+            x: delta.x * configuration.pointerSensitivityX,
+            y: delta.y * configuration.pointerSensitivityY
+        )
     }
 
     private mutating func emitPointer(_ delta: TrackpadPoint, at timestamp: TimeInterval) -> [TrackpadOutput] {

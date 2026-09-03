@@ -1,240 +1,190 @@
-# Reusable implementation learnings
+# Worker learnings
 
-This file is for future coding workers. It records decisions and failure modes
-that are easy to miss when resuming the prototype. It contains no credentials,
-device identifiers, QR values, keys, typed text, transcripts, or audio bytes.
+Rules that stop known regressions. Read before touching generation, transport,
+pairing, input safety, or audio. No credentials, device identifiers, QR values, keys,
+text, transcripts, or audio bytes here. Pins and commands: `docs/development_environment.md`.
 
 ## Toolchain and project generation
 
-- Xcode 27 requires scheme-based `xcodebuild` invocations when
-  `-derivedDataPath` is supplied. Use `-scheme`, not a bare `-target`, in the
-  normal scripts.
-- XcodeGen is not guaranteed to be installed. `scripts/generate.sh` prefers
-  XcodeGen and otherwise runs the checked-in deterministic
-  `scripts/generate_fallback.py`. The fallback discovers Swift files below
-  `Shared`, `iPhone`, `Mac`, and `Tests` automatically.
-- The fallback generator removes and recreates the ignored `.xcodeproj`; run
-  `scripts/generate.sh` sequentially when multiple checks are in flight. Two
-  concurrent generators can race while recreating `xcshareddata/xcschemes`.
-- Keep repository-relative file references in the fallback project. Giving a
-  group both a physical path and a repository-relative file path creates
-  duplicated paths such as `Shared/Shared/Protocol/...`.
-- Xcode 27 can default a framework target to a newer SDK deployment version
-  than the apps. Explicitly set the shared framework to iOS 18/macOS 15 so it
-  can link into both app targets.
-- Application test bundles need both `ENABLE_TESTABILITY=YES` on the app
-  target and an app `TEST_HOST`/`BUNDLE_LOADER`; otherwise the tests may compile
-  but fail to link with undefined app symbols.
-- Custom app plists must include `CFBundleExecutable=$(EXECUTABLE_NAME)`. A
-  simulator can build an app without it, but installation/test launch fails
-  with `MissingBundleExecutable`.
-- The current reproducible loop is:
+- `project.yml` is the source of truth. `scripts/generate.sh` uses XcodeGen when
+  installed, else `scripts/generate_fallback.py`. Both must stay in sync. Why: two
+  generators, one project.
+- The fallback finds Swift files under `Shared`, `iPhone`, `Mac`, and `Tests` by itself.
+  Do not hand-list files.
+- Run `generate.sh` one at a time. Why: it deletes and recreates `.xcodeproj`, and two
+  runs race on `xcshareddata/xcschemes`.
+- Keep fallback file references repository-relative. A group with both a physical path
+  and a repo-relative file path yields `Shared/Shared/...` duplicates.
+- Only the fallback generator honors `PHONE_REMOTE_BUNDLE_PREFIX`, and only for the
+  shared framework and iOS app. The macOS target and test bundles stay
+  `com.example.phoneremote.*`. Why: XcodeGen reads `project.yml`, which hard-codes the
+  prefix.
+- Use `-scheme`, never a bare `-target`, whenever `-derivedDataPath` is passed. Why:
+  Xcode 27 requirement.
+- The shared framework pins iOS 18.0 and macOS 15.0 explicitly. Why: Xcode 27 otherwise
+  defaults a framework to a newer SDK than the apps and it will not link.
+- App test bundles need `ENABLE_TESTABILITY=YES` on the app plus `TEST_HOST` and
+  `BUNDLE_LOADER`. Why: they compile but fail to link app symbols otherwise.
+- Custom plists must set `CFBundleExecutable=$(EXECUTABLE_NAME)`. Why: simulator install
+  fails with `MissingBundleExecutable`.
+- Declare every usage description before the app creates the adapter: camera, Bluetooth,
+  motion, microphone on iPhone; Accessibility and Bluetooth on Mac. Why: a missing
+  `NSBluetoothAlwaysUsageDescription` killed the macOS test host before XCTest could
+  attach.
+- The embedded framework uses an `@rpath/...` install name and the apps carry
+  `@executable_path/Frameworks` in `LD_RUNPATH_SEARCH_PATHS`. Why: the app launches then
+  dies in the dynamic loader without it.
+- Device and installed-Mac builds use `ENABLE_DEBUG_DYLIB=NO`. Why: the debug dylib is
+  an extra unsigned binary; iOS kills the app and macOS never trusts it for
+  Accessibility.
+- Generated module names are `PhoneRemote_iOS` and `PhoneRemote_macOS`. XCTest imports
+  must match exactly.
 
-  ```sh
-  ./scripts/generate.sh
-  ./scripts/build.sh
-  PHONE_REMOTE_RUN_IOS_TESTS=1 ./scripts/test.sh
-  ```
+## Signing and install
 
-  `scripts/test.sh` chooses the first available iPhone simulator by UUID. Set
-  `PHONE_REMOTE_IOS_DESTINATION` when a specific simulator is required.
-- `scripts/fuzz-protocol.sh` runs the fixed 2,000-input decoder corpus used by
-  PRO-002. Keep it bounded and deterministic so failures are reproducible and
-  no untrusted bytes need to enter logs.
-- The Mac app's menu-bar UI should call `MacLifecycleCoordinator` and
-  `SafeInputInjector` directly; do not add a second pause/status boolean. The
-  iPhone UI can expose local gestures while dropping feature output until the
-  authenticated BLE coordinator is connected.
-- If an app instantiates Core Bluetooth, camera, motion, or microphone adapters
-  during UI setup, declare the matching usage descriptions first. Missing
-  `NSBluetoothAlwaysUsageDescription` caused the macOS test host to terminate
-  before XCTest could connect; missing camera/motion strings would fail later
-  on a physical iPhone.
-- `AXIsProcessTrusted()` stays false for adhoc linker-signed Debug Mac builds
-  that use Xcode's debug dylib stub, even when Accessibility is toggled on.
-  Build the Mac app with `ENABLE_DEBUG_DYLIB=NO`, sign it with a local Apple
-  Development identity, and run it from a stable path such as `~/Applications`.
-  Use `./scripts/install-mac.sh` for that install/launch. Never `open` a `/tmp`
-  or DerivedData `PhoneRemoteMac.app`; macOS grants Accessibility to that exact
-  path and signature, so a throwaway copy looks enabled while the live app is
-  still denied.
-- Keep BLE readiness separate from authenticated readiness in the UI. The Mac
-  central may scan at launch, while the iPhone peripheral starts advertising
-  only from the scanner's one-confirmation callback; neither state authorizes
-  input until the pairing handshake completes.
-- The iPhone will not appear in macOS Bluetooth Settings. Pairing is in-app
-  only: the Mac shows a QR, the phone scans and confirms, then the phone
-  advertises the custom service and the Mac auto-connects. There is no
-  pairable-device picker.
-- Core Bluetooth advertisement dictionaries must use `CBUUID`, not Foundation
-  `UUID`. Passing `UUID` makes advertising fail or omit the service, so a Mac
-  scanning for the custom service never sees the phone.
-- The Mac companion hosts a loopback-only debug HTTP server on
-  `127.0.0.1:18765` (`GET /state`, `GET /health`). It writes
-  `/tmp/phoneremote-mac-debug.json`. Use `./scripts/debug-mac.sh`. The payload
-  has pairing/BLE status and display names only; never QR text, keys, or
-  device identifiers. Set `PHONE_REMOTE_DEBUG_SERVER=0` to disable.
-- Guard `stopScan`, `stopAdvertising`, and `removeAllServices` on `.poweredOn`.
-  Calling them during manager init logs `API MISUSE` and can confuse later
-  state. After an unpaired connect/discovery failure, the Mac must resume
-  scanning; staying in `disconnected` hides a later advertising phone.
-- Physical install signing is opt-in: `install-phone.sh` requires
-  `PHONE_REMOTE_SIGNING=1` plus a local `PHONE_REMOTE_DEVELOPMENT_TEAM` and
-  never stores those values. Build-only probes remain signing-disabled.
-- For a physical signed build, pass the phone as the explicit Xcode
-  destination (`platform=iOS,id=<local-only>`). A generic device build can
-  produce a valid profile for a different paired phone and then fail at
-  install; the repeatable install script now selects the supplied destination.
-- Embedded shared frameworks must use an `@rpath/...` install name, and the
-  application executable/debug dylib must include `@executable_path/Frameworks`
-  in `LD_RUNPATH_SEARCH_PATHS`. `devicectl` can report a successful launch
-  request even when the process immediately dies; use `--console` or a delayed
-  process query to catch dynamic-loader failures.
+- Signing is opt-in. `install-phone.sh` and `install-mac.sh` need
+  `PHONE_REMOTE_SIGNING=1` plus `PHONE_REMOTE_DEVELOPMENT_TEAM` from the environment.
+  Never write those values into the repo.
+- Signed phone builds pass the phone as the explicit destination
+  `platform=iOS,id=<udid>`. Why: a generic device build can pick a profile for a
+  different phone and fail at install.
+- Build device apps outside the repo (`PHONE_REMOTE_DERIVED_DATA=/tmp/...`). Why: the
+  repo is in iCloud Documents and codesign fails on Finder metadata there.
+- The Mac app you click must be `~/Applications/PhoneRemoteMac.app`, installed and
+  signed with a local Apple Development identity by `install-mac.sh`. Never `open` a
+  `/tmp` or DerivedData copy. Why: macOS grants Accessibility to one exact path and
+  signature; adhoc or throwaway copies report `AXIsProcessTrusted()` false or look
+  granted while the real app stays denied.
+- `security find-identity -v -p codesigning` is the quick check for a local identity.
+  Create or select it in Xcode Accounts. Never manufacture signing material. Signing a
+  built app in place when CLI `xcodebuild` sees no account is a recovery probe only;
+  keep the automatic path in the scripts.
 
 ## Swift 6 and framework boundaries
 
-- Static collections of protocol/GATT value types must use `Sendable` value
-  types under complete concurrency checking. Add conformances only to immutable
-  enums/structs; do not paper over mutable state with `@unchecked Sendable`.
-- Imported ApplicationServices globals such as the AX prompt key can trigger
-  strict-concurrency diagnostics. A literal CFDictionary key avoids capturing
-  a mutable imported global while keeping the permission request
-  Accessibility-only.
-- Keep shared files transport-neutral. Core Bluetooth, Core Graphics, Core
-  Motion, AVFoundation, and Speech types belong in app adapters; shared code
-  exchanges `Data`, UUIDs, fixed-width values, and protocol-owned enums.
-- The generated app module names are `PhoneRemote_iOS` and
-  `PhoneRemote_macOS`; XCTest imports must match those names exactly.
+- Static collections of protocol or GATT value types must be `Sendable`. Add conformance
+  only to immutable enums and structs. Never use `@unchecked Sendable` to hide mutable
+  state.
+- Use a literal CFDictionary key (`"AXTrustedCheckOptionPrompt"`) for the Accessibility
+  prompt. Why: the imported global trips strict concurrency.
+- Shared code is transport-neutral. Core Bluetooth, Core Graphics, Core Motion,
+  AVFoundation, and transcription types live in app adapters. Shared code exchanges
+  `Data`, UUIDs, fixed-width values, and protocol-owned enums.
+- Callbacks that arrive off the main actor hop with `Task { @MainActor in ... }`. The
+  motion sink already delivers on the main queue, so it uses `MainActor.assumeIsolated`.
+  Why: an extra Task hop per sample queued up and the cursor lagged the longer the
+  clutch was held.
 
 ## Protocol, BLE, and pairing invariants
 
-- The v1 protocol envelope is capped at 8,192 bytes; bounded byte fields are
-  capped at 2,048 bytes. Validate declared array counts before reserving or
-  allocating storage.
-- BLE framing uses a 16-byte header and must work at the 20-byte ATT-safe
-  minimum. Keep data and control characteristics separate, bound queues and
-  reassembly, and clear all partial/retry state on disconnect.
-- BLE readiness (service discovery, characteristic validation, notifications)
-  is not authenticated-session readiness. Feature traffic must wait for the
-  X25519/HKDF/AEAD handshake to complete.
-- Pairing QR text is canonical bounded binary with unpadded Base64URL and a
-  `prqr1.` tag. Tokens are one-active, single-use, and expire no later than
-  120 seconds. Inject a clock into both the token store and its UI controller
-  so expiry tests are deterministic.
-- Reject all-zero key/secret material, modified transcripts/ciphertexts, wrong
-  peer identities, replayed envelopes, and sequence rollback. Trusted
-  reconnects use fresh ephemeral keys and a new authenticated session; a BLE
-  identifier or display name is never sufficient.
-- Never put payload bytes, QR material, keys, text, transcripts, or audio in
-  metrics/logs. Metrics should record only message types, counts, sizes,
-  sequence outcomes, timing buckets, and lifecycle states.
+- Protocol envelope cap is 8,192 bytes. Bounded byte fields cap at 2,048 bytes. Validate
+  declared counts before reserving storage.
+- BLE framing has a 16-byte header and must work at the 20-byte ATT minimum. Data and
+  control characteristics stay separate. Queues and reassembly are bounded. Clear all
+  partial and retry state on disconnect.
+- Advertisement dictionaries use `CBUUID`, never Foundation `UUID`. Why: advertising
+  silently omits the service and the Mac never sees the phone.
+- Guard `stopScan`, `stopAdvertising`, and `removeAllServices` on `.poweredOn`. Why:
+  calling them during init logs `API MISUSE` and corrupts later state.
+- After an unpaired connect or discovery failure the Mac must resume scanning. Why:
+  staying `disconnected` hides a later advertising phone.
+- The iPhone never appears in macOS Bluetooth Settings. Pairing is in-app only: Mac
+  shows QR, phone scans and confirms, phone advertises the custom service, Mac
+  auto-connects.
+- BLE readiness (service discovery, characteristic validation, notifications) is not
+  authenticated readiness. Feature traffic waits for the X25519/HKDF/AEAD handshake.
+  Keep the two states separate in code and in the UI.
+- QR text is canonical bounded binary, unpadded Base64URL, with a `prqr1.` tag. Tokens
+  are one-active, single-use, and expire within 120 seconds. Both the token store and
+  its UI controller take an injected clock. Why: deterministic expiry tests.
+- The QR secret and the Mac ephemeral private key never leave the Mac. The phone's hello
+  carries only the pairing ID and public handshake material. The Mac consumes the offer
+  atomically by pairing ID. No trust record is written until the authenticated finish
+  succeeds.
+- The QR pairing ID is the trust-record device ID on both sides. A Core Bluetooth
+  identifier or display name is never identity.
+- Trusted reconnect reuses the pairing ID and persisted identity keys with a fresh
+  ephemeral handshake and no QR. It still yields a new authenticated session.
+- Reject all-zero key material, altered transcripts or ciphertexts, wrong peer
+  identities, replayed envelopes, and sequence rollback.
+- First-pairing order: scanner confirm, foreground-only advertising, BLE service ready,
+  framed control `PairingClientHello`, Mac offer consumption and server hello, client
+  finish, trust-record write, paired UI.
+- The Mac pairing progress model is presentation-only (`scanning`, `connecting`,
+  `authenticating`, `paired`). Central transport state and session state stay separate.
+  Why: a transient disconnect must not leave a false paired indicator.
+- On macOS, `SecItemCopyMatching` rejects `kSecMatchLimitAll` combined with
+  `kSecReturnData`. List with `kSecReturnAttributes`, validate each account UUID, then
+  fetch each value with a single-record query. An attribute without a decodable value is
+  inconsistent state: fail closed, never fall back to an unprotected store.
 
 ## Safety and feature boundaries
 
-- Input policy is fail-closed: authentication, active state, unlocked/awake
-  Mac, logged-in user, and explicit Accessibility `.granted` are all required.
-  Unknown Accessibility state is not controllable.
-- Every unsafe transition, disconnect, watchdog expiry, pause, startup, and
-  termination funnels through one idempotent `releaseAllInputs` path. The
-  watchdog is 500 ms and reliable actions have finite retry attempts.
-- Keep the Mac command allowlist explicit. The shared protocol represents
-  hotkeys atomically; long-held modifier messages are intentionally not added
-  until disconnect fault testing proves safe.
-- Trackpad zero-distance samples should not emit zero pointer/scroll packets.
-  A bounded tap travel threshold prevents a meaningful pointer movement from
-  becoming a click; the current default is six logical points.
-- Push-to-talk activation is local-only. Backgrounding, interruption, route
-  changes, cancellation, or permission loss stop capture and reset chunking.
-  Audio chunks are 16 kHz mono signed 16-bit PCM with explicit sequence/sample
-  metadata; Mac reassembly measures gaps/duplicates rather than hiding them.
-- Transcript insertion is an explicit local action routed back through the
-  existing safe text-input path; receiving a transcript never injects text by
-  itself.
+- Input policy is fail-closed. Required together: authenticated session, active state,
+  unlocked and awake Mac, logged-in user, Accessibility exactly `.granted`. `unknown`
+  Accessibility is not controllable.
+- Every unsafe transition (disconnect, watchdog expiry, pause, startup, termination)
+  funnels through one idempotent `releaseAllInputs`. The heartbeat watchdog is 500 ms.
+  Reliable actions have finite retries.
+- The Mac menu-bar UI calls `MacLifecycleCoordinator` and `SafeInputInjector` directly.
+  Do not add a second pause or status boolean.
+- The hotkey allowlist is explicit and atomic. Long-held modifier messages stay out
+  until disconnect fault testing proves them safe.
+- Zero-distance trackpad samples emit no pointer or scroll packets. Tap travel threshold
+  is 6 logical points. Why: a real drag must not become a click.
+- Motion pointer deltas map onto the existing Mac pointer injector. Do not add a second
+  mouse path.
+- Push-to-talk is local-only. Backgrounding, interruption, route change, cancel, or
+  permission loss stops capture and resets chunking.
+- Audio capture is 16 kHz mono Int16 with explicit sequence and sample metadata. The
+  wire format is `VoiceStreamFrame` with the IMA ADPCM codec. The Mac decodes to PCM16,
+  measures gaps and duplicates, and never hides them.
+- Transcription runs locally through `NemotronRealtime.swift`, a Swift WebSocket client
+  for `nemo-speech serve`. Neither side prints transcripts or audio bytes to logs.
+- Transcript insertion is an explicit local action through the existing safe text-input
+  path. Receiving a transcript never injects text by itself.
+- The scanner never stops Bluetooth, and any advertising pause waits for the camera's
+  `onStarted` (`Tests/iOS/PairingScannerTests.swift`). The scanner session is
+  video-only; push-to-talk owns the audio session.
+
+## Observability boundaries
+
+- `MetricsRecorder` is the only shared logging API. It records message types, counts,
+  sizes, sequence outcomes, latency buckets, and lifecycle states. It has no field for
+  strings, text, keys, or bytes. Keep it that way.
+- Never log payload bytes, QR material, keys, typed text, transcripts, audio, or device
+  identifiers anywhere, including the Mac debug snapshot and the iPhone debug log.
+- `IPhoneDebugLog.emit` drops any field whose key contains `qr`, `secret`, `token`,
+  `key`, `udid`, or `payload`. Do not route around it.
+- The Mac debug HTTP server is loopback-only. Default port 18765, next ports on bind
+  failure. The bound port is written to `/tmp/phoneremote-mac-debug.json`;
+  `debug-mac.sh` reads it from there. `PHONE_REMOTE_DEBUG_SERVER=0` disables it.
 
 ## Testing and hardware evidence
 
-- The fastest deterministic check is `PhoneRemoteSharedTests`; it exercises
-  protocol, framing, transport, observability, pairing, and encrypted
-  envelope/framing integration without Apple hardware.
-- Current automated evidence is 24 shared tests, 19 macOS tests, and 17 iOS
-  simulator tests, all passing. These prove code paths, not radio performance
-  or real input/audio behavior.
-- macOS XCTest may print `com.apple.linkd.autoShortcut` service warnings in
-  the host environment while still passing; distinguish those warnings from
-  actual test failures.
-- The macOS app can be smoke-launched from a built `.app` with `open -n`; the
-  read-only `scripts/logs-mac.sh` probe then exits 0. Unified-log output may
-  include unrelated CoreSpotlight/XPC noise, so filter by the Phone Remote
-  process and do not treat those notices as product failures automatically.
-- After the owner enabled Developer Mode and restarted, the latest read-only
-  probe sees the target physical iPhone as `available (paired)`. A second
-  physical phone is unavailable. USB visibility is not install/launch
-  evidence.
-  Signed install and launch are now verified; Gate A remains blocked only by
-  iPhone diagnostics tooling, while Gates B–F remain `NOT RUN` pending camera,
-  Accessibility, Bluetooth, motion, microphone, and Speech runs.
-- A bounded unsigned `install-phone.sh` probe separates source/build readiness
-  from device readiness: the physical SDK build passed, while
-  `devicectl device install app` failed to mount the DDI (CoreDevice 12040)
-  because the phone was locked. Unlock the phone and configure local signing
-  before retrying installation; Developer Mode has now been enabled by the
-  owner.
-- `devicectl list devices` becoming `available (paired)` and `device info
-  details` reporting Developer Mode Enabled still do not prove DDI readiness.
-  Check `device info ddiServices` while the phone remains unlocked on-screen;
-  a phone that has only been unlocked once since boot can still return
-  CoreDevice 12040 with a locked-device recovery reason.
-- A real-device install also needs a local Apple development certificate/team.
-  `security find-identity -v -p codesigning` is the quickest local check; use
-  Xcode Accounts to create/select the identity and do not manufacture or
-  commit signing material.
-- On this Xcode 27/device-support combination, `devicectl device sysdiagnose`
-  and `scripts/logs-phone.sh` can fail with the generic
-  `CoreDeviceCLISupport.DiagnoseError error 0` even when DDI, install, and
-  launch work. Preserve that as a tooling blocker and do not treat an empty
-  archive as app-log evidence.
-- Do not mark a ticket complete from a compile alone. Record command, target,
-  OS/device class, test count, and any hardware limitation in
-  `docs/implementation_progress.md`; keep the TODO checkbox unchecked until
-  its acceptance criteria and required evidence are actually met.
-
-## Pairing UI and first-session bridge
-
-- A SwiftUI `UIViewRepresentable` that hosts an
-  `AVCaptureVideoPreviewLayer` can be created before SwiftUI assigns its final
-  size. Put the layer in a small UIKit view and set `previewLayer.frame =
-  bounds` in `layoutSubviews`; this makes the physical QR camera feed visible
-  instead of relying on the initial `.zero` frame.
-- The first-pairing runtime path is now: scanner confirmation → foreground
-  peripheral advertising → BLE service/characteristic readiness → framed
-  control `PairingClientHello` → Mac one-time offer consumption and server hello
-  → client finish → trust-record write → paired UI. Keep “BLE ready” visibly
-  distinct from “paired”; discovery or a connected UUID is not authentication.
-- The QR secret and Mac ephemeral private key stay local to the Mac. The phone's
-  hello carries only the pairing ID and public handshake material; the Mac
-  consumes the active offer atomically by pairing ID, and no trust record is
-  written until the authenticated finish succeeds.
-- A local motion sink that only records deltas is not the production path.
-  Core Motion callbacks arrive off the main actor; hop to `@MainActor` before
-  wrapping and sending BLE frames, and map `motionPointerDelta` onto the Mac
-  pointer injector instead of adding a second mouse path.
-- Use the QR pairing ID as the shared first trust-record device ID on both sides.
-  It avoids treating a Core Bluetooth identifier or display name as identity,
-  Trusted reconnect reuses that pairing ID plus the persisted identity keys, with a fresh ephemeral handshake and no QR.
-- The Mac progress model is deliberately presentation-only (`scanning`,
-  `connecting`, `authenticating`, `paired`, etc.). Keep central transport state
-  and authenticated session state separate so a transient disconnect cannot
-  leave a false paired indicator.
-- On macOS, `SecItemCopyMatching` rejects a generic-password query that combines
-  `kSecMatchLimitAll` with `kSecReturnData` (`errSecParam`). To list per-device
-  records, request `kSecReturnAttributes` with the all-items limit, extract and
-  validate each account UUID, then fetch each value with a single-record data
-  query. Treat an attribute without a decodable value as inconsistent state and
-  fail closed; do not silently fall back to an unprotected store.
-- If `xcodebuild` reports no account/profile from a non-GUI CLI session while a
-  local development certificate and a previously device-valid profile are
-  available, a bounded local diagnostic can sign the freshly built app in
-  place, verify it deeply, and install it with `devicectl`. Treat this only as
-  a recovery probe: keep the normal `install-phone.sh` automatic-signing path
-  documented, never copy signing values into the repo, and do not infer feature
-  success from install/launch liveness.
+- `PhoneRemoteSharedTests` is the fastest deterministic check. It covers protocol,
+  framing, transport, observability, pairing, and encrypted envelope integration with no
+  Apple hardware.
+- `scripts/fuzz-protocol.sh` runs the fixed 2,000-input decoder corpus with a fixed
+  seed. Keep it bounded and deterministic. It logs no input bytes.
+- Automated tests prove code paths, not radio, input, camera, or audio behavior on
+  hardware.
+- macOS XCTest may print `com.apple.linkd.autoShortcut` warnings and still pass. Unified
+  log output includes CoreSpotlight and XPC noise. Filter by the Phone Remote process.
+  Neither is a product failure.
+- `devicectl list devices` showing `available (paired)` and Developer Mode enabled do
+  not prove DDI readiness. Check `device info ddiServices` with the phone unlocked
+  on-screen. A locked phone returns CoreDevice 12040.
+- `devicectl` can report a successful launch while the process dies at once. Use
+  `--console` or a delayed process query.
+- `devicectl device sysdiagnose` (`logs-phone.sh`) can fail with
+  `CoreDeviceCLISupport.DiagnoseError error 0` on this Xcode 27 build even when install
+  and launch work. Treat it as a tooling blocker. An empty archive is not app-log
+  evidence. Use `debug-phone.sh` instead.
+- A dead camera or mic feed: open the built-in Apple app first. If it is dead there too,
+  restart the phone. Session health flags cannot tell an app bug from an OS mute; moving
+  `iso` and `lens` values in the debug log prove the sensor is alive.
+- Never mark a ticket done from a compile, install, or launch. Update the ticket row and
+  evidence in `docs/status.md`; hardware gate procedures and results live in
+  `docs/verification/`. A ticket is done only when acceptance criteria and evidence are
+  met.
