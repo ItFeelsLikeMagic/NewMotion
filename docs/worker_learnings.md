@@ -177,15 +177,17 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 
 ## Observability boundaries
 
-- There are two shared observability APIs, and neither can see a payload. Keep it that
-  way.
-- `MetricsRecorder` records message types, counts, sizes, sequence outcomes, latency
-  buckets, and lifecycle states. It has no field for strings, text, keys, or bytes. It
-  is declared but not currently wired to anything in production.
-- `LatencyTracker` records timings and counts only, in microseconds, over a 256-sample
-  rolling window. It is never handed a payload, so nothing typed or said can reach a
-  timing. Probes are registered in `Mac/Debug/MacLatencyProbes.swift` and
-  `iPhone/Debug/PhoneLatency.swift`; see `docs/latency.md`.
+- `LatencyTracker` is the shared observability API. It records timings and counts only,
+  in microseconds, over a 256-sample rolling window. It is never handed a payload, so
+  nothing typed or said can reach a timing. Keep it that way. Probes are registered in
+  `Mac/Debug/MacLatencyProbes.swift` and `iPhone/Debug/PhoneLatency.swift`; see
+  `docs/latency.md`.
+- Watch `refused=`, not the timings. A stage falling behind shows flat timings and a
+  climbing refusal count, because a message that never went out has no duration.
+- A `MetricsRecorder` of counters and fixed latency buckets was written at the start of
+  the project and never wired to anything. It was deleted on 2026-09-04. The jobs it
+  was meant to do are split between `LatencyTracker`, the Mac `/state` snapshot, and
+  the iPhone debug log.
 - Never log payload bytes, QR material, keys, typed text, transcripts, audio, or device
   identifiers anywhere, including the Mac debug snapshot and the iPhone debug log.
 - `IPhoneDebugLog.emit` drops any field whose key contains `qr`, `secret`, `token`,

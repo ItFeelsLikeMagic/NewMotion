@@ -237,15 +237,19 @@ Proceed to a product MVP only if Gates A–F pass on the target Mac/iPhone pair.
 
 ## 8. Instrumentation
 
-Capture locally, without recording input content:
+Capture locally, without recording input content. Built unless noted:
 
-- BLE connection/reconnection timestamps
-- Packet counts by message type
-- Sequence gaps, duplicates, retries, and acknowledgements
-- Round-trip latency histogram
+- Link connection and reconnection, as phone `link` and `reconnect` events
+- Packet counts by message type, as `cursorEvents` and `lastApplicationMessage`
+- Retries and acknowledgements, in `ReliableInputCoordinator`
+- Sequence gaps and duplicates: enforced by the `PairingSession` replay window, but
+  **not counted** for display. Open.
+- Round-trip latency, as `link.rtt`, reported as median, p95 and worst rather than a
+  histogram
 - Heartbeat timeouts and forced input releases
-- Audio chunk gaps and reconstructed duration
-- Motion sample rate and filtered output rate
+- Audio chunk gaps and reconstructed duration, as `audioMissingChunks` and
+  `audioTiming`
+- Motion sample rate and filtered output rate: **not measured**. Open.
 - App lifecycle transitions
 
 Logs must not contain QR secrets, long-term keys, typed text, transcripts, or audio payloads.
