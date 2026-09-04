@@ -29,22 +29,20 @@ struct RemoteKeys {
     let scrubEnabled: Bool
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
-    /// Whole-window and whole-tab keys.  They are reached for far less often
-    /// than the thumb keys, so they take the row a thumb has to stretch for and
-    /// leave the corners to return and delete.  The three that are held and
-    /// dragged sit in the middle, where a thumb lands squarely enough to drag
-    /// from.
-    var chordRow: some View {
-        HStack(spacing: RemoteKeyMetrics.spacing) {
-            chordSlot { titledKey(.newItem) }
-            chordSlot { titledKey(.selectAll) }
-            chordSlot { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
-            chordSlot { TextSelectionKey(send: send) }
-            chordSlot { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
-            chordSlot { titledKey(.newTab) }
-            chordSlot { titledKey(.closeWindow) }
-        }
-    }
+    var newItem: some View { titledKey(.newItem) }
+
+    var selectAll: some View { titledKey(.selectAll) }
+
+    var appSwitcher: some View { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
+
+    /// Hold and drag to pick up text.
+    var select: some View { TextSelectionKey(send: send) }
+
+    var nextTab: some View { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
+
+    var newTab: some View { titledKey(.newTab) }
+
+    var closeWindow: some View { titledKey(.closeWindow) }
 
     var escape: some View { titledKey(.escape) }
 
@@ -69,14 +67,6 @@ struct RemoteKeys {
     /// A key that says what it sends.
     private func titledKey(_ hotkey: RemoteHotkey) -> some View {
         key(hotkey) { Text(hotkey.buttonTitle) }
-    }
-
-    /// One stretched cell of the chord row.  The row is wider than it is tall,
-    /// so its keys take the width they are given rather than a fixed one.
-    private func chordSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity)
-            .frame(height: RemoteKeyMetrics.keyHeight)
     }
 
     private func walkKey(_ title: String, _ modifier: HeldModifier, _ spokenName: String) -> some View {
