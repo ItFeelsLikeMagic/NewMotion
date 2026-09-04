@@ -18,11 +18,36 @@ struct VerticalRemoteLayout<Trackpad: View>: View {
                 .padding(.horizontal, -RemoteKeyMetrics.contentPadding)
 
             VStack(spacing: RemoteKeyMetrics.spacing) {
-                keys.chordRow
+                chordRow
                 thumbClusters
             }
         }
         .padding(RemoteKeyMetrics.contentPadding)
+    }
+
+    /// Whole-window and whole-tab keys.  They are reached for far less often
+    /// than the thumb keys, so they take the row a thumb has to stretch for and
+    /// leave the corners to return and delete.  The three that are held and
+    /// dragged sit in the middle, where a thumb lands squarely enough to drag
+    /// from.
+    private var chordRow: some View {
+        HStack(spacing: RemoteKeyMetrics.spacing) {
+            chordSlot { keys.newItem }
+            chordSlot { keys.selectAll }
+            chordSlot { keys.appSwitcher }
+            chordSlot { keys.select }
+            chordSlot { keys.nextTab }
+            chordSlot { keys.newTab }
+            chordSlot { keys.closeWindow }
+        }
+    }
+
+    /// One stretched cell of the chord row.  The row is wider than it is tall,
+    /// so its keys take the width they are given rather than a fixed one.
+    private func chordSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .frame(height: RemoteKeyMetrics.keyHeight)
     }
 
     private var thumbClusters: some View {

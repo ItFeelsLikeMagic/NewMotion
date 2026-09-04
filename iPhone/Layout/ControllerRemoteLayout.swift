@@ -31,12 +31,22 @@ struct ControllerRemoteLayout<Trackpad: View>: View {
 
     private func keyColumn(width: Double) -> some View {
         VStack(spacing: RemoteKeyMetrics.spacing) {
-            keys.chordRow
+            HStack(spacing: RemoteKeyMetrics.spacing) {
+                slot { keys.newItem }
+                slot { keys.selectAll }
+                slot { keys.nextWindow }
+                slot { keys.deleteLine }
+                slot { keys.nextTab }
+                slot { keys.newTab }
+                slot { keys.closeWindow }
+            }
+            // The two drag keys sit beside the hold bar: sideways, that is the
+            // row the thumb rests on, so a drag starts from where it already is.
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 slot { keys.escape }
-                slot { keys.nextWindow }
+                slot { keys.appSwitcher }
                 slot { keys.returnKey }
-                slot { keys.deleteLine }
+                slot { keys.select }
             }
 
             // The hold bar is the point of the whole column, so it takes every
