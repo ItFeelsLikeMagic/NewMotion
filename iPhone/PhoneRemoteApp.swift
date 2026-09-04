@@ -244,7 +244,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { audioController.routeChanged() }
             }
         ]
-        motionSession.updateFilter(MotionFilterConfiguration(sensitivity: airMouseSensitivity))
+        motionSession.updateFilter(motionConfiguration)
         refreshAirMouse()
         pushToTalk.setEditEnabled(spokenEditEnabled)
         IPhoneDebugLog.emit("app_init", [
@@ -419,6 +419,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             airMouseStatus = "Air mouse starts on the trackpad"
             return
         }
+        // The screen may have turned since the last hold, and the tilt axis
+        // turns with it.
+        motionSession.updateFilter(motionConfiguration)
         switch motionSession.setClutchHeld(true) {
         case .started:
             airMouseStatus = "Air mouse active"
@@ -487,7 +490,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     func setAirMouseSensitivity(_ value: Double) {
         airMouseSensitivity = value
         UserDefaults.standard.set(value, forKey: "airMouseSensitivity")
-        motionSession.updateFilter(MotionFilterConfiguration(sensitivity: value))
+        motionSession.updateFilter(motionConfiguration)
+    }
+
+    /// Sensitivity from the setting, tilt axis from the way the screen faces
+    /// right now.
+    private var motionConfiguration: MotionFilterConfiguration {
+        let scene = UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first
+        return MotionFilterConfiguration(
+            sensitivity: airMouseSensitivity,
+            screenOrientation: MotionScreenOrientation(scene?.effectiveGeometry.interfaceOrientation)
+        )
     }
 
     private func handleLinkState(_ state: RemoteLinkState) {
