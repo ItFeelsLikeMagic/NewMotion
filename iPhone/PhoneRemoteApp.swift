@@ -1286,13 +1286,21 @@ private struct RemoteControlScreen: View {
     private var layout: some View {
         switch model.layoutMode {
         case .vertical:
-            VerticalRemoteLayout(pushToTalk: model.pushToTalk, keys: keys) { trackpad }
+            VerticalRemoteLayout(pushToTalk: model.pushToTalk, keys: keys) {
+                trackpad
+            } controls: {
+                trackpadControls
+            }
         case .controller:
             ControllerRemoteLayout(
                 pushToTalk: model.pushToTalk,
                 keys: keys,
                 mirrored: model.mirrorHorizontalLayout
-            ) { trackpad }
+            ) {
+                trackpad
+            } controls: {
+                trackpadControls
+            }
         }
     }
 
@@ -1330,27 +1338,29 @@ private struct RemoteControlScreen: View {
                 .foregroundStyle(.secondary)
                 .allowsHitTesting(false)
         }
-        // Floated over the corners rather than given slots in the pad, so they
-        // cost no height.
-        .overlay(alignment: .topLeading) {
+    }
+
+    /// The buttons that float over the trackpad's corners rather than taking
+    /// slots in the pad, so they cost no height.  Handed to the layout apart
+    /// from the surface, because a layout may run the surface under the safe
+    /// area while these have to stay clear of it.
+    private var trackpadControls: some View {
+        ZStack {
             SettingsButton { isSettingsShowing = true }
-                .padding(8)
-        }
-        .overlay(alignment: .bottomTrailing) {
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 LayoutToggleButton(mode: model.layoutMode) {
                     model.setLayoutMode(model.layoutMode.next)
                 }
                 KeyboardToggleButton(isShowing: $isKeyboardShowing)
             }
-            .padding(8)
-        }
-        // Centred in the same row, where either thumb can reach it without
-        // covering the keyboard button.
-        .overlay(alignment: .bottom) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            // Centred in the same row, where either thumb can reach it without
+            // covering the keyboard button.
             ArrowPadKey(send: { model.sendHotkey($0) })
-                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        .padding(8)
     }
 }
 

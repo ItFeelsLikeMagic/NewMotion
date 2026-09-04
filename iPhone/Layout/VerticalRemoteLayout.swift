@@ -4,14 +4,16 @@ import SwiftUI
 /// The upright layout: trackpad on top, keys under both thumbs.  Each cluster
 /// keeps its frequent keys in the column nearest the hold bar, so the same
 /// reach finds the same kind of key whichever hand holds the phone.
-struct VerticalRemoteLayout<Trackpad: View>: View {
+struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     @ObservedObject var pushToTalk: PushToTalkController
     let keys: RemoteKeys
     @ViewBuilder let trackpad: Trackpad
+    @ViewBuilder let controls: Controls
 
     var body: some View {
         VStack(spacing: 12) {
             trackpad
+                .overlay { controls }
                 // The scroll strips are the thing a thumb reaches for without
                 // looking, so they run to the side of the screen rather than
                 // stopping short of it and leaving a dead margin.
