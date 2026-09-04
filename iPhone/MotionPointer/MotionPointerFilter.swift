@@ -99,6 +99,30 @@ public struct MotionPointerDelta: Equatable, Sendable {
     }
 }
 
+/// Which edge of the phone the screen treats as up.  Turning about the screen
+/// normal is horizontal whichever way the phone is held; which body axis the
+/// vertical tilt happens about depends on this.
+public enum MotionScreenOrientation: Equatable, Sendable {
+    case portrait
+    /// The top edge of the phone is on the right.
+    case landscapeLeft
+    /// The top edge of the phone is on the left.
+    case landscapeRight
+
+    /// Pointer motion for a body-frame rotation, in screen axes.  Both signs
+    /// are chosen so pointing the phone up/right moves the Mac cursor up/right
+    /// (CGEvent +Y is down).
+    func pointerMotion(for rotation: MotionVector3) -> MotionVector3 {
+        let vertical: Double
+        switch self {
+        case .portrait: vertical = -rotation.x
+        case .landscapeLeft: vertical = -rotation.y
+        case .landscapeRight: vertical = rotation.y
+        }
+        return MotionVector3(x: -rotation.z, y: vertical, z: 0)
+    }
+}
+
 /// Per-sample rotation at 100 Hz: a slow 5 deg/s wrist turn is about 0.0009 rad
 /// per sample, so the dead zone must stay well under that or slow aiming
 /// never registers.  Gain follows a curve around `accelerationReference`: below
@@ -117,6 +141,7 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
     public var maxOutputPerSample: Double
     public var maximumSampleGap: TimeInterval
     public var maximumRotationPerSample: Double
+    public var screenOrientation: MotionScreenOrientation
 
     public init(
         sensitivity: Double = 2_400,
@@ -127,7 +152,8 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
         accelerationScale: Double = 1.0,
         maxOutputPerSample: Double = 400,
         maximumSampleGap: TimeInterval = 0.20,
-        maximumRotationPerSample: Double = 1.5
+        maximumRotationPerSample: Double = 1.5,
+        screenOrientation: MotionScreenOrientation = .portrait
     ) {
         self.sensitivity = min(max(sensitivity, 0), 8_000)
         self.deadZoneRadians = min(max(deadZoneRadians, 0), 0.25)
@@ -138,6 +164,7 @@ public struct MotionFilterConfiguration: Equatable, Sendable {
         self.maxOutputPerSample = min(max(maxOutputPerSample, 1), 1_000)
         self.maximumSampleGap = min(max(maximumSampleGap, 0.02), 2)
         self.maximumRotationPerSample = min(max(maximumRotationPerSample, 0.05), Double.pi)
+        self.screenOrientation = screenOrientation
     }
 }
 
@@ -159,7 +186,10 @@ public struct MotionPointerFilter: Sendable {
         self.configuration = configuration
     }
 
+    /// The same configuration again is a no-op, so a caller can re-apply it
+    /// whenever it might have changed without breaking a hold in progress.
     public mutating func updateConfiguration(_ configuration: MotionFilterConfiguration) {
+        guard configuration != self.configuration else { return }
         self.configuration = configuration
         smoothedDelta = .zero
     }
@@ -225,10 +255,7 @@ public struct MotionPointerFilter: Sendable {
             return nil
         }
 
-        // Pitch (x) drives vertical cursor motion. Yaw (z) drives horizontal.
-        // Both signs are flipped so pointing the phone up/right moves the
-        // Mac cursor up/right (CGEvent +Y is down).
-        let raw = MotionVector3(x: -rotation.z, y: -rotation.x, z: 0)
+        let raw = configuration.screenOrientation.pointerMotion(for: rotation)
         let deadZoned = MotionVector3(
             x: applyDeadZone(raw.x),
             y: applyDeadZone(raw.y),
@@ -276,3 +303,19 @@ public struct MotionPointerFilter: Sendable {
 public protocol MotionPointerOutputSink: AnyObject {
     func send(_ delta: MotionPointerDelta)
 }
+
+#if os(iOS)
+import UIKit
+
+extension MotionScreenOrientation {
+    /// Anything the screen is not showing sideways, including an unknown
+    /// orientation, counts as upright.
+    public init(_ orientation: UIInterfaceOrientation?) {
+        switch orientation {
+        case .landscapeLeft: self = .landscapeLeft
+        case .landscapeRight: self = .landscapeRight
+        default: self = .portrait
+        }
+    }
+}
+#endif
