@@ -15,6 +15,23 @@ public enum PushToTalkZone: CaseIterable, Sendable {
     var isLeading: Bool { self == .cancelLeading || self == .editLeading }
 }
 
+/// Which sides of the screen carry drag targets.  Upright, the hold bar is in
+/// the middle and either thumb may be on it, so both sides do; sideways, only
+/// the side the hold bar is on, so the thumb never has to cross the trackpad.
+enum PushToTalkZoneSides: Sendable {
+    case both
+    case leading
+    case trailing
+
+    func includes(_ zone: PushToTalkZone) -> Bool {
+        switch self {
+        case .both: return true
+        case .leading: return zone.isLeading
+        case .trailing: return !zone.isLeading
+        }
+    }
+}
+
 /// The drag targets, visible only while a hold is in progress.  The cancel
 /// circles are centred on the bottom corners, so a quarter of each shows; the
 /// edit circles are centred on the side edges above them, showing a half.  They
@@ -27,21 +44,21 @@ struct PushToTalkDragZones: View {
     private static let editBottomInset: Double = 150
 
     @ObservedObject var controller: PushToTalkController
+    let sides: PushToTalkZoneSides
 
     var body: some View {
         ZStack {
-            zone(.cancelLeading)
-            zone(.cancelTrailing)
-            if controller.editEnabled {
-                zone(.editLeading)
-                zone(.editTrailing)
-            }
+            ForEach(shownZones, id: \.self) { zone($0) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
         .opacity(controller.isHolding ? 1 : 0)
         .animation(.easeOut(duration: 0.12), value: controller.isHolding)
         .animation(.easeOut(duration: 0.12), value: controller.armedZone)
+    }
+
+    private var shownZones: [PushToTalkZone] {
+        PushToTalkZone.allCases.filter { sides.includes($0) && (!$0.isEdit || controller.editEnabled) }
     }
 
     private func zone(_ zone: PushToTalkZone) -> some View {
@@ -74,6 +91,8 @@ struct PushToTalkDragZones: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
             controller.setZoneFrame(zone, frame)
         }
+        // A target that has left the screen must stop catching the finger.
+        .onDisappear { controller.setZoneFrame(zone, .zero) }
         // Negative padding rather than an offset: it moves the circle in
         // layout, so the frame it reports is where the finger will find it.
         .padding(zone.isLeading ? .leading : .trailing, -diameter / 2)

@@ -37,6 +37,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
     @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
     @Published var spokenEditEnabled = UserDefaults.standard.bool(forKey: "spokenEditEnabled")
+    @Published var layoutMode = RemoteLayoutMode(
+        rawValue: UserDefaults.standard.string(forKey: "remoteLayoutMode") ?? ""
+    ) ?? .vertical
+    @Published var mirrorHorizontalLayout = UserDefaults.standard.bool(forKey: "mirrorHorizontalLayout")
     @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
     @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
     @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
@@ -425,6 +429,19 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         case .failed:
             airMouseStatus = "Air mouse could not start"
         }
+    }
+
+    /// The layout decides which way the screen faces, so picking one turns the
+    /// phone rather than waiting for the hand to.
+    func setLayoutMode(_ mode: RemoteLayoutMode) {
+        layoutMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "remoteLayoutMode")
+        InterfaceOrientationLock.apply(mode.orientations)
+    }
+
+    func setMirrorHorizontalLayout(_ enabled: Bool) {
+        mirrorHorizontalLayout = enabled
+        UserDefaults.standard.set(enabled, forKey: "mirrorHorizontalLayout")
     }
 
     func setEdgeScrollEnabled(_ enabled: Bool) {
@@ -1120,164 +1137,11 @@ extension RemoteHotkey {
     }
 }
 
-/// The hotkeys that sit beside the trackpad.  They are the same allowlisted
-/// atomic actions the protocol already carries; no key script is possible.
-/// The key pad that flanks the hold bar.  Two 2x2 clusters, one under each
-/// thumb, with the hold bar filling the middle at their full height.
-enum RemoteKeyMetrics {
-    static let keyWidth: Double = 48
-    static let keyHeight: Double = 46
-    static let spacing: Double = 8
-    static let clusterWidth = keyWidth * 2 + spacing
-    static let clusterHeight = keyHeight * 2 + spacing
-}
-
-/// Each cluster keeps its frequent keys in the column nearest the hold bar, so
-/// the same reach finds the same kind of key whichever hand holds the phone.
-/// The keys are the same allowlisted atomic actions the protocol already
-/// carries; no key script is possible.
-private struct RemoteKeyPad: View {
-    @ObservedObject var pushToTalk: PushToTalkController
-    let send: (RemoteHotkey) -> Void
-    let walkSensitivity: Double
-    let walk: (TabWalkPhase, HeldModifier) -> Void
-    let scrubEnabled: Bool
-    let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
-
-    var body: some View {
-        VStack(spacing: RemoteKeyMetrics.spacing) {
-            chordRow
-            thumbClusters
-        }
-    }
-
-    /// Whole-window and whole-tab keys.  They are reached for far less often
-    /// than the keys below, so they take the row a thumb has to stretch for and
-    /// leave the corners to return and delete.  The three that are held and
-    /// dragged sit in the middle, where a thumb lands squarely enough to drag
-    /// from.
-    private var chordRow: some View {
-        HStack(spacing: RemoteKeyMetrics.spacing) {
-            chordSlot { titledKey(.newItem) }
-            chordSlot { titledKey(.selectAll) }
-            chordSlot { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
-            chordSlot { TextSelectionKey(send: send) }
-            chordSlot { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
-            chordSlot { titledKey(.newTab) }
-            chordSlot { titledKey(.closeWindow) }
-        }
-    }
-
-    /// A key that says what it sends.
-    private func titledKey(_ hotkey: RemoteHotkey) -> some View {
-        key(hotkey) { Text(hotkey.buttonTitle) }
-    }
-
-    /// One stretched cell of the chord row.  The row is wider than it is tall,
-    /// so its keys take the width they are given rather than a fixed one.
-    private func chordSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity)
-            .frame(height: RemoteKeyMetrics.keyHeight)
-    }
-
-    private func walkKey(_ title: String, _ modifier: HeldModifier, _ spokenName: String) -> some View {
-        TabWalkButton(
-            title: title,
-            modifier: modifier,
-            spokenName: spokenName,
-            sensitivity: walkSensitivity,
-            send: walk
-        )
-    }
-
-    private var thumbClusters: some View {
-        HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
-            cluster {
-                slot { titledKey(.escape) }
-                slot { titledKey(.nextWindow) }
-            } bottom: {
-                slot { key(.copy) { Image(systemName: "doc.on.doc") } }
-                slot { key(.paste) { Image(systemName: "doc.on.clipboard") } }
-            }
-
-            PushToTalkButton(controller: pushToTalk)
-                .frame(maxWidth: .infinity)
-
-            // Return takes the inner top corner: it is the key that follows a
-            // dictated line, so it sits right against the hold bar.  The three
-            // deletes fill the rest, growing outward from the character.
-            cluster {
-                slot { key(.return) { Image(systemName: "return") } }
-                slot { titledKey(.deleteLineBackward) }
-            } bottom: {
-                slot { deleteKey(.deleteBackward, .character) { Image(systemName: "delete.left") } }
-                slot { deleteKey(.deleteWordBackward, .word) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) } }
-            }
-        }
-    }
-
-    private func cluster<Top: View, Bottom: View>(
-        @ViewBuilder top: () -> Top,
-        @ViewBuilder bottom: () -> Bottom
-    ) -> some View {
-        VStack(spacing: RemoteKeyMetrics.spacing) {
-            HStack(spacing: RemoteKeyMetrics.spacing) { top() }
-            HStack(spacing: RemoteKeyMetrics.spacing) { bottom() }
-        }
-        .frame(width: RemoteKeyMetrics.clusterWidth)
-    }
-
-    /// One fixed cell.  Every key fills the width it is offered, so the pad
-    /// sets the size once here rather than each key guessing.
-    private func slot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
-    }
-
-    /// Drawn like the hold-and-slide keys rather than with `.bordered`, whose
-    /// padding leaves a 48pt cell too little room for a two-glyph label.
-    private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
-        Button(action: Haptics.tap { send(hotkey) }) {
-            label()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-        }
-        .background(Color(.secondarySystemFill))
-        .foregroundStyle(Color.accentColor)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel(hotkey.spokenName)
-    }
-
-    /// With the slide off, a delete key is an ordinary key and nothing about it
-    /// changes.
-    @ViewBuilder
-    private func deleteKey<Label: View>(
-        _ hotkey: RemoteHotkey,
-        _ granularity: DeleteScrubGranularity,
-        @ViewBuilder label: () -> Label
-    ) -> some View {
-        if scrubEnabled {
-            DeleteScrubKey(
-                hotkey: hotkey,
-                granularity: granularity,
-                send: send,
-                scrub: scrub,
-                label: label()
-            )
-        } else {
-            key(hotkey, label: label)
-        }
-    }
-}
-
 /// Hold a modifier open on the Mac, slide to step along whatever that modifier
 /// walks, lift to pick.  Command walks apps, Control walks the front app's
 /// tabs.  A plain tap is the ordinary one-step flip, because begin already
 /// takes that step.
-private struct TabWalkButton: View {
+struct TabWalkButton: View {
     /// Travel per app at 1x.  Roughly a thumb's width, so a wobble while
     /// holding does not step; the sensitivity setting divides it.
     static let baseStepWidth: Double = 44
@@ -1349,16 +1213,14 @@ struct PhoneRemoteControlView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TabView {
-            RemoteControlTab(model: model)
-                .tabItem { Label("Control", systemImage: "cursorarrow.rays") }
-            RemoteSettingsTab(model: model)
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-        }
-        // Over the tab bar and into the bottom safe area, so the targets sit in
-        // the true corners of the screen rather than the corners of a tab.
+        RemoteControlScreen(model: model)
+        // Into the bottom safe area, so the targets sit in the true corners of
+        // the screen.
         .overlay {
-            PushToTalkDragZones(controller: model.pushToTalk)
+            PushToTalkDragZones(
+                controller: model.pushToTalk,
+                sides: model.layoutMode.pushToTalkZoneSides(mirrored: model.mirrorHorizontalLayout)
+            )
                 .ignoresSafeArea()
         }
         .onAppear { model.scenePhaseChanged(.active) }
@@ -1371,86 +1233,150 @@ struct PhoneRemoteControlView: View {
     }
 }
 
-private struct RemoteControlTab: View {
-    /// Spelled out rather than left to `.padding()` so the trackpad can cancel
-    /// exactly this much and reach the sides of the screen.
-    private static let contentPadding: Double = 16
-
+private struct RemoteControlScreen: View {
     @ObservedObject var model: PhoneRemoteFeatureModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var isKeyboardShowing = false
+    @State private var isSettingsShowing = false
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 12) {
-                TrackpadSurface(
-                    pointerSensitivityX: model.trackpadSensitivityX,
-                    pointerSensitivityY: model.trackpadSensitivityY,
-                    scrollSensitivity: model.trackpadScrollSensitivity,
-                    momentumStrength: model.scrollMomentum,
-                    edgeScrollEnabled: model.edgeScrollEnabled,
-                    holdScrollEnabled: model.holdScrollEnabled,
-                    isActive: scenePhase == .active,
-                    onScrollClutch: { engaged in
-                        model.setScrollClutch(engaged)
-                        Haptics.play(engaged ? .gestureBegan : .gestureEnded)
-                    }
-                ) { outputs in
-                    model.handleRemoteInputEvents(outputs)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    Text("Tap, two-finger tap, double tap and slide")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .allowsHitTesting(false)
-                }
-                // Floated over a corner rather than given a slot in the pad, so
-                // it costs no height.
-                .overlay(alignment: .bottomTrailing) {
-                    KeyboardToggleButton(isShowing: $isKeyboardShowing)
-                        .padding(8)
-                }
-                // Centred in the same row, where either thumb can reach it
-                // without covering the keyboard button.
-                .overlay(alignment: .bottom) {
-                    ArrowPadKey(send: { model.sendHotkey($0) })
-                        .padding(8)
-                }
-                // The scroll strips are the thing a thumb reaches for without
-                // looking, so they run to the side of the screen rather than
-                // stopping short of it and leaving a dead margin.
-                .padding(.horizontal, -Self.contentPadding)
-
-                RemoteKeyPad(
-                    pushToTalk: model.pushToTalk,
-                    send: { model.sendHotkey($0) },
-                    walkSensitivity: model.tabWalkSensitivity,
-                    walk: { model.sendTabWalk($0, holding: $1) },
-                    scrubEnabled: model.deleteScrubEnabled,
-                    scrub: { model.sendDeleteScrub($0, granularity: $1) }
+        layout
+            // An invisible responder, so where it sits does not matter.
+            .overlay(alignment: .bottom) {
+                RemoteKeyboardSurface(
+                    isShowing: $isKeyboardShowing,
+                    onText: { model.typeText($0) },
+                    onHotkey: { model.sendHotkey($0) }
                 )
-                .overlay(alignment: .bottom) {
-                    RemoteKeyboardSurface(
-                        isShowing: $isKeyboardShowing,
-                        onText: { model.typeText($0) },
-                        onHotkey: { model.sendHotkey($0) }
-                    )
-                    .frame(width: 0, height: 0)
-                    .allowsHitTesting(false)
-                }
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
             }
-            .padding(Self.contentPadding)
+            .sheet(isPresented: $isSettingsShowing) {
+                RemoteSettingsSheet(model: model)
+            }
             .onAppear {
                 Haptics.prepare()
                 model.setTrackpadVisible(true)
+                InterfaceOrientationLock.apply(model.layoutMode.orientations)
             }
-            .onDisappear {
-                isKeyboardShowing = false
-                model.setTrackpadVisible(false)
+            // The sheet covers the trackpad without the screen going away, so
+            // this is the moment the trackpad stops being the thing in front.
+            .onChange(of: isSettingsShowing) { _, showing in
+                if showing { isKeyboardShowing = false }
+                model.setTrackpadVisible(!showing)
             }
+    }
+
+    /// Adding a layout is a file of its own and a case here; the pieces it
+    /// arranges are the same ones every other layout gets.
+    @ViewBuilder
+    private var layout: some View {
+        switch model.layoutMode {
+        case .vertical:
+            VerticalRemoteLayout(pushToTalk: model.pushToTalk, keys: keys) { trackpad }
+        case .controller:
+            ControllerRemoteLayout(
+                pushToTalk: model.pushToTalk,
+                keys: keys,
+                mirrored: model.mirrorHorizontalLayout
+            ) { trackpad }
         }
+    }
+
+    private var keys: RemoteKeys {
+        RemoteKeys(
+            send: { model.sendHotkey($0) },
+            walkSensitivity: model.tabWalkSensitivity,
+            walk: { model.sendTabWalk($0, holding: $1) },
+            scrubEnabled: model.deleteScrubEnabled,
+            scrub: { model.sendDeleteScrub($0, granularity: $1) }
+        )
+    }
+
+    private var trackpad: some View {
+        TrackpadSurface(
+            pointerSensitivityX: model.trackpadSensitivityX,
+            pointerSensitivityY: model.trackpadSensitivityY,
+            scrollSensitivity: model.trackpadScrollSensitivity,
+            momentumStrength: model.scrollMomentum,
+            edgeScrollEnabled: model.edgeScrollEnabled,
+            holdScrollEnabled: model.holdScrollEnabled,
+            isActive: scenePhase == .active,
+            onScrollClutch: { engaged in
+                model.setScrollClutch(engaged)
+                Haptics.play(engaged ? .gestureBegan : .gestureEnded)
+            }
+        ) { outputs in
+            model.handleRemoteInputEvents(outputs)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
+        .overlay {
+            Text("Tap, two-finger tap, double tap and slide")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .allowsHitTesting(false)
+        }
+        // Floated over the corners rather than given slots in the pad, so they
+        // cost no height.
+        .overlay(alignment: .topLeading) {
+            SettingsButton { isSettingsShowing = true }
+                .padding(8)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: RemoteKeyMetrics.spacing) {
+                LayoutToggleButton(mode: model.layoutMode) {
+                    model.setLayoutMode(model.layoutMode.next)
+                }
+                KeyboardToggleButton(isShowing: $isKeyboardShowing)
+            }
+            .padding(8)
+        }
+        // Centred in the same row, where either thumb can reach it without
+        // covering the keyboard button.
+        .overlay(alignment: .bottom) {
+            ArrowPadKey(send: { model.sendHotkey($0) })
+                .padding(8)
+        }
+    }
+}
+
+/// Opens the settings sheet.  A corner of the trackpad rather than a tab bar,
+/// which cost a whole row for one destination.
+private struct SettingsButton: View {
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: Haptics.tap(open)) {
+            Image(systemName: "gearshape")
+                .font(.title3)
+                .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.tertiarySystemFill))
+        .foregroundStyle(Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("Settings")
+    }
+}
+
+/// Flips between the upright and sideways layouts, and turns the screen with
+/// them.
+private struct LayoutToggleButton: View {
+    let mode: RemoteLayoutMode
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: Haptics.tap(toggle)) {
+            Image(systemName: mode.toggleSymbol)
+                .font(.title3)
+                .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.tertiarySystemFill))
+        .foregroundStyle(Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(mode.toggleLabel)
     }
 }
 
@@ -1473,9 +1399,10 @@ private struct KeyboardToggleButton: View {
     }
 }
 
-private struct RemoteSettingsTab: View {
+private struct RemoteSettingsSheet: View {
     @ObservedObject var model: PhoneRemoteFeatureModel
     @ObservedObject private var debugLog = IPhoneDebugLog.shared
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -1582,6 +1509,19 @@ private struct RemoteSettingsTab: View {
                     Text("Tab walk")
                 } footer: {
                     Text("How far you slide sideways, holding the app switcher or next tab button, to move one step.")
+                }
+
+                Section("Layout") {
+                    Toggle(
+                        "Mirror horizontal mode",
+                        isOn: Binding(
+                            get: { model.mirrorHorizontalLayout },
+                            set: { model.setMirrorHorizontalLayout($0) }
+                        )
+                    )
+                    Text("Trackpad on the left, keys on the right, for the left hand.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Scrolling") {
@@ -1711,12 +1651,18 @@ private struct RemoteSettingsTab: View {
                 }
             }
             .navigationTitle("Settings")
+            .toolbar {
+                Button("Done", action: Haptics.tap { dismiss() })
+            }
         }
     }
 }
 
 @main
 struct PhoneRemoteApp: App {
+    /// The delegate reports the orientation the layout mode asks for.
+    @UIApplicationDelegateAdaptor(PhoneRemoteAppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             PhoneRemoteControlView()
