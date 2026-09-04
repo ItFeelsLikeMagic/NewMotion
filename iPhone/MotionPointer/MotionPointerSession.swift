@@ -22,28 +22,6 @@ extension PhoneLifecycleStopping {
     public func resumeForLifecycle() {}
 }
 
-public struct MotionRateMetrics: Equatable, Sendable {
-    public let sampleCount: UInt64
-    public let outputCount: UInt64
-    public let elapsed: TimeInterval
-
-    public init(sampleCount: UInt64, outputCount: UInt64, elapsed: TimeInterval) {
-        self.sampleCount = sampleCount
-        self.outputCount = outputCount
-        self.elapsed = elapsed
-    }
-
-    public var sampleRateHz: Double {
-        guard elapsed > 0 else { return 0 }
-        return Double(sampleCount) / elapsed
-    }
-
-    public var outputRateHz: Double {
-        guard elapsed > 0 else { return 0 }
-        return Double(outputCount) / elapsed
-    }
-}
-
 /// Owns Core Motion lifecycle and emits the same relative pointer-delta shape
 /// as TrackpadGestureEngine through an injected sink.
 public final class MotionPointerSession {
@@ -53,10 +31,6 @@ public final class MotionPointerSession {
     private var appActive = false
     private var clutchHeld = false
     private var running = false
-    private var firstTimestamp: TimeInterval?
-    private var lastTimestamp: TimeInterval?
-    private var sampleCount: UInt64 = 0
-    private var outputCount: UInt64 = 0
 
     public init(
         provider: DeviceMotionProviding,
@@ -69,16 +43,6 @@ public final class MotionPointerSession {
     }
 
     public var isRunning: Bool { running }
-    public var isClutchHeld: Bool { clutchHeld }
-    public var metrics: MotionRateMetrics {
-        let elapsed: TimeInterval
-        if let firstTimestamp, let lastTimestamp {
-            elapsed = max(0, lastTimestamp - firstTimestamp)
-        } else {
-            elapsed = 0
-        }
-        return MotionRateMetrics(sampleCount: sampleCount, outputCount: outputCount, elapsed: elapsed)
-    }
 
     @discardableResult
     public func setAppActive(_ active: Bool) -> MotionPointerStartResult? {
@@ -101,10 +65,6 @@ public final class MotionPointerSession {
             return nil
         }
         return appActive ? startIfNeeded() : .inactive
-    }
-
-    public func calibrate() {
-        filter.resetReference()
     }
 
     public func updateFilter(_ configuration: MotionFilterConfiguration) {
@@ -135,11 +95,7 @@ public final class MotionPointerSession {
 
     private func receive(_ sample: MotionSample) {
         guard appActive, clutchHeld, running else { return }
-        sampleCount += 1
-        if firstTimestamp == nil { firstTimestamp = sample.timestamp }
-        lastTimestamp = sample.timestamp
         guard let delta = filter.process(sample) else { return }
-        outputCount += 1
         sink.send(delta)
     }
 }

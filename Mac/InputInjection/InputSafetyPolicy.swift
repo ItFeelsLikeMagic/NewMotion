@@ -207,7 +207,6 @@ public enum SafetyDenialReason: String, Equatable, Sendable {
     case emptyText
     case textTooLarge
     case nonFiniteValue
-    case outOfBounds
     case unsupportedCommand
 }
 

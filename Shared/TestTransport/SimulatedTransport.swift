@@ -1,6 +1,8 @@
 /// Deterministic in-process byte transport for protocol, UI, and safety tests.
-/// No production target needs to instantiate this implementation; production
-/// adapters only depend on `RemoteTransportEndpoint`.
+/// It answers `RemoteTransportEndpoint`, which predates `MessageLink` and is
+/// used by nothing else; the real links answer `MessageLink` instead. Teaching
+/// this one to answer `MessageLink` too would make it the second
+/// implementation of the seam, and prove it without a radio.
 public final class SimulatedTransport {
     public struct Configuration: Equatable {
         public var delayTicks: UInt64

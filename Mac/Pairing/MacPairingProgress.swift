@@ -5,7 +5,7 @@ import Foundation
 /// X25519 handshake and trust-record write both succeed.
 public enum MacPairingProgress: Equatable, Sendable {
     case idle
-    case waitingForBluetooth
+    case waitingForLink
     case scanning
     case waitingForConfirmation
     case discovered(deviceName: String)
@@ -19,7 +19,7 @@ public enum MacPairingProgress: Equatable, Sendable {
     public var title: String {
         switch self {
         case .idle: return "Ready to pair"
-        case .waitingForBluetooth: return "Waiting for Bluetooth"
+        case .waitingForLink: return "Waiting for Bluetooth"
         case .scanning: return "Looking for iPhone"
         case .waitingForConfirmation: return "Waiting for iPhone confirmation"
         case let .discovered(name): return "Found \(name)"
@@ -37,7 +37,7 @@ public enum MacPairingProgress: Equatable, Sendable {
         case let .discovered(name), let .connecting(name), let .connected(name),
              let .authenticating(name), let .paired(name):
             return name
-        case .idle, .waitingForBluetooth, .scanning, .waitingForConfirmation,
+        case .idle, .waitingForLink, .scanning, .waitingForConfirmation,
              .disconnected, .failed:
             return nil
         }
@@ -51,7 +51,7 @@ public enum MacPairingProgress: Equatable, Sendable {
     public var kind: String {
         switch self {
         case .idle: return "idle"
-        case .waitingForBluetooth: return "waitingForBluetooth"
+        case .waitingForLink: return "waitingForLink"
         case .scanning: return "scanning"
         case .waitingForConfirmation: return "waitingForConfirmation"
         case .discovered: return "discovered"

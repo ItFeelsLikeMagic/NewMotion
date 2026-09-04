@@ -73,5 +73,4 @@ public final class TrustedDeviceManager {
 
     public func revoke(deviceID: UUID) throws { try store.delete(deviceID: deviceID) }
 
-    public func revokeAll() throws { try store.deleteAll() }
 }

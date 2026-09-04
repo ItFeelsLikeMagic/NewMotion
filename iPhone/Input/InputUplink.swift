@@ -21,6 +21,9 @@ final class InputUplink {
     private var held = HeldRemoteInput()
     /// Runs only while something is held, so an idle remote is silent.
     private var heartbeatTimer: Timer?
+    /// Set when travel first found the link busy, cleared when it finally goes
+    /// out.  A growing hold is the lag the hand feels.
+    private var travelHeldSince: LatencyClock?
 
     init(link: InputLink) {
         self.link = link
@@ -73,7 +76,10 @@ final class InputUplink {
     /// click is a press and a release together, and nothing is held in between.
     @discardableResult
     private func deliver(_ payload: MessagePayload) -> Bool {
-        guard link.send(.payload(payload), delivery: .ordered) == .sent else { return false }
+        let clock = LatencyClock()
+        let result = link.send(.payload(payload), delivery: .ordered)
+        PhoneLatency.inputToWire.record(clock, sent: result == .sent)
+        guard result == .sent else { return false }
         // Only a message that reached the link counts as held.  Recording one
         // that did not would make the next heartbeat press it down on the Mac,
         // because reconcile repairs a difference in either direction.
@@ -109,7 +115,9 @@ final class InputUplink {
 
     /// A beat never queues.  A stale one is worth nothing, and holding up the
     /// ordered path four times a second would delay real input.  A skipped
-    /// beat is what the Mac's patience is sized for.
+    /// beat is what the Mac's patience is sized for, which is also why the
+    /// beat stays out of the latency window: counting an expected refusal
+    /// there would bury a real one.
     private func sendHeartbeat() {
         _ = link.send(
             .payload(.heartbeat(held.heartbeat(intervalMs: Self.heartbeatIntervalMs))),
@@ -138,14 +146,23 @@ final class InputUplink {
             reset()
             return
         }
-        switch link.send(.compact(body: body, type: .pointerDelta), delivery: ordered ? .ordered : .latestWins) {
+        let clock = LatencyClock()
+        let result = link.send(.compact(body: body, type: .pointerDelta), delivery: ordered ? .ordered : .latestWins)
+        PhoneLatency.inputToWire.record(clock, sent: result == .sent)
+        switch result {
         case .sent:
+            if let heldSince = travelHeldSince {
+                PhoneLatency.inputHeld.record(microseconds: heldSince.elapsedMicroseconds)
+                travelHeldSince = nil
+            }
             // Subtract what went out rather than zeroing, so the sub-point
             // remainder and any travel past the wire limit survive.
             pointerTravel.take(x: pointer.x, y: pointer.y)
             scrollTravel.take(x: scroll.x, y: scroll.y)
         case .busy:
-            break
+            // The first refusal starts the clock; later ones are the same wait
+            // still running.
+            if travelHeldSince == nil { travelHeldSince = LatencyClock() }
         case .unavailable:
             reset()
         }
@@ -155,6 +172,7 @@ final class InputUplink {
     /// that is not there, and the Mac releases everything it holds when the
     /// session drops, so the held set is dropped rather than drained.
     func reset() {
+        travelHeldSince = nil
         pointerTravel.clear()
         scrollTravel.clear()
         held.clear()

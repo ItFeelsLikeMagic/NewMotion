@@ -80,6 +80,9 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         var result: Result<String, TranscriptionError>?
         var typing = false
         var timer: StageTimer?
+        /// Runs beside `timer`, from the commit that ended the speech, so the
+        /// whole wait can join a distribution rather than only a label.
+        var clock: LatencyClock?
         var idleTimer: DispatchWorkItem?
         /// The phone said the finger is hovering an edit target. Nothing is
         /// typed while this is true and the hold has not ended.
@@ -111,6 +114,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
     private let vocabulary: SpokenVocabularySink?
     private let isSecureInputActive: @Sendable () -> Bool
     private let idleTimeout: TimeInterval
+    private let latency: LatencyTracker?
     /// How long a hinted utterance waits for the release to say what it is,
     /// after its text is already in. Past this the release is assumed lost and
     /// the words are typed the ordinary way.
@@ -130,7 +134,8 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         vocabulary: SpokenVocabularySink? = nil,
         idleTimeout: TimeInterval = 1.5,
         editHintHoldTime: TimeInterval = 3,
-        isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
+        isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive,
+        latency: LatencyTracker? = nil
     ) {
         self.sessions = sessions
         self.insertionSink = insertionSink
@@ -141,6 +146,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         self.idleTimeout = idleTimeout
         self.editHintHoldTime = editHintHoldTime
         self.isSecureInputActive = isSecureInputActive
+        self.latency = latency
     }
 
     public func receive(_ frame: VoiceStreamFrame) {
@@ -241,6 +247,7 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         utterance.idleTimer = nil
         lastCommittedStream = utterance.streamID
         utterance.timer = StageTimer()
+        utterance.clock = LatencyClock()
         utterance.session.commit()
     }
 
@@ -494,6 +501,15 @@ public final class VoicePTTCoordinator: @unchecked Sendable {
         let generation = outcomeGeneration
         if let text { current.lastFinalText = text }
         if let timer = utterance.timer { current.timing = timer.label }
+        if let clock = utterance.clock {
+            // An utterance with nothing to type never reached the field, so it
+            // is neither a timing nor a refusal.
+            switch phase {
+            case .typed: latency?.record(microseconds: clock.elapsedMicroseconds)
+            case .failed: latency?.recordRefusal()
+            default: break
+            }
+        }
         publish()
         typeNextIfReady()
         queue.asyncAfter(deadline: .now() + Self.outcomeDisplayTime) {

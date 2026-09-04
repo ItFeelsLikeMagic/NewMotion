@@ -21,8 +21,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var status: String
     public var paused: Bool
     public var accessibility: String
-    public var bluetooth: String
-    public var bluetoothKind: String
+    public var link: String
+    public var linkKind: String
     public var pairingProgress: String
     public var pairingProgressKind: String
     public var authenticated: Bool
@@ -31,7 +31,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var pairingError: String?
     public var lastPairingFailure: String?
     public var lastProbe: String?
-    public var visiblePeripheralName: String?
+    public var peerName: String?
     public var lastApplicationMessage: String?
     /// Every notch of the last held delete key, oldest first.
     public var deleteScrub: String?
@@ -55,6 +55,10 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     /// The last front-window vocabulary walk: "off", or "12ms/430nodes/18words"
     /// with "+" when the node budget ran out. Counts only, never the words.
     public var audioVocabulary: String
+    /// One entry per pipeline stage, filled in as the response is written
+    /// rather than as the snapshot is built: summarising sorts a window per
+    /// stage, and the snapshot is rebuilt on the receive path.
+    public var latency: [LatencySummary]
     public var appPath: String?
     public var pairedDevices: [MacDebugPairedDevice]
 
@@ -63,8 +67,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         status: String,
         paused: Bool,
         accessibility: String,
-        bluetooth: String,
-        bluetoothKind: String,
+        link: String,
+        linkKind: String,
         pairingProgress: String,
         pairingProgressKind: String,
         authenticated: Bool,
@@ -73,7 +77,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         pairingError: String? = nil,
         lastPairingFailure: String? = nil,
         lastProbe: String? = nil,
-        visiblePeripheralName: String? = nil,
+        peerName: String? = nil,
         lastApplicationMessage: String? = nil,
         deleteScrub: String? = nil,
         keyPostMs: Double? = nil,
@@ -85,6 +89,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         audioMerge: String = "none",
         audioTiming: String = "none",
         audioVocabulary: String = "off",
+        latency: [LatencySummary] = [],
         appPath: String? = nil,
         pairedDevices: [MacDebugPairedDevice] = []
     ) {
@@ -92,8 +97,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.status = status
         self.paused = paused
         self.accessibility = accessibility
-        self.bluetooth = bluetooth
-        self.bluetoothKind = bluetoothKind
+        self.link = link
+        self.linkKind = linkKind
         self.pairingProgress = pairingProgress
         self.pairingProgressKind = pairingProgressKind
         self.authenticated = authenticated
@@ -102,7 +107,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.pairingError = pairingError
         self.lastPairingFailure = lastPairingFailure
         self.lastProbe = lastProbe
-        self.visiblePeripheralName = visiblePeripheralName
+        self.peerName = peerName
         self.lastApplicationMessage = lastApplicationMessage
         self.deleteScrub = deleteScrub
         self.keyPostMs = keyPostMs
@@ -114,6 +119,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.audioMerge = audioMerge
         self.audioTiming = audioTiming
         self.audioVocabulary = audioVocabulary
+        self.latency = latency
         self.appPath = appPath
         self.pairedDevices = pairedDevices
     }
@@ -122,8 +128,8 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         status: "Remote: Disconnected",
         paused: false,
         accessibility: "unknown",
-        bluetooth: "Idle",
-        bluetoothKind: "idle",
+        link: "Unavailable",
+        linkKind: "unavailable",
         pairingProgress: "Ready to pair",
         pairingProgressKind: "idle",
         authenticated: false,

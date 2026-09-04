@@ -168,6 +168,28 @@ final class InputPipelineTests: XCTestCase {
         XCTAssertEqual(link.travelItems[0].first?.deltaY, 3)
     }
 
+    /// A backed-up link shows flat timings and a climbing refusal count, so
+    /// the refusals have to survive the retry the pipeline does on its own.
+    func testABusyLinkCountsEveryRefusalAndOneHoldForTheWait() {
+        PhoneLatency.inputToWire.reset()
+        PhoneLatency.inputHeld.reset()
+        let link = FakeInputLink()
+        let uplink = InputUplink(link: link)
+
+        link.result = .busy
+        uplink.send(.pointer(CursorDelta(x: 4, y: 2)))
+        uplink.send(.pointer(CursorDelta(x: 3, y: 1)))
+        XCTAssertEqual(PhoneLatency.inputToWire.summary()?.refusals, 2)
+        XCTAssertNil(PhoneLatency.inputHeld.summary())
+
+        link.result = .sent
+        link.onReadyToSend?()
+        XCTAssertEqual(PhoneLatency.inputToWire.summary()?.attempts, 3)
+        XCTAssertEqual(PhoneLatency.inputToWire.summary()?.refusals, 2)
+        // One wait, however many refusals it spanned.
+        XCTAssertEqual(PhoneLatency.inputHeld.summary()?.samples, 1)
+    }
+
     func testTravelIsDroppedWhenTheLinkGoesAway() {
         let link = FakeInputLink()
         let uplink = InputUplink(link: link)

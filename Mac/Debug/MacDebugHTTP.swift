@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(PhoneRemoteShared)
+import PhoneRemoteShared
+#endif
+
 public enum MacDebugHTTP {
     public static let defaultPort: UInt16 = 18765
     public static let portFileURL = URL(fileURLWithPath: "/tmp/phoneremote-mac-debug.json")
@@ -35,7 +39,8 @@ public enum MacDebugHTTP {
         snapshot: MacDebugSnapshot,
         focus: () -> [String: String] = { [:] },
         vocabulary: (String?) -> [String: String] = { _ in [:] },
-        keyBurst: (Int) -> [String: String] = { _ in [:] }
+        keyBurst: (Int) -> [String: String] = { _ in [:] },
+        latency: () -> [LatencySummary] = { [] }
     ) -> Response {
         let lines = request.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
@@ -60,7 +65,9 @@ public enum MacDebugHTTP {
         }
         switch path {
         case "/", "/state":
-            return encode(snapshot)
+            var live = snapshot
+            live.latency = latency()
+            return encode(live)
         case "/health":
             return json(status: 200, object: ["ok": true, "app": "PhoneRemoteMac"])
         // What Accessibility can see in the focused field right now.  Labels

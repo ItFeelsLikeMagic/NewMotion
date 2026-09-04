@@ -30,11 +30,6 @@ public final class MacPairingCoordinator {
         self.trustedDevices = try trust.list()
     }
 
-    public func refreshTrustedDevices() throws -> [TrustedDeviceSummary] {
-        trustedDevices = try trust.list()
-        return trustedDevices
-    }
-
     public func issueOffer(displayName: String, lifetime: TimeInterval = PairingToken.maximumLifetime) throws -> PairingOffer {
         try offerController.issue(displayName: displayName, lifetime: lifetime)
     }
