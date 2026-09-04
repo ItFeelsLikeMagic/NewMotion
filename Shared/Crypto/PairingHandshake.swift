@@ -1,11 +1,6 @@
 import Foundation
 import CryptoKit
 
-public enum PairingRole: UInt8, Sendable {
-    case phone = 1
-    case mac = 2
-}
-
 public enum HandshakeMode: Equatable, Sendable {
     case oneTime(PairingToken)
     case trusted(deviceID: UUID, peerIdentityPublicKey: Data)
@@ -610,37 +605,13 @@ public final class PairingSession: @unchecked Sendable {
         if distance < Self.replayWindowSize { receivedWindow |= (1 << distance) }
     }
 
-    public func wrapApplication(
-        _ envelope: ProtocolEnvelope,
-        messageID: UInt32,
-        maximumValueLength: Int,
-        reliable: Bool? = nil
-    ) throws -> [Data] {
-        let plaintext = Data(try ProtocolCodec.encode(envelope))
-        let encrypted = try encrypt(plaintext: plaintext, messageType: envelope.messageType.rawValue)
-        return try BLEFragmenter().fragment(
-            payload: encrypted,
-            kind: .data,
-            reliable: reliable ?? (envelope.messageType.deliveryClass == .reliable),
-            messageID: messageID,
-            maximumValueLength: max(BLEFramingLimits.minimumValueLength, maximumValueLength)
-        )
-    }
-
-    public func wrapBinary(
-        _ plaintext: Data,
-        messageType: UInt8,
-        messageID: UInt32,
-        maximumValueLength: Int,
-        reliable: Bool
-    ) throws -> [Data] {
-        let encrypted = try encrypt(plaintext: plaintext, messageType: messageType)
-        return try BLEFragmenter().fragment(
-            payload: encrypted,
-            kind: .data,
-            reliable: reliable,
-            messageID: messageID,
-            maximumValueLength: max(BLEFramingLimits.minimumValueLength, maximumValueLength)
+    /// Seals one envelope into a single encrypted message. How that message is
+    /// cut up to cross a particular link is the transport's business, so
+    /// nothing here knows a packet size.
+    public func seal(_ envelope: ProtocolEnvelope) throws -> Data {
+        try encrypt(
+            plaintext: Data(try ProtocolCodec.encode(envelope)),
+            messageType: envelope.messageType.rawValue
         )
     }
 

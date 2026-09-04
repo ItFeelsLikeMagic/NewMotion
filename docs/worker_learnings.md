@@ -119,8 +119,8 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 - First-pairing order: scanner confirm, foreground-only advertising, BLE service ready,
   framed control `PairingClientHello`, Mac offer consumption and server hello, client
   finish, trust-record write, paired UI.
-- The Mac pairing progress model is presentation-only (`scanning`, `connecting`,
-  `authenticating`, `paired`). Central transport state and session state stay separate.
+- The Mac pairing progress model is presentation-only (`waitingForLink`, `scanning`,
+  `connecting`, `authenticating`, `paired`). Link state and session state stay separate.
   Why: a transient disconnect must not leave a false paired indicator.
 - On macOS, `SecItemCopyMatching` rejects `kSecMatchLimitAll` combined with
   `kSecReturnData`. List with `kSecReturnAttributes`, validate each account UUID, then
@@ -177,9 +177,15 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 
 ## Observability boundaries
 
-- `MetricsRecorder` is the only shared logging API. It records message types, counts,
-  sizes, sequence outcomes, latency buckets, and lifecycle states. It has no field for
-  strings, text, keys, or bytes. Keep it that way.
+- There are two shared observability APIs, and neither can see a payload. Keep it that
+  way.
+- `MetricsRecorder` records message types, counts, sizes, sequence outcomes, latency
+  buckets, and lifecycle states. It has no field for strings, text, keys, or bytes. It
+  is declared but not currently wired to anything in production.
+- `LatencyTracker` records timings and counts only, in microseconds, over a 256-sample
+  rolling window. It is never handed a payload, so nothing typed or said can reach a
+  timing. Probes are registered in `Mac/Debug/MacLatencyProbes.swift` and
+  `iPhone/Debug/PhoneLatency.swift`; see `docs/latency.md`.
 - Never log payload bytes, QR material, keys, typed text, transcripts, audio, or device
   identifiers anywhere, including the Mac debug snapshot and the iPhone debug log.
 - `IPhoneDebugLog.emit` drops any field whose key contains `qr`, `secret`, `token`,

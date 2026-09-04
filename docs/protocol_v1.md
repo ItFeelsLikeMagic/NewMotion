@@ -43,6 +43,9 @@ numeric/format bound fails.
 | error | 11 | reliable | fixed error code and retryable flag; no free-form text |
 | ping | 12 | reliable | empty payload; phone-originated link check |
 | pong | 13 | reliable | empty payload; Mac reply to ping |
+| mouse double click | 14 | reliable | which button was double-clicked |
+| tab walk | 15 | reliable | phase (begin, next, previous, commit, cancel) and the modifier held open for the whole walk (command, option, control, shift) |
+| delete scrub | 16 | reliable | phase (begin, delete, restore, end) and granularity (character or word). The phone counts notches and never says how much text a notch stands for |
 
 Reliable state transitions are classified by `SequenceTracker`. A duplicate is
 the same sequence as the last accepted one; an older sequence is out of order;

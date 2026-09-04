@@ -1,6 +1,10 @@
 import Foundation
 import Network
 
+#if canImport(PhoneRemoteShared)
+import PhoneRemoteShared
+#endif
+
 /// Loopback-only debug HTTP server. Bind failures try the next few ports
 /// instead of listening on every interface.
 public final class MacDebugHTTPServer: @unchecked Sendable {
@@ -12,6 +16,10 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     /// Answers `/keyburst`.  Posts keys and reads the field, so it runs on the
     /// main thread like the typing does.
     public var keyBurstProbe: (@Sendable (Int) -> [String: String])?
+    /// Fills the `latency` field of `/state`. Summarising sorts a window per
+    /// stage, so it happens here, on a reader's connection, and never on the
+    /// path being measured.
+    public var latencyProbe: (@Sendable () -> [LatencySummary])?
 
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
@@ -101,7 +109,8 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
                 snapshot: self.box.current(),
                 focus: { self.probeFocus() },
                 vocabulary: { self.probeVocabulary(app: $0) },
-                keyBurst: { self.probeKeyBurst(count: $0) }
+                keyBurst: { self.probeKeyBurst(count: $0) },
+                latency: { self.latencyProbe?() ?? [] }
             )
             connection.send(content: response.httpData, completion: .contentProcessed { _ in
                 connection.cancel()

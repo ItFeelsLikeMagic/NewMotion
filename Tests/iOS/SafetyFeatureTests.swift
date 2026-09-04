@@ -511,9 +511,9 @@ final class SafetyFeatureTests: XCTestCase {
     func testDroppedVoiceMessageLeavesSequenceGapAndNoPartialMessage() throws {
         let session = try PairingSession(key: SymmetricKey(size: .bits256), sessionID: Data(repeating: 7, count: 16))
         let uplink = VoiceUplink(queue: voiceQueue)
-        uplink.setSession(session, maximumValueLength: BLEFramingLimits.minimumValueLength)
+        uplink.setSession(session)
         let delivered = DeliveryLog()
-        uplink.deliver = { fragments, flags in delivered.messages.append((fragments, flags)) }
+        uplink.deliver = { message, flags in delivered.messages.append((message, flags)) }
         voiceQueue.sync {
             uplink.beginStream()
             uplink.send(samples: Array(repeating: 1_000, count: 640))
@@ -521,20 +521,12 @@ final class SafetyFeatureTests: XCTestCase {
             uplink.endStream()
         }
         XCTAssertEqual(delivered.messages.count, 4)
-        XCTAssertGreaterThan(delivered.messages[1].fragments.count, 1)
 
-        // The transport drops the second data message whole; the Mac still
-        // sees a clean sequence gap and no partial message.
+        // The link drops the second data message.  One message is one whole
+        // sealed body, so the Mac sees a clean sequence gap and can never be
+        // handed part of a message.
         let kept = [delivered.messages[0], delivered.messages[1], delivered.messages[3]]
-        let reassembler = try BLEReassembler(maximumValueLength: BLEFramingLimits.minimumValueLength)
-        var frames: [VoiceStreamFrame] = []
-        for message in kept {
-            for fragment in message.fragments {
-                if case let .complete(payload, _, _, _) = try reassembler.append(fragment) {
-                    frames.append(try VoiceStreamFrame.decode(session.decrypt(payload).plaintext))
-                }
-            }
-        }
+        let frames = try kept.map { try VoiceStreamFrame.decode(session.decrypt($0.message).plaintext) }
         XCTAssertEqual(frames.map(\.sequence), [0, 1, 3])
         XCTAssertEqual(frames.map(\.isStart), [true, false, false])
         XCTAssertEqual(frames.map(\.isEnd), [false, false, true])
@@ -912,7 +904,7 @@ private final class ResultBox: @unchecked Sendable {
 }
 
 private final class DeliveryLog: @unchecked Sendable {
-    var messages: [(fragments: [Data], flags: VoiceStreamFlags)] = []
+    var messages: [(message: Data, flags: VoiceStreamFlags)] = []
 }
 
 private final class TestMicrophone: MicrophoneInputProviding, @unchecked Sendable {

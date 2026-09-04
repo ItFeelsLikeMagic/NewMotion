@@ -3,25 +3,18 @@ import Foundation
 import PhoneRemoteShared
 #endif
 
-/// Turns PCM chunks into encrypted BLE fragments on the voice queue.  Every
+/// Turns PCM chunks into sealed voice messages on the voice queue.  Every
 /// method except `setSession` must be called on that queue.  `deliver` is the
-/// only hop to the main thread and receives all fragments of one message so
-/// the transport can drop the message whole instead of sending part of it.
+/// only hop to the main thread and carries one whole message, so the link can
+/// drop it whole instead of sending part of it.
 final class VoiceUplink: @unchecked Sendable {
-    /// Main-thread application messages count up from 1.  Voice messages use
-    /// the upper half of the ID space so the Mac never reassembles two
-    /// concurrent messages under one ID.
-    private static let firstMessageID: UInt32 = 1 << 31
-
-    var deliver: (@Sendable ([Data], VoiceStreamFlags) -> Void)?
+    var deliver: (@Sendable (Data, VoiceStreamFlags) -> Void)?
 
     private let queue: DispatchQueue
     private var session: PairingSession?
-    private var maximumValueLength = BLEFramingLimits.minimumValueLength
     private var streamID: SessionID?
     private var encoder = IMAADPCMEncoder()
     private var sequence: UInt32 = 0
-    private var nextMessageID = firstMessageID
     private var streamStartedAt: TimeInterval = 0
     private var peak: Int16 = 0
 
@@ -29,10 +22,9 @@ final class VoiceUplink: @unchecked Sendable {
         self.queue = queue
     }
 
-    func setSession(_ session: PairingSession?, maximumValueLength: Int) {
+    func setSession(_ session: PairingSession?) {
         queue.async {
             self.session = session
-            self.maximumValueLength = maximumValueLength
         }
     }
 
@@ -76,17 +68,17 @@ final class VoiceUplink: @unchecked Sendable {
     }
 
     private func send(samples: [Int16], flags: VoiceStreamFlags) {
+        let clock = LatencyClock()
         let flagName = Self.name(for: flags)
         guard let streamID, let session else {
+            PhoneLatency.voiceEncode.recordRefusal()
             IPhoneDebugLog.emit("ptt_drop", ["reason": "no_session", "flags": flagName])
             return
         }
-        // The sequence advances even when the transport later drops the
-        // message, so the Mac can count the gap.
+        // The sequence advances even when the link later drops the message, so
+        // the Mac can count the gap.
         let frameSequence = sequence
         sequence &+= 1
-        let messageID = nextMessageID
-        nextMessageID = messageID == UInt32.max ? Self.firstMessageID : messageID + 1
         do {
             let frame = try VoiceStreamFrame(
                 flags: flags,
@@ -95,13 +87,11 @@ final class VoiceUplink: @unchecked Sendable {
                 sampleCount: UInt16(samples.count),
                 payload: samples.isEmpty ? Data() : encoder.encode(samples)
             )
-            let fragments = try session.wrapBinary(
-                frame.encode(),
-                messageType: MessageType.audioChunk.rawValue,
-                messageID: messageID,
-                maximumValueLength: maximumValueLength,
-                reliable: flags.contains(.end)
+            let sealed = try session.encrypt(
+                plaintext: frame.encode(),
+                messageType: MessageType.audioChunk.rawValue
             )
+            PhoneLatency.voiceEncode.record(microseconds: clock.elapsedMicroseconds)
             if flags.contains(.start) || flags.contains(.end) {
                 // Peak level proves the microphone delivered sound, without logging audio.
                 IPhoneDebugLog.emit("ptt_frame", ["seq": "\(frameSequence)", "flags": flagName, "peak": "\(peak)"])
@@ -111,8 +101,9 @@ final class VoiceUplink: @unchecked Sendable {
                 IPhoneDebugLog.emit("ptt_first_audio", ["ms": "\(ms)"])
             }
             guard let deliver else { return }
-            hopToMain { deliver(fragments, flags) }
+            hopToMain { deliver(sealed, flags) }
         } catch {
+            PhoneLatency.voiceEncode.recordRefusal()
             IPhoneDebugLog.emit("ptt_drop", ["reason": "encode_fail", "flags": flagName])
         }
     }

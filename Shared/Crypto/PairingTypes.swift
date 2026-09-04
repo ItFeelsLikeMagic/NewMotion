@@ -13,7 +13,6 @@ public enum PairingError: Error, Equatable, Sendable {
     case tokenExpired
     case tokenNotActive
     case tokenAlreadyUsed
-    case invalidPairingIdentifier
     case invalidHandshake
     case authenticationFailed
     case replayedEnvelope

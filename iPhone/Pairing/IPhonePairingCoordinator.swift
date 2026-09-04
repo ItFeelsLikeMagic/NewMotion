@@ -10,7 +10,6 @@ public final class IPhonePairingCoordinator {
     public private(set) var trustedDevices: [TrustedDeviceSummary] = []
     public let identity: PairingIdentity
     public var onConfirmedPairing: ((PairingToken, PairingIdentity, PairingHandshakeClient) -> Void)?
-    public var onRejectedReconnect: ((UUID) -> Void)?
 
     private let trust: TrustedDeviceManager
     private let clock: PairingClock
@@ -76,11 +75,6 @@ public final class IPhonePairingCoordinator {
         )
         trustedDevices = try trust.list()
         return summary
-    }
-
-    public func refreshTrustedDevices() throws -> [TrustedDeviceSummary] {
-        trustedDevices = try trust.list()
-        return trustedDevices
     }
 
     public func revoke(deviceID: UUID) throws {

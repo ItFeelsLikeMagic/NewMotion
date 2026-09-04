@@ -6,16 +6,13 @@ public enum BLEFramingError: Error, Equatable, Sendable {
     case valueLengthTooLarge
     case envelopeTooLarge
     case tooManyFragments
-    case malformedHeader
     case unsupportedVersion
     case unknownFrameKind
     case invalidFlags
     case invalidLength
     case invalidFragmentIndex
-    case duplicateMessage
     case outOfOrderFragment
     case conflictingFragment
-    case queueFull
     case reliableWindowFull
 }
 
@@ -41,30 +38,19 @@ public struct BLEFramingLimits: Equatable, Sendable {
     public static let maximumFragments = 2_048
     public static let maximumQueuedFrames = 128
     public static let maximumReliableInFlight = 32
-    public static let maximumAttempts = 3
-    public static let acknowledgementTimeout: TimeInterval = 0.5
 
     public var maximumEnvelopeBytes: Int
     public var maximumFragments: Int
-    public var maximumQueuedFrames: Int
     public var maximumReliableInFlight: Int
-    public var maximumAttempts: Int
-    public var acknowledgementTimeout: TimeInterval
 
     public init(
         maximumEnvelopeBytes: Int = BLEFramingLimits.maximumEnvelopeBytes,
         maximumFragments: Int = BLEFramingLimits.maximumFragments,
-        maximumQueuedFrames: Int = BLEFramingLimits.maximumQueuedFrames,
-        maximumReliableInFlight: Int = BLEFramingLimits.maximumReliableInFlight,
-        maximumAttempts: Int = BLEFramingLimits.maximumAttempts,
-        acknowledgementTimeout: TimeInterval = BLEFramingLimits.acknowledgementTimeout
+        maximumReliableInFlight: Int = BLEFramingLimits.maximumReliableInFlight
     ) {
         self.maximumEnvelopeBytes = max(1, maximumEnvelopeBytes)
         self.maximumFragments = max(1, maximumFragments)
-        self.maximumQueuedFrames = max(1, maximumQueuedFrames)
         self.maximumReliableInFlight = max(1, maximumReliableInFlight)
-        self.maximumAttempts = max(1, maximumAttempts)
-        self.acknowledgementTimeout = max(0.001, acknowledgementTimeout)
     }
 }
 
@@ -312,7 +298,6 @@ public final class BLEReassembler {
         completedSet.removeAll(keepingCapacity: true)
     }
 
-    public var partialMessageCount: Int { partials.count }
     public var partialBytes: Int { partials.values.reduce(0) { $0 + $1.payload.count } }
 
     private func rememberCompleted(_ id: UInt32) {
@@ -322,121 +307,6 @@ public final class BLEReassembler {
             let old = completedIDs.removeFirst()
             completedSet.remove(old)
         }
-    }
-}
-
-public struct BLERetryAction: Equatable, Sendable {
-    public let messageID: UInt32
-    public let attempt: Int
-    public let frames: [Data]
-}
-
-/// A bounded scheduler for reliable/unreliable fragmented messages. The
-/// adapter drains `nextFrames()` only when Core Bluetooth reports capacity.
-public final class BLEOutboundScheduler {
-    private struct Item {
-        let messageID: UInt32
-        let reliable: Bool
-        let frames: [Data]
-        var attempt: Int
-        var acknowledged: Bool
-        var deadline: Date?
-    }
-
-    public let limits: BLEFramingLimits
-    private let fragmenter: BLEFragmenter
-    private let maximumValueLength: Int
-    private var queue: [Data] = []
-    private var items: [UInt32: Item] = [:]
-    private var order: [UInt32] = []
-
-    public init(maximumValueLength: Int, limits: BLEFramingLimits = .default) throws {
-        self.limits = limits
-        self.fragmenter = BLEFragmenter(limits: limits)
-        guard maximumValueLength >= BLEFramingLimits.headerBytes + 1 else {
-            throw BLEFramingError.valueLengthTooSmall
-        }
-        self.maximumValueLength = maximumValueLength
-    }
-
-    @discardableResult
-    public func enqueue(payload: Data, kind: BLEFrameKind, reliable: Bool, messageID: UInt32, now: Date) throws -> Int {
-        guard queue.count < limits.maximumQueuedFrames else { throw BLEFramingError.queueFull }
-        if reliable {
-            let inFlight = items.values.filter { $0.reliable && !$0.acknowledged }.count
-            guard inFlight < limits.maximumReliableInFlight else { throw BLEFramingError.reliableWindowFull }
-        }
-        let frames = try fragmenter.fragment(
-            payload: payload,
-            kind: kind,
-            reliable: reliable,
-            messageID: messageID,
-            maximumValueLength: maximumValueLength
-        )
-        guard queue.count + frames.count <= limits.maximumQueuedFrames else { throw BLEFramingError.queueFull }
-        queue.append(contentsOf: frames)
-        items[messageID] = Item(messageID: messageID, reliable: reliable, frames: frames, attempt: 1, acknowledged: false, deadline: reliable ? now.addingTimeInterval(limits.acknowledgementTimeout) : nil)
-        order.append(messageID)
-        return frames.count
-    }
-
-    public func nextFrames(maximum: Int = Int.max) -> [Data] {
-        guard maximum > 0 else { return [] }
-        let count = min(maximum, queue.count)
-        let frames = Array(queue.prefix(count))
-        queue.removeFirst(count)
-        return frames
-    }
-
-    public func acknowledge(messageID: UInt32) {
-        guard var item = items[messageID] else { return }
-        item.acknowledged = true
-        item.deadline = nil
-        items[messageID] = item
-        cleanup(messageID: messageID)
-    }
-
-    public func retryActions(now: Date) -> [BLERetryAction] {
-        var actions: [BLERetryAction] = []
-        for id in order {
-            guard var item = items[id], item.reliable, !item.acknowledged,
-                  let deadline = item.deadline, now >= deadline else { continue }
-            guard item.attempt < limits.maximumAttempts else {
-                // Keep the deadline visible so the caller can report the
-                // exhausted message through `expiredReliableIDs`. The item
-                // is already at its attempt limit and therefore emits no
-                // further retry action.
-                continue
-            }
-            item.attempt += 1
-            item.deadline = now.addingTimeInterval(limits.acknowledgementTimeout)
-            items[id] = item
-            actions.append(BLERetryAction(messageID: id, attempt: item.attempt, frames: item.frames))
-        }
-        return actions
-    }
-
-    public func expiredReliableIDs(now: Date) -> [UInt32] {
-        order.compactMap { id in
-            guard let item = items[id], item.reliable, !item.acknowledged,
-                  let deadline = item.deadline, now >= deadline, item.attempt >= limits.maximumAttempts else { return nil }
-            return id
-        }
-    }
-
-    public func reset() {
-        queue.removeAll(keepingCapacity: true)
-        items.removeAll(keepingCapacity: true)
-        order.removeAll(keepingCapacity: true)
-    }
-
-    public var queuedFrameCount: Int { queue.count }
-    public var reliableInFlightCount: Int { items.values.filter { $0.reliable && !$0.acknowledged }.count }
-
-    private func cleanup(messageID: UInt32) {
-        guard let index = order.firstIndex(of: messageID) else { return }
-        order.remove(at: index)
-        items.removeValue(forKey: messageID)
     }
 }
 

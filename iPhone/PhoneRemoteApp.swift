@@ -8,24 +8,21 @@ import PhoneRemoteShared
 import AVFoundation
 import UIKit
 
-private extension BLEPeripheralLifecycleState {
+private extension RemoteLinkState {
     var label: String {
         switch self {
-        case .idle: return "Idle"
-        case .waitingForBluetooth: return "Waiting for Bluetooth"
-        case .publishing: return "Publishing service"
-        case .advertising: return "Advertising"
+        case .unavailable: return "Off"
+        case .searching: return "Waiting for Mac"
+        case .connecting: return "Connecting"
         case .connected: return "Connected"
-        case .ready: return "Ready"
-        case .stopped: return "Stopped"
         }
     }
 }
 
 /// A deliberately small view model for the prototype UI.  It owns the local
 /// push-to-talk and motion sessions, but it does not invent a second transport
-/// path: feature adapters continue to emit the shared protocol payloads used
-/// by the BLE coordinator.
+/// path: feature adapters continue to emit the shared protocol payloads the
+/// link carries.
 @MainActor
 final class PhoneRemoteFeatureModel: ObservableObject {
     private static let trustedDeviceService = "com.example.phoneremote.ios.trusted-devices"
@@ -45,15 +42,30 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
     @Published var scrollMomentum = UserDefaults.standard.object(forKey: "scrollMomentum") as? Double ?? TrackpadTouchCaptureView.defaultMomentumStrength
     @Published var pairingState: IPhonePairingScannerState = .idle
-    @Published var bluetoothState: BLEPeripheralLifecycleState = .idle
+    @Published private(set) var linkState: RemoteLinkState = .unavailable
     @Published var trustedMacName: String?
-    /// Round trip over Bluetooth, measured end to end from this app.
+    /// Round trip over the link, measured end to end from this app.
     @Published var linkLatency = "Not measured"
 
+    /// What the connection is doing, in words the settings screen can show.
+    var linkStatus: String { linkState.label }
 
     private static let pingBurstCount = 5
+    /// How often the phone pings on its own, and how long the summary line
+    /// covers.  Both are slow enough that neither costs the link anything.
+    private static let autoPingInterval: TimeInterval = 2
+    private static let latencySummaryInterval: TimeInterval = 5
+    /// A pong that has not come back by now never will.
+    private static let pingTimeout: TimeInterval = 3
+    private static let maxOutstandingPings = 8
+    /// Sends still waiting for a pong, oldest first.
     private var pingSentAt: [TimeInterval] = []
     private var pingSamples: [Double] = []
+    /// Pongs still owed to a manual burst.  A burst owns the on-screen number
+    /// and the per-ping log lines; the automatic ping is silent.
+    private var pingBurstRemaining = 0
+    private var telemetryTimers: [Timer] = []
+    private var isForeground = false
 
     private let audioController: LocalPushToTalkAudioController
     private(set) lazy var pushToTalk = PushToTalkController(
@@ -61,7 +73,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         activity: { [weak self] in self?.latestAction = $0 },
         logContext: { [weak self] in
             [
-                "ble": self?.bluetoothState.label ?? "unknown",
+                "link": self?.linkState.label ?? "unknown",
                 "auth": self?.authenticatedSession != nil ? "yes" : "no"
             ]
         }
@@ -72,7 +84,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     /// The air mouse has no finger to flick, so its scroll coasts off the same
     /// curve as the trackpad's, released when the clutch finger lifts.
     private let clutchMomentum = ScrollMomentumDriver()
-    private let inputLink: BLEInputLink
+    private let inputLink: SessionInputLink
     private let inputUplink: InputUplink
     /// The trackpad surface is the only screen the air mouse runs on.
     private var trackpadVisible = false
@@ -81,7 +93,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
     private lazy var keyboard = KeyboardInputController(sink: keyboardForwarder)
     private let motionSession: MotionPointerSession
-    private let peripheral: IPhoneBLEPeripheralTransport
+    private let link: MessageLink
     private let lifecycle: PhoneLifecycleCoordinator
     let pairingCapture: AVFoundationQRCodeCaptureAdapter
     private let pairingScanner: IPhonePairingScanner
@@ -90,15 +102,12 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var pairingToken: PairingToken?
     private var authenticatedSession: PairingSession? {
         didSet {
-            voiceUplink.setSession(authenticatedSession, maximumValueLength: peripheral.maximumUpdateValueLength)
+            voiceUplink.setSession(authenticatedSession)
             inputLink.setSession(authenticatedSession)
             if authenticatedSession == nil { inputUplink.reset() }
             refreshAirMouse()
         }
     }
-    private var inboundReassembler: BLEReassembler?
-    private var controlReassembler: BLEReassembler?
-    private var nextHandshakeMessageID: UInt32 = 1
     private var handshakeHelloSent = false
     private let pairingConfirmFlag = PairingConfirmFlag()
     private var pairingConfirmed: Bool {
@@ -108,11 +117,11 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var trustedPeer: TrustedDeviceSummary?
     private var reconnectFailures = 0
     private let voiceUplink: VoiceUplink
-    private var voiceMessagesSent = 0
-    private var voiceMessagesDropped = 0
     private var audioSessionObservers: [NSObjectProtocol] = []
 
-    init() {
+    init(link: MessageLink = BLEMessageLink(
+        peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
+    )) {
         let audioController = LocalPushToTalkAudioController(
             microphone: AVAudioMicrophoneInput(),
             permissionGranted: AVAudioApplication.shared.recordPermission == .granted
@@ -125,21 +134,18 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             provider: CoreMotionDeviceProvider(),
             sink: motionSink
         )
-        let peripheral = IPhoneBLEPeripheralTransport(
-            adapter: CoreBluetoothPeripheralManagerAdapter()
-        )
-        self.peripheral = peripheral
-        let inputLink = BLEInputLink(peripheral: peripheral)
+        self.link = link
+        let inputLink = SessionInputLink(link: link)
         self.inputLink = inputLink
         inputUplink = InputUplink(link: inputLink)
         let confirmFlag = pairingConfirmFlag
         self.lifecycle = PhoneLifecycleCoordinator(
             motion: motionSession,
             audio: audioController,
-            disconnectTransport: { peripheral.setForeground(false) },
+            disconnectTransport: { link.stop() },
             attemptReconnect: {
                 guard confirmFlag.value else { return }
-                peripheral.setForeground(true)
+                link.start()
             }
         )
         let capture = AVFoundationQRCodeCaptureAdapter()
@@ -151,16 +157,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         pairingCoordinator = try? IPhonePairingCoordinator(
             store: KeychainTrustedDeviceStore(service: Self.trustedDeviceService)
         )
-        let reassembledLimit = BLEFramingLimits.maximumEnvelopeBytes + BLEFramingLimits.headerBytes
-        inboundReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
-        controlReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
         _ = lifecycle.handle(.startup)
 
-        peripheral.onStateChange = { [weak self] state in
-            Task { @MainActor [weak self] in self?.handlePeripheralState(state) }
+        link.onStateChange = { [weak self] state in
+            Task { @MainActor [weak self] in self?.handleLinkState(state) }
         }
-        peripheral.onFrameReceived = { [weak self] channel, data in
-            Task { @MainActor [weak self] in self?.handleIncomingFrame(channel: channel, data: data) }
+        link.onMessage = { [weak self] channel, message in
+            Task { @MainActor [weak self] in self?.handleMessage(channel: channel, message: message) }
+        }
+        link.onError = { [weak self] error in
+            Task { @MainActor [weak self] in self?.handleLinkError(error) }
         }
         pairingScanner.onStateChange = { [weak self] state in
             Task { @MainActor in
@@ -220,8 +226,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         audioController.onUtteranceCancel = { uplink.cancelStream() }
         audioController.onUtteranceEndAsEdit = { uplink.endStreamAsEdit() }
         audioController.onEditIntent = { uplink.sendIntent(edit: $0) }
-        uplink.deliver = { [weak self] fragments, flags in
-            MainActor.assumeIsolated { self?.deliverVoiceFragments(fragments, flags: flags) }
+        uplink.deliver = { [weak self] message, flags in
+            MainActor.assumeIsolated { self?.deliverVoiceMessage(message, flags: flags) }
         }
         let center = NotificationCenter.default
         audioSessionObservers = [
@@ -257,7 +263,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         audioController.cancel()
         IPhoneDebugLog.emit("tap_scan", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
-            "ble": bluetoothState.label
+            "link": linkState.label
         ])
         pairingClient = nil
         pairingToken = nil
@@ -267,7 +273,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         isPaired = false
         pairingState = pairingScanner.beginQRPairingScan { [weak self] in
             guard let self else { return }
-            IPhoneDebugLog.emit("camera_live", ["ble": self.bluetoothState.label])
+            IPhoneDebugLog.emit("camera_live", ["link": self.linkState.label])
         }
         IPhoneDebugLog.emit("after_scan_start", [
             "pairing": "\(pairingState)",
@@ -301,22 +307,22 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    func pulseAdvertisingIfNeeded() {
-        if isPairingVisible {
-            var fields = pairingCapture.diagnostics()
-            fields["pairing"] = "\(pairingState)"
-            fields["screenCaptured"] = UIScreen.main.isCaptured ? "yes" : "no"
-            IPhoneDebugLog.emit("camera_tick", fields)
-        }
-        guard authenticatedSession == nil else { return }
-        guard pairingConfirmed else { return }
-        peripheral.pulseAdvertising()
+    /// The camera can come up black, so an open scanner says every few seconds
+    /// whether frames are still arriving.
+    func logPairingDiagnostics() {
+        guard isPairingVisible else { return }
+        var fields = pairingCapture.diagnostics()
+        fields["pairing"] = "\(pairingState)"
+        fields["screenCaptured"] = UIScreen.main.isCaptured ? "yes" : "no"
+        IPhoneDebugLog.emit("camera_tick", fields)
     }
 
     func scenePhaseChanged(_ phase: ScenePhase) {
         switch phase {
         case .active:
             _ = lifecycle.handle(.foreground)
+            isForeground = true
+            syncTelemetry()
             motionSession.setAppActive(true)
             refreshAirMouse()
             reconnectFailures = 0
@@ -326,45 +332,53 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 break
             } else if authenticatedSession == nil, pairingCoordinator?.trustedDevices.isEmpty == false {
                 beginTrustedReconnect()
+            } else if pairingConfirmed {
+                link.start()
             } else {
-                peripheral.setForeground(pairingConfirmed)
+                link.stop()
             }
         case .inactive:
-            // Inactive is not background. Stopping BLE here drops advertising
-            // while the user still sees the app, so the Mac never reconnects.
+            // Inactive is not background. Stopping the link here takes the
+            // beacon down while the user still sees the app, so the Mac never
+            // reconnects.
             break
         case .background:
             _ = lifecycle.handle(.background)
+            isForeground = false
+            syncTelemetry()
             motionSession.setAppActive(false)
         @unknown default:
             _ = lifecycle.handle(.background)
+            isForeground = false
+            syncTelemetry()
             motionSession.setAppActive(false)
         }
     }
 
-    /// A message whose fragments would not all fit is dropped whole; its
-    /// sequence number was already advanced on the voice queue.
-    private func deliverVoiceFragments(_ fragments: [Data], flags: VoiceStreamFlags) {
-        if flags.contains(.start) {
-            voiceMessagesSent = 0
-            voiceMessagesDropped = 0
-        }
-        if peripheral.queueCapacity(on: .data) >= fragments.count {
-            for fragment in fragments { peripheral.send(fragment, on: .data) }
-            voiceMessagesSent += 1
-        } else {
-            voiceMessagesDropped += 1
-        }
+    /// A message the link has no room for is dropped whole; its sequence number
+    /// was already advanced on the voice queue.
+    private func deliverVoiceMessage(_ message: Data, flags: VoiceStreamFlags) {
+        // The tracker is the only tally: what this utterance sent and dropped
+        // is what the window holds since the start flag reset it.
+        if flags.contains(.start) { PhoneLatency.voiceWire.reset() }
+        // The end of a stream is the one voice message the Mac cannot infer, so
+        // it is the one that goes reliably.
+        // Voice is unreliable on the wire but still worth queueing: a dropped
+        // chunk is a hole in what someone said, unlike a stale cursor delta.
+        let delivery: LinkDelivery = flags.contains(.end) ? .reliable : .unreliableQueued
+        let clock = LatencyClock()
+        PhoneLatency.voiceWire.record(clock, sent: link.send(message, on: .data, delivery: delivery) == .sent)
         if flags.contains(.end) {
             let cancelled = flags.contains(.cancel)
             let edit = flags.contains(.edit)
+            let stream = PhoneLatency.voiceWire.summary()
             latestAction = cancelled ? "Voice thrown away" : (edit ? "Edit sent" : "Voice sent")
             IPhoneDebugLog.emit("ptt_end", [
-                "sent": "\(voiceMessagesSent)",
-                "dropped": "\(voiceMessagesDropped)",
+                "sent": "\(stream.map { $0.attempts - $0.refusals } ?? 0)",
+                "dropped": "\(stream?.refusals ?? 0)",
                 "cancelled": cancelled ? "yes" : "no",
                 "edit": edit ? "yes" : "no",
-                "ble": bluetoothState.label
+                "link": linkState.label
             ])
         }
     }
@@ -459,45 +473,53 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         motionSession.updateFilter(MotionFilterConfiguration(sensitivity: value))
     }
 
-    private func handlePeripheralState(_ state: BLEPeripheralLifecycleState) {
-        bluetoothState = state
-        IPhoneDebugLog.emit("ble", ["state": state.label])
+    private func handleLinkState(_ state: RemoteLinkState) {
+        linkState = state
+        syncTelemetry()
+        IPhoneDebugLog.emit("link", ["state": state.label])
         switch state {
-        case .advertising:
+        case .searching:
             handshakeHelloSent = false
-            _ = lifecycle.handle(.bluetoothPoweredOn)
+            _ = lifecycle.handle(.transportAvailable)
             if authenticatedSession != nil {
                 // The Mac dropped the link (typically its app restarted), and
                 // its side of the session went with it; handshake again.
                 authenticatedSession = nil
                 pairingClient = nil
-                inboundReassembler?.reset()
-                IPhoneDebugLog.emit("session_lost", ["ble": bluetoothState.label])
+                IPhoneDebugLog.emit("session_lost", ["link": state.label])
                 beginTrustedReconnect()
             }
             if pairingConfirmed, authenticatedSession == nil {
                 latestAction = trustedMacName.map { "Reconnecting to \($0)" } ?? "Waiting for Mac to connect"
             }
-        case .connected:
-            _ = lifecycle.handle(.bluetoothPoweredOn)
+        case .connecting:
+            _ = lifecycle.handle(.transportAvailable)
             if pairingConfirmed, authenticatedSession == nil {
                 latestAction = "Connected; preparing authentication"
             }
-        case .ready:
-            _ = lifecycle.handle(.bluetoothPoweredOn)
+        case .connected:
+            _ = lifecycle.handle(.transportAvailable)
             if authenticatedSession != nil {
                 latestAction = "Paired with Mac"
                 refreshAirMouse()
             } else if pairingClient != nil {
                 sendHandshakeHelloIfNeeded()
             }
-        case .waitingForBluetooth:
-            // Waiting is not powered-off. Treating it as off sets isForeground
-            // false, so a later powered-on callback never starts advertising.
-            if pairingConfirmed { latestAction = "Waiting for Bluetooth" }
-        case .publishing, .idle, .stopped:
-            break
+        case .unavailable:
+            // Deliberately not reported as a lifecycle transport loss: a link
+            // that is merely waiting is not one that has gone, and treating it
+            // as gone would stop the app ever bringing it back.
+            if pairingConfirmed { latestAction = "Waiting for the link" }
         }
+    }
+
+    /// A message the link could not put back together, arriving in the middle
+    /// of a handshake, is a handshake that will not finish; it starts over
+    /// rather than waiting the retry out.
+    private func handleLinkError(_ error: LinkError) {
+        IPhoneDebugLog.emit("link_error", ["kind": "\(error)"])
+        guard error == .malformedMessage, pairingClient != nil, authenticatedSession == nil else { return }
+        failPairing()
     }
 
     private func beginPairingHandshake(token: PairingToken, client: PairingHandshakeClient) {
@@ -507,10 +529,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         authenticatedSession = nil
         handshakeHelloSent = false
         reconnectFailures = 0
-        inboundReassembler?.reset()
-        IPhoneDebugLog.emit("handshake_begin", ["ble": bluetoothState.label])
-        peripheral.setForeground(true)
-        latestAction = "Pairing confirmed; waiting for authenticated BLE"
+        IPhoneDebugLog.emit("handshake_begin", ["link": linkState.label])
+        link.start()
+        latestAction = "Pairing confirmed; waiting for an authenticated link"
         sendHandshakeHelloIfNeeded()
     }
 
@@ -518,8 +539,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         guard authenticatedSession == nil else { return }
         if pairingClient != nil {
             pairingConfirmed = true
-            IPhoneDebugLog.emit("reconnect", ["path": "client", "ble": bluetoothState.label])
-            peripheral.setForeground(true)
+            IPhoneDebugLog.emit("reconnect", ["path": "client", "link": linkState.label])
+            link.start()
             sendHandshakeHelloIfNeeded()
             return
         }
@@ -540,8 +561,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             handshakeHelloSent = false
             _ = lifecycle.handle(.trustAdded)
             latestAction = "Reconnecting to \(device.displayName)"
-            IPhoneDebugLog.emit("reconnect", ["path": "trust", "ble": bluetoothState.label])
-            peripheral.setForeground(true)
+            IPhoneDebugLog.emit("reconnect", ["path": "trust", "link": linkState.label])
+            link.start()
             sendHandshakeHelloIfNeeded()
         } catch {
             IPhoneDebugLog.emit("reconnect_skip", ["reason": "load_fail"])
@@ -551,11 +572,11 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     private func sendHandshakeHelloIfNeeded() {
         guard !handshakeHelloSent, authenticatedSession == nil,
-              let client = pairingClient, peripheral.state == .ready else { return }
+              let client = pairingClient, link.state == .connected else { return }
         do {
             try sendHandshake(client.hello)
             handshakeHelloSent = true
-            IPhoneDebugLog.emit("hello_sent", ["ble": bluetoothState.label])
+            IPhoneDebugLog.emit("hello_sent", ["link": linkState.label])
             latestAction = "Authenticating with Mac…"
             scheduleHandshakeHelloRetry()
         } catch {
@@ -567,7 +588,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
             guard authenticatedSession == nil, pairingClient != nil, pairingConfirmed,
-                  peripheral.state == .ready else { return }
+                  link.state == .connected else { return }
             handshakeHelloSent = false
             sendHandshakeHelloIfNeeded()
         }
@@ -583,32 +604,64 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             return
         }
         pingSamples.removeAll()
-        pingSentAt.removeAll()
+        pingBurstRemaining = Self.pingBurstCount
         linkLatency = "Measuring…"
         latestAction = "Measuring link"
         for index in 0..<Self.pingBurstCount {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(index * 250))
-                self?.sendOnePing()
+                self?.sendOnePing(manual: true)
             }
         }
     }
 
-    private func sendOnePing() {
+    /// One ping every couple of seconds, so the round trip is already known
+    /// when the user thinks to ask.  It stands aside for a manual burst rather
+    /// than feeding it a pong the burst did not send for.
+    private func sendAutomaticPing() {
+        guard pingBurstRemaining == 0 else { return }
+        sendOnePing(manual: false)
+    }
+
+    private func sendOnePing(manual: Bool) {
         guard isControllable else { return }
-        pingSentAt.append(ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        expireOutstandingPings(now: now)
+        pingSentAt.append(now)
         guard inputUplink.send(.ping(PingPayload())) else {
             pingSentAt.removeLast()
-            latestAction = "Ping failed"
+            PhoneLatency.roundTrip.recordRefusal()
+            if manual { latestAction = "Ping failed" }
             return
         }
-        IPhoneDebugLog.emit("ping_sent", ["ble": bluetoothState.label])
+        if manual { IPhoneDebugLog.emit("ping_sent", ["link": linkState.label]) }
+    }
+
+    /// Sends no pong can still belong to.  Without this one lost pong pairs
+    /// every later pong with an older send, and the round trip reads long for
+    /// as long as the link stays up.
+    private func expireOutstandingPings(now: TimeInterval) {
+        var abandoned = 0
+        while let oldest = pingSentAt.first, now - oldest > Self.pingTimeout {
+            pingSentAt.removeFirst()
+            abandoned += 1
+        }
+        if pingSentAt.count > Self.maxOutstandingPings {
+            abandoned += pingSentAt.count - Self.maxOutstandingPings
+            pingSentAt.removeFirst(pingSentAt.count - Self.maxOutstandingPings)
+        }
+        for _ in 0..<abandoned { PhoneLatency.roundTrip.recordRefusal() }
     }
 
     private func recordPong() {
+        let now = ProcessInfo.processInfo.systemUptime
+        expireOutstandingPings(now: now)
         guard !pingSentAt.isEmpty else { return }
         let sent = pingSentAt.removeFirst()
-        let roundTrip = (ProcessInfo.processInfo.systemUptime - sent) * 1_000
+        PhoneLatency.roundTrip.record(seconds: now - sent)
+        guard pingBurstRemaining > 0 else { return }
+        pingBurstRemaining -= 1
+        let roundTrip = (now - sent) * 1_000
         pingSamples.append(roundTrip)
         let best = pingSamples.min() ?? roundTrip
         let average = pingSamples.reduce(0, +) / Double(pingSamples.count)
@@ -619,26 +672,52 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             pingSamples.count,
             Self.pingBurstCount
         )
+        latestAction = "Pong from Mac"
         IPhoneDebugLog.emit("ping_rtt", ["ms": String(format: "%.1f", roundTrip)])
     }
 
-    private func handleIncomingFrame(channel: BLETransportChannel, data: Data) {
-        if channel == .data {
-            handleApplicationFrame(channel: channel, data: data)
+    /// The automatic ping and the summary line run only while a connected link
+    /// is in front of the user: a phone in a pocket measures nothing.
+    private func syncTelemetry() {
+        guard isForeground, linkState == .connected else {
+            telemetryTimers.forEach { $0.invalidate() }
+            telemetryTimers.removeAll()
             return
         }
-        guard channel == .control, pairingClient != nil, let reassembler = controlReassembler else { return }
-        if authenticatedSession != nil { return }
-        do {
-            switch try reassembler.append(data) {
-            case .incomplete, .duplicate:
-                return
-            case let .complete(payload, kind, _, _):
-                guard kind == .control else { throw PairingError.invalidHandshake }
-                try acceptServerHello(payload)
+        guard telemetryTimers.isEmpty else { return }
+        telemetryTimers = [
+            repeatingTimer(every: Self.autoPingInterval) { $0.sendAutomaticPing() },
+            repeatingTimer(every: Self.latencySummaryInterval) { PhoneLatency.emitSummary(link: $0.linkState.label) }
+        ]
+    }
+
+    private func repeatingTimer(
+        every interval: TimeInterval,
+        tick: @escaping @Sendable @MainActor (PhoneRemoteFeatureModel) -> Void
+    ) -> Timer {
+        Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
+            let stillOwned = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return false }
+                tick(self)
+                return true
             }
-        } catch {
-            failPairing()
+            // The run loop holds a repeating timer even when nothing else
+            // does, so an owner that went away has to stop it from here.
+            if !stillOwned { timer.invalidate() }
+        }
+    }
+
+    private func handleMessage(channel: LinkChannel, message: Data) {
+        switch channel {
+        case .data:
+            handleApplicationMessage(message)
+        case .control:
+            guard pairingClient != nil, authenticatedSession == nil else { return }
+            do {
+                try acceptServerHello(message)
+            } catch {
+                failPairing()
+            }
         }
     }
 
@@ -662,11 +741,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         authenticatedSession = result.result.session
         isPaired = true
         reconnectFailures = 0
-        inboundReassembler?.reset()
-        controlReassembler?.reset()
         _ = lifecycle.handle(.trustAdded)
         latestAction = "Paired with \(displayName)"
-        IPhoneDebugLog.emit("paired", ["ble": bluetoothState.label])
+        IPhoneDebugLog.emit("paired", ["link": linkState.label])
         do {
             let summary = try pairingCoordinator.rememberPairedMac(
                 deviceID: deviceID,
@@ -682,19 +759,12 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    private func handleApplicationFrame(channel: BLETransportChannel, data: Data) {
-        guard channel == .data, let session = authenticatedSession, let reassembler = inboundReassembler else { return }
+    private func handleApplicationMessage(_ message: Data) {
+        guard let session = authenticatedSession else { return }
         do {
-            switch try reassembler.append(data) {
-            case .incomplete, .duplicate:
-                return
-            case let .complete(payload, kind, _, _):
-                guard kind == .data else { return }
-                let envelope = try session.unwrapApplication(payload)
-                if case .pong = envelope.payload {
-                    recordPong()
-                    latestAction = "Pong from Mac"
-                }
+            let envelope = try session.unwrapApplication(message)
+            if case .pong = envelope.payload {
+                recordPong()
             }
         } catch {
             latestAction = "Link check failed"
@@ -702,22 +772,8 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
 
     private func sendHandshake(_ payload: Data) throws {
-        let messageID = nextHandshakeMessageID
-        nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-        let frames = try BLEFragmenter().fragment(
-            payload: payload,
-            kind: .control,
-            reliable: true,
-            messageID: messageID,
-            maximumValueLength: max(BLEFramingLimits.minimumValueLength, peripheral.maximumUpdateValueLength)
-        )
-        for frame in frames {
-            switch peripheral.send(frame, on: .control) {
-            case .sent, .queued:
-                continue
-            case .notReady, .queueFull, .unsupportedChannel:
-                throw PairingError.invalidHandshake
-            }
+        guard link.send(payload, on: .control, delivery: .reliable) == .sent else {
+            throw PairingError.invalidHandshake
         }
     }
 
@@ -727,18 +783,16 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         IPhoneDebugLog.emit("pairing_fail", [
             "oneTime": qrInProgress ? "yes" : "no",
             "trust": hadTrust ? "yes" : "no",
-            "ble": bluetoothState.label
+            "link": linkState.label
         ])
         pairingClient = nil
         pairingToken = nil
         authenticatedSession = nil
         isPaired = false
         handshakeHelloSent = false
-        inboundReassembler?.reset()
-        controlReassembler?.reset()
         if qrInProgress {
             pairingConfirmed = false
-            peripheral.setForeground(false)
+            link.stop()
             latestAction = "Pairing failed; scan a new Mac QR code"
             return
         }
@@ -755,7 +809,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             return
         }
         pairingConfirmed = false
-        peripheral.setForeground(false)
+        link.stop()
         latestAction = "Pairing failed; scan a new Mac QR code"
     }
 
@@ -1312,7 +1366,7 @@ struct PhoneRemoteControlView: View {
             model.scenePhaseChanged(phase)
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
-            model.pulseAdvertisingIfNeeded()
+            model.logPairingDiagnostics()
         }
     }
 }
@@ -1468,7 +1522,7 @@ private struct RemoteSettingsTab: View {
                         )
                     }
 
-                    LabeledContent("Bluetooth", value: model.bluetoothState.label)
+                    LabeledContent("Link", value: model.linkStatus)
                     LabeledContent("Link round trip", value: model.linkLatency)
                     if let trustedMacName = model.trustedMacName {
                         LabeledContent("Trusted Mac", value: trustedMacName)

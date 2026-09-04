@@ -64,22 +64,6 @@ final class TransportPairingTests: XCTestCase {
         XCTAssertEqual(try reassembler.append(frames[0]), .duplicate)
     }
 
-    func testReliableSchedulerRetriesWithFiniteWindowAndResets() throws {
-        let scheduler = try BLEOutboundScheduler(maximumValueLength: 20)
-        let origin = Date(timeIntervalSince1970: 1_000)
-        _ = try scheduler.enqueue(payload: Data([1, 2, 3]), kind: .control, reliable: true, messageID: 9, now: origin)
-        XCTAssertEqual(scheduler.reliableInFlightCount, 1)
-        XCTAssertEqual(scheduler.retryActions(now: origin.addingTimeInterval(0.49)).count, 0)
-        XCTAssertEqual(scheduler.retryActions(now: origin.addingTimeInterval(0.5)).first?.attempt, 2)
-        XCTAssertEqual(scheduler.retryActions(now: origin.addingTimeInterval(1.0)).first?.attempt, 3)
-        XCTAssertTrue(scheduler.retryActions(now: origin.addingTimeInterval(1.5)).isEmpty)
-        XCTAssertEqual(scheduler.expiredReliableIDs(now: origin.addingTimeInterval(1.5)), [9])
-        scheduler.acknowledge(messageID: 9)
-        XCTAssertEqual(scheduler.reliableInFlightCount, 0)
-        scheduler.reset()
-        XCTAssertEqual(scheduler.queuedFrameCount, 0)
-    }
-
     func testOneTimeTokenCanonicalEncodingExpiryReplacementAndReplay() throws {
         let clock = MutablePairingClock(Date(timeIntervalSince1970: 10_000))
         let random = SequencePairingRandom(seed: 9)
@@ -251,8 +235,10 @@ final class TransportPairingTests: XCTestCase {
             timestampMs: 7,
             payload: .ping(PingPayload())
         )
-        let frames = try phone.wrapApplication(
-            ping,
+        let frames = try BLEFragmenter().fragment(
+            payload: try phone.seal(ping),
+            kind: .data,
+            reliable: true,
             messageID: 4,
             maximumValueLength: BLEFramingLimits.minimumValueLength
         )
@@ -272,8 +258,10 @@ final class TransportPairingTests: XCTestCase {
             timestampMs: 8,
             payload: .pong(PongPayload())
         )
-        let reply = try mac.wrapApplication(
-            pong,
+        let reply = try BLEFragmenter().fragment(
+            payload: try mac.seal(pong),
+            kind: .data,
+            reliable: true,
             messageID: 5,
             maximumValueLength: BLEFramingLimits.minimumValueLength
         )

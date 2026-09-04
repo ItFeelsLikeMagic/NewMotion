@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(PhoneRemoteShared)
+import PhoneRemoteShared
+#endif
+
 /// A framework-neutral representation of the events that the macOS adapter
 /// may post.  Unit tests assert this stream; production uses CGEvent below.
 public enum InjectedInputEvent: Equatable, Sendable {
@@ -21,7 +25,6 @@ public enum InjectedInputEvent: Equatable, Sendable {
 public enum InputSinkError: Error, Equatable, Sendable {
     case accessibilityUnavailable
     case eventCreationFailed
-    case eventPostFailed
     case injectedFailure
 }
 
@@ -222,6 +225,9 @@ public final class CGEventInputSink: InputEventSink {
     private let source: CGEventSource?
     private let queue = DispatchQueue(label: "phoneremote.input.hotkey")
     private let postState = KeyPostState()
+    /// The distribution behind `lastKeyBurstMilliseconds`, which only ever
+    /// holds the newest burst.
+    private let keyPost: LatencyTracker?
     private let displays = DisplayGeometry()
     private var activeFlags: CGEventFlags = []
     /// The button this sink is holding down, and the click count its press
@@ -230,8 +236,12 @@ public final class CGEventInputSink: InputEventSink {
     /// and never sees a plain move at all.
     private var heldButton: (button: CGMouseButton, clickState: Int64)?
 
-    public init(trust: AccessibilityTrustProviding = SystemAccessibilityTrust()) {
+    public init(
+        trust: AccessibilityTrustProviding = SystemAccessibilityTrust(),
+        keyPost: LatencyTracker? = nil
+    ) {
         self.trust = trust
+        self.keyPost = keyPost
         self.source = CGEventSource(stateID: .hidSystemState)
     }
 
@@ -384,6 +394,7 @@ public final class CGEventInputSink: InputEventSink {
     /// on the caller's thread, which is the main one.
     private func enqueue(_ events: [PostableEvent], paced: Bool, gap: TimeInterval? = nil) {
         let state = postState
+        let latency = keyPost
         let start = Date()
         queue.async {
             for item in events {
@@ -399,7 +410,9 @@ public final class CGEventInputSink: InputEventSink {
                 state.lastPostWasModifier = item.isModifier
                 state.lastPostAt = ProcessInfo.processInfo.systemUptime
             }
-            state.record(burst: Date().timeIntervalSince(start) * 1_000)
+            let elapsed = Date().timeIntervalSince(start)
+            state.record(burst: elapsed * 1_000)
+            latency?.record(seconds: elapsed)
         }
     }
 

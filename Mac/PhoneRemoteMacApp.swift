@@ -8,18 +8,13 @@ import PhoneRemoteShared
 #if os(macOS)
 import AppKit
 
-private extension BLECentralLifecycleState {
+private extension RemoteLinkState {
     var label: String {
         switch self {
-        case .idle: return "Idle"
-        case .waitingForBluetooth: return "Waiting for Bluetooth"
-        case .scanning: return "Scanning"
+        case .unavailable: return "Unavailable"
+        case .searching: return "Searching"
         case .connecting: return "Connecting"
-        case .discovering: return "Discovering service"
-        case .subscribing: return "Subscribing"
-        case .ready: return "Ready"
-        case .disconnected: return "Disconnected"
-        case .stopped: return "Stopped"
+        case .connected: return "Connected"
         }
     }
 }
@@ -52,6 +47,10 @@ final class MacRemoteAppModel: ObservableObject {
     /// How often the watchdog is asked whether its window has passed.  It only
     /// decides the delay between the window closing and the release.
     private static let watchdogPollInterval: TimeInterval = 0.25
+    /// How long a connected phone has to finish the handshake. Nothing below
+    /// can tell a healthy idle link from a stale one, so the deadline lives
+    /// here, beside the session it is waiting for.
+    private static let authenticationTimeout: TimeInterval = 12
 
     private let injector: SafeInputInjector
     private let reliableInput: ReliableInputCoordinator
@@ -62,13 +61,12 @@ final class MacRemoteAppModel: ObservableObject {
     private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
-    private let central: MacBLECentralTransport
+    private let link: MessageLink
     private let pairingOffer: MacPairingOfferController
     private let pairingCoordinator: MacPairingCoordinator?
     private let qrRenderer: MacPairingQRCodeRenderer
-    private var inboundReassembler: BLEReassembler?
-    private var controlReassembler: BLEReassembler?
     private var pairingServer: PairingHandshakeServer?
+    private var authenticationDeadline: Date?
     private var pairingID: UUID?
     private var pairingDeviceName: String?
     private var authenticatedSession: PairingSession? {
@@ -85,14 +83,14 @@ final class MacRemoteAppModel: ObservableObject {
             } else if oldValue == nil {
                 startWatchdog()
             }
+            refreshAuthenticationDeadline()
         }
     }
-    private var nextHandshakeMessageID: UInt32 = 1
     private var nextApplicationSequence: UInt64 = 1
 
     @Published private(set) var status: RemoteMenuBarStatus = .disconnected { didSet { publishDebugState() } }
     @Published private(set) var accessibility: AccessibilityState = .unknown { didSet { publishDebugState() } }
-    @Published private(set) var bluetoothState: BLECentralLifecycleState = .idle { didSet { publishDebugState() } }
+    @Published private(set) var linkState: RemoteLinkState = .unavailable { didSet { publishDebugState() } }
     @Published private(set) var pairingState: MacPairingOfferState = .idle { didSet { publishDebugState() } }
     @Published private(set) var pairingProgress: MacPairingProgress = .idle { didSet { publishDebugState() } }
     @Published private(set) var pairedDevices: [TrustedDeviceSummary] = [] { didSet { publishDebugState() } }
@@ -119,12 +117,15 @@ final class MacRemoteAppModel: ObservableObject {
     /// Experimental: only ever reached when the phone marks an utterance as an
     /// instruction, which its own setting gates.
     private let editor = QwenTranscriptEditor()
+    private let latency: MacLatencyProbes
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
     private let focusedTextReader = AXFocusedTextReader()
     private let deleteScrub: DeleteScrubCoordinator
 
     init() {
+        let latency = MacLatencyProbes()
+        self.latency = latency
         let vocabularyCache = VocabularyCache()
         let screenVocabularyReader = AXScreenVocabularyReader(
             isEnabled: UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true,
@@ -133,7 +134,7 @@ final class MacRemoteAppModel: ObservableObject {
         self.screenVocabularyReader = screenVocabularyReader
         self.speechServer = NemotronServer(speechContext: screenVocabularyReader)
         let trust = SystemAccessibilityTrust()
-        let sink = CGEventInputSink(trust: trust)
+        let sink = CGEventInputSink(trust: trust, keyPost: latency.keyPost)
         self.inputSink = sink
         let smoothing = SmoothedTravelSink(
             wrapping: sink,
@@ -148,7 +149,7 @@ final class MacRemoteAppModel: ObservableObject {
         let adapter: MacCentralManagerAdapter = inert
             ? InertCentralManagerAdapter()
             : CoreBluetoothCentralManagerAdapter()
-        let central = MacBLECentralTransport(adapter: adapter)
+        let link = BLEMessageLink(adapter: adapter, latency: latency.linkSend)
         let pairingOffer = MacPairingOfferController()
         let store: TrustedDeviceStore = inert
             ? InMemoryTrustedDeviceStore()
@@ -173,32 +174,35 @@ final class MacRemoteAppModel: ObservableObject {
             normalizer: normalizer,
             editor: editor,
             focusedText: focusedTextReader,
-            vocabulary: vocabularyCache
+            vocabulary: vocabularyCache,
+            latency: latency.voiceCommitToTyped
         )
         self.voiceCoordinator = voiceCoordinator
-        self.central = central
+        self.link = link
         self.pairingOffer = pairingOffer
         self.pairingCoordinator = pairingCoordinator
         self.qrRenderer = MacPairingQRCodeRenderer()
         self.pairedDevices = pairingCoordinator?.trustedDevices ?? []
-        let reassembledLimit = BLEFramingLimits.maximumEnvelopeBytes + BLEFramingLimits.headerBytes
-        self.inboundReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
-        self.controlReassembler = try? BLEReassembler(maximumValueLength: reassembledLimit)
 
         // Core Bluetooth already calls back on the main queue.  A `Task` hop
-        // per frame queued every packet behind whatever the main actor was
+        // per message queued every packet behind whatever the main actor was
         // doing, so a burst of cursor motion replayed slowly instead of
         // arriving.  The same fix was needed for the phone's motion sink.
-        central.onStateChange = { [weak self] state in
-            MainActor.assumeIsolated { self?.handleCentralState(state) }
+        link.onStateChange = { [weak self] state in
+            MainActor.assumeIsolated { self?.handleLinkState(state) }
         }
-        central.onFrameReceived = { [weak self] channel, data in
-            MainActor.assumeIsolated { self?.handleIncomingFrame(channel: channel, data: data) }
+        link.onMessage = { [weak self] channel, message in
+            // Started here rather than deeper in, so the number covers
+            // everything the Mac does with a message the phone has already sent.
+            let arrival = LatencyClock()
+            MainActor.assumeIsolated {
+                self?.handleIncomingMessage(channel: channel, message: message, arrival: arrival)
+            }
         }
-        central.onTransportError = { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleTransportError() }
+        link.onError = { [weak self] error in
+            MainActor.assumeIsolated { self?.handleLinkError(error) }
         }
-        handleCentralState(central.state)
+        handleLinkState(link.state)
         pairingOffer.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.pairingState = state
@@ -210,7 +214,7 @@ final class MacRemoteAppModel: ObservableObject {
                 self.pairingQRImage = nil
                 self.pairingExpiry = nil
                 if self.authenticatedSession == nil {
-                    self.restoreProgressAfterOfferChange()
+                    self.pairingProgress = self.linkProgress(for: self.link.state)
                 }
             }
         }
@@ -261,7 +265,7 @@ final class MacRemoteAppModel: ObservableObject {
 
         _ = lifecycle.handle(.startup)
         refreshAccessibility(prompt: false)
-        if !inert { central.start() }
+        if !inert { link.start() }
         publishDebugState()
         startDebugServerIfNeeded()
     }
@@ -351,106 +355,77 @@ final class MacRemoteAppModel: ObservableObject {
 
     func tick() {
         pairingOffer.tick()
-        central.tick()
+        guard let deadline = authenticationDeadline, Date() >= deadline else { return }
+        // A connected phone that never finishes the handshake leaves a link
+        // that looks live and carries nothing. Drop it and look again.
+        authenticationDeadline = nil
+        link.stop()
+        link.start()
     }
 
     private func updateStatus() {
         status = lifecycle.status()
     }
 
-    private func handleCentralState(_ state: BLECentralLifecycleState) {
-        bluetoothState = state
+    private func handleLinkState(_ state: RemoteLinkState) {
+        linkState = state
+        if state != .connected, authenticatedSession != nil {
+            clearHandshakeState()
+            _ = lifecycle.handle(.disconnected)
+            updateStatus()
+        }
+        refreshAuthenticationDeadline()
+        // A live QR offer is its own progress; the link looking behind it is
+        // not news.
+        if case .active = pairingOffer.state, state == .searching { return }
+        pairingProgress = linkProgress(for: state)
+    }
+
+    private func linkProgress(for state: RemoteLinkState) -> MacPairingProgress {
         switch state {
-        case .idle:
-            if authenticatedSession == nil { pairingProgress = .idle }
-        case .waitingForBluetooth:
-            pairingProgress = .waitingForBluetooth
-        case .scanning:
+        case .unavailable: return .waitingForLink
+        case .searching: return .scanning
+        case .connecting: return .connecting(deviceName: peerName)
+        case .connected:
             if authenticatedSession != nil {
-                clearHandshakeState()
-                _ = lifecycle.handle(.disconnected)
-                updateStatus()
+                return .paired(deviceName: pairingDeviceName ?? peerName)
             }
-            if authenticatedSession == nil {
-                if case .active = pairingOffer.state {
-                    break
-                }
-                pairingProgress = .scanning
-            }
-        case .connecting:
-            pairingProgress = .connecting(deviceName: visiblePeripheralName)
-        case .discovering, .subscribing:
-            pairingProgress = .connected(deviceName: visiblePeripheralName)
-        case .ready:
-            if authenticatedSession != nil {
-                pairingProgress = .paired(deviceName: pairingDeviceName ?? visiblePeripheralName)
-            } else {
-                pairingProgress = .connected(deviceName: visiblePeripheralName)
-            }
-        case .disconnected:
-            clearHandshakeState()
-            _ = lifecycle.handle(.disconnected)
-            updateStatus()
-            pairingProgress = .disconnected
-        case .stopped:
-            clearHandshakeState()
-            _ = lifecycle.handle(.disconnected)
-            updateStatus()
-            pairingProgress = .disconnected
+            return .connected(deviceName: peerName)
         }
     }
 
-    private func restoreProgressAfterOfferChange() {
-        switch central.state {
-        case .waitingForBluetooth: pairingProgress = .waitingForBluetooth
-        case .scanning: pairingProgress = .scanning
-        case .connecting: pairingProgress = .connecting(deviceName: visiblePeripheralName)
-        case .discovering, .subscribing: pairingProgress = .connected(deviceName: visiblePeripheralName)
-        case .ready: pairingProgress = .connected(deviceName: visiblePeripheralName)
-        case .disconnected, .stopped: pairingProgress = .disconnected
-        case .idle: pairingProgress = .idle
-        }
-    }
-
-    private var visiblePeripheralName: String {
-        let name = central.visiblePeripheral?.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (name?.isEmpty == false ? name : nil) ?? "iPhone"
-    }
-
-    private func handleIncomingFrame(channel: BLETransportChannel, data: Data) {
-        if channel == .data {
-            if authenticatedSession != nil {
-                handleApplicationFrame(channel: channel, data: data)
-            }
+    private func refreshAuthenticationDeadline() {
+        guard link.state == .connected, authenticatedSession == nil else {
+            authenticationDeadline = nil
             return
         }
-        // Hello can arrive in the same turn as the last subscribe callback,
-        // before this state machine has moved to `.ready`. A later hello must
-        // also be accepted if the Mac already thought it was paired; otherwise
-        // the phone retries forever and ping/trackpad stay dead.
-        guard channel == .control, let reassembler = controlReassembler else { return }
-        switch central.state {
-        case .subscribing, .ready:
-            break
-        case .idle, .waitingForBluetooth, .scanning, .connecting, .discovering, .disconnected, .stopped:
-            return
+        authenticationDeadline = Date().addingTimeInterval(Self.authenticationTimeout)
+    }
+
+    private var peerName: String { link.peerName ?? "iPhone" }
+
+    private func handleIncomingMessage(channel: LinkChannel, message: Data, arrival: LatencyClock) {
+        switch channel {
+        case .data:
+            guard authenticatedSession != nil else { return }
+            handleApplicationMessage(message, arrival: arrival)
+        case .control:
+            handleControlMessage(message)
         }
+    }
+
+    /// A hello is accepted even when the Mac already thought it was paired;
+    /// otherwise the phone retries forever and ping/trackpad stay dead.
+    private func handleControlMessage(_ message: Data) {
         do {
-            switch try reassembler.append(data) {
-            case .incomplete, .duplicate:
-                return
-            case let .complete(payload, kind, _, _):
-                guard kind == .control else { throw PairingError.invalidHandshake }
-                if payload.starts(with: PairingClientHello.magic) {
-                    pairingServer = nil
-                    controlReassembler?.reset()
-                    try beginHandshake(payload: payload)
-                } else if payload.starts(with: PairingClientFinish.magic) {
-                    guard let pairingServer else { throw PairingError.invalidHandshake }
-                    try finishHandshake(server: pairingServer, payload: payload)
-                } else if authenticatedSession == nil {
-                    throw PairingError.invalidHandshake
-                }
+            if message.starts(with: PairingClientHello.magic) {
+                pairingServer = nil
+                try beginHandshake(payload: message)
+            } else if message.starts(with: PairingClientFinish.magic) {
+                guard let pairingServer else { throw PairingError.invalidHandshake }
+                try finishHandshake(server: pairingServer, payload: message)
+            } else if authenticatedSession == nil {
+                throw PairingError.invalidHandshake
             }
         } catch {
             failPairing(error)
@@ -462,10 +437,10 @@ final class MacRemoteAppModel: ObservableObject {
         let hello = try PairingClientHello.decode(payload)
         let server = try pairingCoordinator.makeHandshakeServer(pairingID: hello.pairingID)
         pairingID = hello.pairingID
-        pairingDeviceName = visiblePeripheralName
+        pairingDeviceName = peerName
         pairingServer = server
         if authenticatedSession == nil {
-            pairingProgress = .authenticating(deviceName: visiblePeripheralName)
+            pairingProgress = .authenticating(deviceName: peerName)
         }
         let response = try server.accept(clientHelloData: payload)
         try sendHandshake(response.response)
@@ -474,7 +449,7 @@ final class MacRemoteAppModel: ObservableObject {
     private func finishHandshake(server: PairingHandshakeServer, payload: Data) throws {
         guard let pairingCoordinator, let pairingID else { throw PairingError.invalidHandshake }
         let result = try server.accept(clientFinishData: payload)
-        let displayName = pairingDeviceName ?? visiblePeripheralName
+        let displayName = pairingDeviceName ?? peerName
         _ = try pairingCoordinator.rememberPairedPhone(
             deviceID: pairingID,
             displayName: displayName,
@@ -482,13 +457,10 @@ final class MacRemoteAppModel: ObservableObject {
         )
         pairedDevices = pairingCoordinator.trustedDevices
         authenticatedSession = result.session
-        central.setLinkAuthenticated(true)
         pairingServer = nil
         pairingError = nil
         lastPairingFailure = nil
         pairingProgress = .paired(deviceName: displayName)
-        inboundReassembler?.reset()
-        controlReassembler?.reset()
         nextApplicationSequence = 1
         lastApplicationMessage = nil
         _ = lifecycle.handle(.authenticated)
@@ -496,23 +468,12 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func sendHandshake(_ payload: Data) throws {
-        let messageID = nextHandshakeMessageID
-        nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-        let frames = try BLEFragmenter().fragment(
-            payload: payload,
-            kind: .control,
-            reliable: true,
-            messageID: messageID,
-            maximumValueLength: max(BLEFramingLimits.minimumValueLength, central.maximumWriteValueLength)
-        )
-        for frame in frames {
-            guard central.send(frame, on: .control, reliable: true) else {
-                throw PairingError.invalidHandshake
-            }
+        guard link.send(payload, on: .control, delivery: .reliable) == .sent else {
+            throw PairingError.invalidHandshake
         }
     }
 
-    private func handleTransportError() {
+    private func handleLinkError(_ error: LinkError) {
         if authenticatedSession != nil {
             clearHandshakeState()
             _ = lifecycle.handle(.disconnected)
@@ -521,7 +482,7 @@ final class MacRemoteAppModel: ObservableObject {
             return
         }
         if pairingServer != nil {
-            failPairing()
+            failPairing(error)
             return
         }
         // The phone vanished before hello. Keep the QR offer and wait again.
@@ -549,8 +510,8 @@ final class MacRemoteAppModel: ObservableObject {
         switch error {
         case let pairing as PairingError:
             return String(describing: pairing)
-        case let framing as BLEFramingError:
-            return String(describing: framing)
+        case let link as LinkError:
+            return linkFailureName(link)
         case .some:
             return "handshake"
         case .none:
@@ -558,29 +519,54 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    private func handleApplicationFrame(channel: BLETransportChannel, data: Data) {
-        guard channel == .data, let session = authenticatedSession, let reassembler = inboundReassembler else { return }
+    private static func linkFailureName(_ error: LinkError) -> String {
+        switch error {
+        case .unavailable: return "Bluetooth turned off"
+        case .peerNotFound: return "the phone never answered"
+        case let .setupFailed(reason): return reason
+        case .peerDisconnected: return "the phone disconnected"
+        case .malformedMessage: return "an unreadable message"
+        }
+    }
+
+    /// `arrival` is stopped once the events are with the injector, so
+    /// `receiveToInject` is the Mac's whole share of the lag. The stages inside
+    /// it are timed separately, which is what localises a regression; a message
+    /// that never reaches the injector is a refusal rather than a fast one.
+    private func handleApplicationMessage(_ message: Data, arrival: LatencyClock) {
+        guard let session = authenticatedSession else { return }
         do {
-            switch try reassembler.append(data) {
-            case .incomplete, .duplicate:
+            let unsealing = LatencyClock()
+            let decrypted = try session.decrypt(message)
+            latency.decrypt.record(microseconds: unsealing.elapsedMicroseconds)
+            let decoding = LatencyClock()
+            if decrypted.messageType == MessageType.audioChunk.rawValue,
+               decrypted.plaintext.starts(with: VoiceStreamFrame.magic) {
+                let frame = try VoiceStreamFrame.decode(decrypted.plaintext)
+                latency.decode.record(microseconds: decoding.elapsedMicroseconds)
+                // Audio is handed to another queue and typed much later, which
+                // `voiceCommitToTyped` covers instead.
+                voiceCoordinator.receive(frame)
                 return
-            case let .complete(payload, kind, _, _):
-                guard kind == .data else { return }
-                let decrypted = try session.decrypt(payload)
-                if decrypted.messageType == MessageType.audioChunk.rawValue,
-                   decrypted.plaintext.starts(with: VoiceStreamFrame.magic) {
-                    voiceCoordinator.receive(try VoiceStreamFrame.decode(decrypted.plaintext))
-                    return
-                }
-                if decrypted.messageType == MessageType.pointerDelta.rawValue,
-                   decrypted.plaintext.starts(with: PointerStreamFrame.magic) {
-                    try dispatchCursorFrame(PointerStreamFrame.decode(decrypted.plaintext))
-                    return
-                }
-                let envelope = try ProtocolCodec.decode(Array(decrypted.plaintext))
-                try dispatchApplication(envelope.payload)
             }
+            if decrypted.messageType == MessageType.pointerDelta.rawValue,
+               decrypted.plaintext.starts(with: PointerStreamFrame.magic) {
+                let frame = try PointerStreamFrame.decode(decrypted.plaintext)
+                latency.decode.record(microseconds: decoding.elapsedMicroseconds)
+                let handing = LatencyClock()
+                try dispatchCursorFrame(frame)
+                latency.dispatch.record(microseconds: handing.elapsedMicroseconds)
+                latency.receiveToInject.record(microseconds: arrival.elapsedMicroseconds)
+                return
+            }
+            let envelope = try ProtocolCodec.decode(Array(decrypted.plaintext))
+            latency.decode.record(microseconds: decoding.elapsedMicroseconds)
+            let handing = LatencyClock()
+            try dispatchApplication(envelope.payload)
+            latency.dispatch.record(microseconds: handing.elapsedMicroseconds)
+            latency.receiveToInject.record(microseconds: arrival.elapsedMicroseconds)
         } catch {
+            latency.receiveToInject.recordRefusal()
             lastApplicationMessage = "error"
         }
     }
@@ -690,18 +676,9 @@ final class MacRemoteAppModel: ObservableObject {
             payload: payload
         )
         nextApplicationSequence = nextApplicationSequence == UInt64.max ? 1 : nextApplicationSequence &+ 1
-        let messageID = nextHandshakeMessageID
-        nextHandshakeMessageID = messageID == UInt32.max ? 1 : messageID &+ 1
-        let frames = try session.wrapApplication(
-            envelope,
-            messageID: messageID,
-            maximumValueLength: max(BLEFramingLimits.minimumValueLength, central.maximumWriteValueLength)
-        )
-        for frame in frames {
-            let reliable = envelope.messageType.deliveryClass == .reliable
-            guard central.send(frame, on: .data, reliable: reliable) else {
-                throw PairingError.invalidHandshake
-            }
+        let sealed = try session.seal(envelope)
+        guard link.send(sealed, on: .data, delivery: envelope.messageType.deliveryClass == .reliable ? .reliable : .unreliableQueued) == .sent else {
+            throw PairingError.invalidHandshake
         }
     }
 
@@ -713,10 +690,7 @@ final class MacRemoteAppModel: ObservableObject {
         pairingID = nil
         pairingDeviceName = nil
         authenticatedSession = nil
-        central.setLinkAuthenticated(false)
         lastApplicationMessage = nil
-        inboundReassembler?.reset()
-        controlReassembler?.reset()
         publishDebugState()
     }
 
@@ -728,6 +702,8 @@ final class MacRemoteAppModel: ObservableObject {
         server.focusProbe = { reader.diagnostics() }
         let vocabulary = screenVocabularyReader
         server.vocabularyProbe = { vocabulary.probe(bundleID: $0) }
+        let probes = latency
+        server.latencyProbe = { probes.summaries() }
         let keys = MainThreadInjector(injector: injector)
         server.keyBurstProbe = { count in
             MacRemoteAppModel.measureKeyBurst(count, keys: keys.injector, reader: reader)
@@ -817,8 +793,8 @@ final class MacRemoteAppModel: ObservableObject {
             status: status.title,
             paused: isPaused,
             accessibility: accessibility.rawValue,
-            bluetooth: bluetoothState.label,
-            bluetoothKind: String(describing: bluetoothState),
+            link: linkState.label,
+            linkKind: String(describing: linkState),
             pairingProgress: pairingProgress.title,
             pairingProgressKind: pairingProgress.kind,
             authenticated: authenticatedSession != nil || pairingProgress.isAuthenticated,
@@ -826,7 +802,7 @@ final class MacRemoteAppModel: ObservableObject {
             hasPairingQR: pairingQRImage != nil,
             pairingError: pairingError,
             lastPairingFailure: lastPairingFailure,
-            visiblePeripheralName: visiblePeripheralName,
+            peerName: peerName,
             lastApplicationMessage: lastApplicationMessage,
             deleteScrub: deleteScrub.lastSlide.isEmpty ? nil : deleteScrub.lastSlide,
             keyPostMs: inputSink.lastKeyBurstMilliseconds,
@@ -869,7 +845,7 @@ struct MacRemoteStatusView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            LabeledContent("Bluetooth", value: model.bluetoothState.label)
+            LabeledContent("Connection", value: model.linkState.label)
                 .font(.caption)
             Label(model.pairingProgress.title,
                   systemImage: model.pairingProgress.isAuthenticated ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")

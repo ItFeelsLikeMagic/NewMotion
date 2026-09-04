@@ -37,14 +37,19 @@ held delete key's word notch goes out as one `hotkeyRun` command with no
 spacing inside it, and a five-letter word costs about a millisecond instead of
 about 100 ms. Measured, not assumed; see below.
 
-That gives, from the moment a message lands on the Mac:
+A gap is measured from the last event actually posted, not from the start of the
+burst, so a queue that has been idle waits for nothing on its first event. That
+splits every figure below in two. From the moment a message lands on the Mac:
 
-| Action | Key events | Mac cost |
-| --- | --- | --- |
-| App switcher begin | Command down, Tab down, Tab up | 45 ms |
-| One slide step | Tab down, Tab up | 20 ms |
-| Commit | Command up | 10 ms |
-| Escape or Return | key down, key up | 20 ms |
+| Action | Key events | Idle queue | Queued behind another burst |
+| --- | --- | --- | --- |
+| App switcher begin | Command down, Tab down, Tab up | 10 ms | 20 ms |
+| One slide step | Tab down, Tab up | 10 ms | 20 ms |
+| Commit | Command up | 0 ms | 10 ms |
+| Escape or Return | key down, key up | 10 ms | 20 ms |
+
+These are derived from the two constants, not measured. The `keyPost` tracker
+measures the real thing continuously; see **Continuous measurement** below.
 
 Slide steps queue behind each other on the posting queue, so a fast slide across
 six apps is about 120 ms of key events still going out after the finger stops.
@@ -66,23 +71,23 @@ Changed 2026-09-03:
   delta in 11 bytes of plaintext instead of 206. It is encrypted as message type
   `pointerDelta` and recognised by its `PRP1` magic, and several deltas ride in
   one frame. About 87 wire bytes against 282.
-- Sum on busy, not drop. `flushCursorStream` in `iPhone/PhoneRemoteApp.swift`
+- Sum on busy, not drop. `flushTravel` in `iPhone/Input/InputUplink.swift`
   keeps the accumulated travel when the radio refuses a single-frame message and
   retries on the transport's `onReadyToSend` callback. A message that needs more
   than one fragment still queues whole, and a click forces a queued flush so it
   cannot overtake the travel before it.
 - One pacer. `TrackpadGestureEngine` no longer rate limits;
-  `displayCadenceLimitHz` is gone and `TrackpadOutputCoalescer` (16 ms) is the
+  `displayCadenceLimitHz` is gone and `CursorMixer` (16 ms) is the
   only pacer on the path.
 - The air mouse rides the same frame and the same retry.
   `SharedMotionProtocolAdapter` is deleted. The `motionPointerDelta` protocol
   case stays for the Mac's decoder.
 - The air mouse shares the pacer too. Core Motion samples hand off to the main
   queue as they arrive (`DeltaCoalescer.motionPointer()` no longer paces) and
-  join `TrackpadOutputCoalescer.handlePointer`, so cursor travel updates at
+  join `CursorMixer.handleTravel`, so cursor travel updates at
   about 60 Hz from either sensor instead of 25 Hz from the air mouse, and two
   sensors moving one cursor cannot each spend a full packet budget.
-- `CursorTravel` (`iPhone/Trackpad/CursorTravel.swift`) keeps the sub-point
+- `CursorTravel` (`iPhone/Input/CursorTravel.swift`) keeps the sub-point
   remainder between packets, and any travel past what one frame carries. Whole
   points go out, the fraction waits. Rounding each packet on its own discarded
   up to half a point every time, so slow air-mouse aiming under roughly 12
@@ -107,9 +112,10 @@ Physical feel after these changes is not measured yet.
 ## Where the stages live
 
 The input path was pulled out of the view model on 2026-09-03. Sensors, mixer,
-uplink, and link are now separate stages, and the link is a protocol so the
-transport can be replaced without touching anything above it. See
-`docs/input_pipeline.md`.
+uplink, session, and transport are now separate stages. There are two protocols:
+`InputLink` hides sealing and sequencing from the pipeline, and `MessageLink`
+hides the wire from everything above it, sealing included. A new transport is
+one more `MessageLink`. See `docs/input_pipeline.md`.
 
 ## How to measure
 
@@ -123,8 +129,86 @@ Samples also land in the phone debug log as `ping_rtt`.
 `./scripts/debug-mac.sh`. It is the wall time for the last paced burst, from
 hand-off to its final event reaching the window server.
 
-**What is not measured.** The Dock's own reaction, and the touch-to-send step.
-Neither app can see them.
+**What is not measured.** The Dock's own reaction. It is the only step left
+that neither app can see. The touch-to-send step is now covered by
+`input.gesture->wire` below.
+
+## Continuous measurement
+
+The two probes above answer a question only when you go and ask. Every stage on
+the cursor and voice paths now also keeps a running window, so a slowdown can be
+found after the fact instead of reproduced.
+
+`LatencyTracker` (`Shared/Observability/LatencyTracker.swift`) is a 256-sample
+ring buffer, about four seconds of cursor traffic at 60 a second: long enough to
+show a stall, short enough to forget one. Recording takes a lock, writes one
+slot, and bumps an index. No allocation, no formatting, no sorting. Sorting
+happens only when a summary is read.
+
+Three things about reading it:
+
+- **Samples are microseconds.** Most stages are under a millisecond, and a stage
+  that always reads zero teaches nothing.
+- **`refused=` is the number to watch.** A link falling behind shows flat
+  timings and a climbing refusal rate, because a message that never went out has
+  no duration to record. Timings alone will not show it.
+- **`refused=` and its attempt count are running totals**, while the timings are
+  a rolling window. The recent refusal rate is the difference between two
+  readings, not the number on any one of them.
+
+`LatencyClock` is the stopwatch. It is monotonic on purpose: the wall clock can
+step sideways when it is corrected, and a negative duration in the middle of a
+latency window is worse than no measurement at all.
+
+Neither type can ever see a payload, so nothing typed or said can reach a
+timing. That is a boundary, not an accident; see `docs/worker_learnings.md`.
+
+**Mac.** `./scripts/debug-mac.sh` returns a `latency` array in `/state`, seven
+entries defined in `Mac/Debug/MacLatencyProbes.swift`:
+
+| Name | Times |
+| --- | --- |
+| `receiveToInject` | A whole received message, from the link handing it over to the effect being applied |
+| `decrypt` | Opening the sealed message |
+| `decode` | Turning plaintext into an envelope |
+| `dispatch` | Routing the decoded message to the thing that acts on it |
+| `keyPost` | One paced key burst, hand-off to the last event reaching the window server |
+| `linkSend` | One message on its way back to the phone |
+| `voiceCommitToTyped` | Speech commit to the words landing in the field |
+
+`decrypt`, `decode`, and `dispatch` are the inside of `receiveToInject`, so they
+sum to roughly it. If the total is high and the three parts are not, the time
+went somewhere none of them covers.
+
+**Phone.** `./scripts/debug-phone.sh` shows a `latency` event, emitted every five
+seconds while the app is in front and connected. A phone in a pocket measures
+nothing. Seven trackers, defined in `iPhone/Debug/PhoneLatency.swift`:
+
+| Log key | Name | Times |
+| --- | --- | --- |
+| `linkData` | `link.send.data` | Cursor, click and voice traffic into Core Bluetooth |
+| `linkCtrl` | `link.send.control` | Handshake traffic, kept apart so a slow pairing does not read as a slow cursor |
+| `input` | `input.gesture->wire` | Seal plus wire for one input message |
+| `held` | `input.held` | How long accumulated travel sat waiting on a busy link. This is the lag the hand feels |
+| `voiceEnc` | `voice.encode` | Compressing and sealing one voice chunk |
+| `voiceWire` | `voice.wire` | Handing one sealed voice chunk to the link |
+| `rtt` | `link.rtt` | Phone to Mac and back, sampled automatically every couple of seconds |
+
+Subtract `link.send.data` from `input.gesture->wire` and what is left is the
+phone's own sealing cost.
+
+`link.rtt` counts a refusal when a pong never comes back. Without that, one lost
+pong would pair every later pong with an older send and the round trip would
+read long for as long as the link stayed up.
+
+### Reading the three cases
+
+- **`input.held` high with `link.send.data` refusals climbing.** The wire is the
+  bottleneck and messages are backing up behind it.
+- **`receiveToInject` high.** The Mac is slow, and its three parts say which
+  piece.
+- **Everything low and it still feels laggy.** The lag is `link.rtt`, which is
+  the radio's own heartbeat. No code above the transport can fix that.
 
 ## Measured
 
@@ -135,7 +219,7 @@ Neither app can see them.
 | Bluetooth round trip | 53, 58, 68, 77, 85 ms. Average 68, best 53. |
 | One way, inferred | roughly 30 ms |
 | Mac key posting, commit queued behind a begin | 49 ms measured |
-| Mac key posting, idle queue | 45 ms begin, 20 ms step, 10 ms commit, from the constants above |
+| Mac key posting, idle queue | superseded; see the 2026-09-04 reading below |
 
 A quick tap of the switcher button, no slide, therefore costs roughly
 **115 to 135 ms** from press to the Mac switching apps: one hop out, the begin
@@ -150,6 +234,43 @@ so the queue stayed empty and the highlight tracked the finger.
 
 The Bluetooth hop is now the largest single cost, and it is not ours to tune
 directly; macOS and iOS negotiate the connection interval.
+
+### 2026-09-04, first reading from the rolling probes
+
+Phone beside the Mac, both apps foreground, roughly forty seconds of trackpad
+and one push-to-talk utterance. Only the iPhone was connected over Bluetooth, so
+nothing else was competing for the radio.
+
+| Stage | Median | p95 | Worst | Refused |
+| --- | ---: | ---: | ---: | ---: |
+| `link.rtt` | 68 ms | 101 ms | 123 ms | 0 of 22 |
+| `input.gesture->wire` | 0.57 ms | 0.64 ms | 0.98 ms | 0 of 22 |
+| `link.send.data` | 0.13 ms | 0.21 ms | 0.23 ms | 0 of 89 |
+| `receiveToInject` | 0.23 ms | 1.82 ms | 9.50 ms | 0 of 86 |
+| `decrypt` | 0.07 ms | 0.19 ms | 7.74 ms | 0 of 153 |
+| `decode` | 0.02 ms | 0.25 ms | 1.75 ms | 0 of 153 |
+| `dispatch` | 0.09 ms | 1.26 ms | 1.52 ms | 0 of 86 |
+| `keyPost` | 1.76 ms | | | 0 of 1 |
+| `voiceCommitToTyped` | 1234 ms | | | 0 of 1 |
+
+What it says:
+
+- **The radio is the whole cost.** 68 ms round trip is about 34 ms each way,
+  which is the 30 ms connection interval plus change. Every software stage on
+  both sides is under 2 ms, so code contributes roughly one part in thirty.
+- **Nothing is backing up.** Zero refusals across 89 sends, and `input.held`
+  produced no samples at all, meaning travel never once waited for room. The
+  keep-and-retry path is present but was not needed at this traffic level.
+- **`voiceCommitToTyped` is the speech model, not the link.** 1.2 s from commit
+  to text in the field, against a 0.13 ms wire cost for the audio chunks that
+  fed it.
+
+`voice.encode` recorded 5 refusals in 72 attempts, but all five landed during
+the reconnect before the session existed, alongside `ptt_drop reason=no_session`
+in the phone log. Not a steady-state loss.
+
+The old advice stands and is now measured rather than argued: the connection
+interval is the floor, and no code above the transport can move it.
 
 ### A run of one repeated key, 2026-09-04
 

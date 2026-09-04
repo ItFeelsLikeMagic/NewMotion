@@ -877,7 +877,6 @@ public enum ProtocolError: Error, Equatable, Sendable {
     case malformedInput
     case unsupportedVersion(UInt8)
     case unknownMessageType(UInt8)
-    case invalidSessionID
     case invalidField(String)
     case fieldTooLarge(String, actual: Int, limit: Int)
     case outOfRange(String)

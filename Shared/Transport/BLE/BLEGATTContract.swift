@@ -90,7 +90,6 @@ public enum BLECentralLifecycleState: Equatable, Sendable {
     case stopped
 }
 
-public enum BLETransportChannel: Equatable, Sendable {
-    case data
-    case control
-}
+/// The channel split is a protocol concern, not a Bluetooth one, so it lives
+/// with the link contract. Bluetooth answers it with two characteristics.
+public typealias BLETransportChannel = LinkChannel

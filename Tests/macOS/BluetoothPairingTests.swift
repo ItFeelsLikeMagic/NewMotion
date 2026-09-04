@@ -5,125 +5,118 @@ import XCTest
 @testable import PhoneRemoteShared
 
 final class BluetoothPairingTests: XCTestCase {
-    func testCentralDiscoversByServiceAndReachesReadyOnlyAfterSubscriptions() {
+    func testLinkConnectsByServiceAndOnlyReportsConnectedAfterSubscriptions() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
-        XCTAssertEqual(transport.state, .scanning)
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        XCTAssertEqual(link.state, .searching)
 
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
-        XCTAssertEqual(transport.state, .connecting)
-        XCTAssertEqual(transport.visiblePeripheral, peripheral)
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(link.peerName, "Phone")
         adapter.emitConnected(peripheral.identifier)
-        XCTAssertEqual(transport.state, .discovering)
         adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        XCTAssertEqual(transport.state, .subscribing)
         adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
-        XCTAssertEqual(transport.state, .subscribing)
+        XCTAssertEqual(link.state, .connecting)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
-        XCTAssertEqual(transport.state, .ready)
-        XCTAssertEqual(transport.visiblePeripheral, peripheral)
-        XCTAssertEqual(transport.maximumWriteValueLength, BLEFramingLimits.minimumValueLength)
-        XCTAssertTrue(transport.send(Data([1]), on: .data))
+        XCTAssertEqual(link.state, .connected)
+        XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .sent)
         XCTAssertEqual(adapter.writes.count, 1)
         XCTAssertEqual(adapter.writes.first?.1, PhoneRemoteGATT.macToPhoneDataUUID)
     }
 
-    func testCentralRediscoversWhenThePhoneRepublishesItsService() {
+    func testLinkCutsAMessageUpAndPutsOneBackTogether() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        let peripheral = bringLinkToReady(transport, adapter: adapter)
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        var received: [(LinkChannel, Data)] = []
+        link.onMessage = { received.append(($0, $1)) }
+
+        // The fake adapter offers the 20-byte minimum, so each frame carries
+        // four payload bytes behind the sixteen-byte header.
+        let message = Data(repeating: 7, count: 30)
+        XCTAssertEqual(link.send(message, on: .data, delivery: .unreliableQueued), .sent)
+        XCTAssertEqual(adapter.writes.count, 8)
+
+        for frame in adapter.writes.map(\.0) {
+            adapter.emitValue(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID, data: frame)
+        }
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received.first?.0, .data)
+        XCTAssertEqual(received.first?.1, message)
+    }
+
+    func testLinkRefusesWhatItCannotCarry() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .notConnected)
+
+        bringLinkToConnected(link, adapter: adapter)
+        let oversized = Data(repeating: 0, count: link.maximumMessageBytes + 1)
+        XCTAssertEqual(link.send(oversized, on: .data, delivery: .unreliableQueued), .tooLarge)
+        XCTAssertTrue(adapter.writes.isEmpty)
+    }
+
+    func testLinkRediscoversWhenThePhoneRepublishesItsService() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
         let discoveries = adapter.discoverServicesCount
 
         adapter.emitServicesInvalidated(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
 
-        XCTAssertEqual(transport.state, .discovering)
+        XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(adapter.discoverServicesCount, discoveries + 1)
         XCTAssertTrue(adapter.cancelledConnections.isEmpty)
-        XCTAssertEqual(transport.visiblePeripheral, peripheral)
+        XCTAssertEqual(link.peerName, "Phone")
 
         adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
         adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
-        XCTAssertEqual(transport.state, .ready)
+        XCTAssertEqual(link.state, .connected)
     }
 
-    func testCentralIgnoresInvalidationOfAnUnrelatedService() {
+    func testLinkIgnoresInvalidationOfAnUnrelatedService() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        let peripheral = bringLinkToReady(transport, adapter: adapter)
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
 
         adapter.emitServicesInvalidated(peripheral.identifier, services: [UUID()])
-        XCTAssertEqual(transport.state, .ready)
+        XCTAssertEqual(link.state, .connected)
     }
 
-    func testCentralDropsAReadyLinkThePhoneNeverAuthenticates() {
+    func testLinkGivesUpOnAPeerThatNeverFinishesConnecting() {
         let adapter = FakeCentralAdapter()
         var clock = Date(timeIntervalSince1970: 0)
-        let transport = MacBLECentralTransport(
-            adapter: adapter,
-            authenticationTimeout: 8,
-            now: { clock }
-        )
-        let peripheral = bringLinkToReady(transport, adapter: adapter)
+        let link = BLEMessageLink(adapter: adapter, connectionTimeout: 5, now: { clock })
+        var failures: [LinkError] = []
+        link.onError = { failures.append($0) }
+        link.start()
+        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
+        adapter.emitDiscover(peripheral)
+        XCTAssertEqual(link.state, .connecting)
 
-        clock.addTimeInterval(7)
-        transport.tick()
-        XCTAssertEqual(transport.state, .ready)
+        clock.addTimeInterval(4)
+        link.tick()
+        XCTAssertEqual(link.state, .connecting)
 
         clock.addTimeInterval(2)
-        transport.tick()
+        link.tick()
+        XCTAssertEqual(failures, [.peerNotFound])
         XCTAssertEqual(adapter.cancelledConnections, [peripheral.identifier])
-        XCTAssertEqual(transport.state, .scanning)
-    }
-
-    func testCentralKeepsAnIdleAuthenticatedLinkAlive() {
-        let adapter = FakeCentralAdapter()
-        var clock = Date(timeIntervalSince1970: 0)
-        let transport = MacBLECentralTransport(
-            adapter: adapter,
-            authenticationTimeout: 8,
-            now: { clock }
-        )
-        _ = bringLinkToReady(transport, adapter: adapter)
-        transport.setLinkAuthenticated(true)
-
-        clock.addTimeInterval(600)
-        transport.tick()
-        XCTAssertEqual(transport.state, .ready)
-        XCTAssertTrue(adapter.cancelledConnections.isEmpty)
-    }
-
-    func testLosingTheSessionRearmsTheAuthenticationWatchdog() {
-        let adapter = FakeCentralAdapter()
-        var clock = Date(timeIntervalSince1970: 0)
-        let transport = MacBLECentralTransport(
-            adapter: adapter,
-            authenticationTimeout: 8,
-            now: { clock }
-        )
-        _ = bringLinkToReady(transport, adapter: adapter)
-        transport.setLinkAuthenticated(true)
-        clock.addTimeInterval(600)
-
-        transport.setLinkAuthenticated(false)
-        transport.tick()
-        XCTAssertEqual(transport.state, .ready)
-
-        clock.addTimeInterval(9)
-        transport.tick()
-        XCTAssertEqual(transport.state, .scanning)
+        XCTAssertEqual(link.state, .searching)
     }
 
     @discardableResult
-    private func bringLinkToReady(
-        _ transport: MacBLECentralTransport,
+    private func bringLinkToConnected(
+        _ link: BLEMessageLink,
         adapter: FakeCentralAdapter
     ) -> BLEDiscoveredPeripheral {
-        transport.start()
+        link.start()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
         adapter.emitConnected(peripheral.identifier)
@@ -131,20 +124,23 @@ final class BluetoothPairingTests: XCTestCase {
         adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
         adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
-        XCTAssertEqual(transport.state, .ready)
+        XCTAssertEqual(link.state, .connected)
         return peripheral
     }
 
-    func testCentralRejectsMalformedServiceAndCleansConnection() {
+    func testLinkRejectsAPhoneWithoutTheServiceAndScansAgain() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
+        let link = BLEMessageLink(adapter: adapter)
+        var failures: [LinkError] = []
+        link.onError = { failures.append($0) }
+        link.start()
         let peripheralID = UUID()
         adapter.emitDiscover(BLEDiscoveredPeripheral(identifier: peripheralID, name: nil))
         adapter.emitConnected(peripheralID)
         adapter.emitServices(peripheralID, services: [UUID()])
-        XCTAssertEqual(transport.state, .scanning)
-        XCTAssertNil(transport.connectedPeripheral)
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(failures, [.setupFailed("the phone is not offering Phone Remote")])
+        XCTAssertNil(link.peerName)
         XCTAssertEqual(adapter.scanCount, 2)
     }
 
@@ -294,60 +290,38 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(MacPairingProgress.authenticating(deviceName: "Phone").title, "Authenticating Phone")
     }
 
-    func testCentralRescansAfterReadyDisconnect() {
+    func testLinkRescansAfterAConnectedPeerDisconnects() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
-        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
-        adapter.emitDiscover(peripheral)
-        adapter.emitConnected(peripheral.identifier)
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        adapter.emitCharacteristics(
-            peripheral.identifier,
-            serviceUUID: PhoneRemoteGATT.serviceUUID,
-            characteristics: PhoneRemoteGATT.allCharacteristicUUIDs
-        )
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
-        XCTAssertEqual(transport.state, .ready)
+        let link = BLEMessageLink(adapter: adapter)
+        var failures: [LinkError] = []
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        link.onError = { failures.append($0) }
         XCTAssertEqual(adapter.scanCount, 1)
 
         adapter.emitDisconnected(peripheral.identifier)
-        XCTAssertEqual(transport.state, .scanning)
+        XCTAssertEqual(failures, [.peerDisconnected])
+        XCTAssertEqual(link.state, .searching)
         XCTAssertEqual(adapter.scanCount, 2)
-        XCTAssertNil(transport.connectedPeripheral)
+        XCTAssertNil(link.peerName)
     }
 
     func testReliableWritesWaitForCompletionBeforeTheNextFrame() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
-        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
-        adapter.emitDiscover(peripheral)
-        adapter.emitConnected(peripheral.identifier)
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        adapter.emitCharacteristics(
-            peripheral.identifier,
-            serviceUUID: PhoneRemoteGATT.serviceUUID,
-            characteristics: PhoneRemoteGATT.allCharacteristicUUIDs
-        )
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
+        let link = BLEMessageLink(adapter: adapter)
+        bringLinkToConnected(link, adapter: adapter)
 
-        XCTAssertTrue(transport.send(Data([1]), on: .control, reliable: true))
-        XCTAssertTrue(transport.send(Data([2]), on: .control, reliable: true))
+        XCTAssertEqual(link.send(Data([1]), on: .control, delivery: .reliable), .sent)
+        XCTAssertEqual(link.send(Data([2]), on: .control, delivery: .reliable), .sent)
         XCTAssertEqual(adapter.writes.count, 1)
-        XCTAssertEqual(transport.queuedWriteCount, 1)
         adapter.emitWriteComplete()
         XCTAssertEqual(adapter.writes.count, 2)
-        XCTAssertEqual(transport.queuedWriteCount, 0)
-        XCTAssertEqual(adapter.writes.map(\.0), [Data([1]), Data([2])])
+        XCTAssertEqual(adapter.writes.map { $0.0.suffix(1) }, [Data([1]), Data([2])])
     }
 
-    func testCentralWritesControlDuringSubscribe() {
+    func testLinkWritesControlBeforeTheSubscriptionsFinish() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
         adapter.emitConnected(peripheral.identifier)
@@ -357,35 +331,35 @@ final class BluetoothPairingTests: XCTestCase {
             serviceUUID: PhoneRemoteGATT.serviceUUID,
             characteristics: PhoneRemoteGATT.allCharacteristicUUIDs
         )
-        XCTAssertEqual(transport.state, .subscribing)
-        XCTAssertTrue(transport.send(Data([9]), on: .control, reliable: true))
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(link.send(Data([9]), on: .control, delivery: .reliable), .sent)
         XCTAssertEqual(adapter.writes.first?.1, PhoneRemoteGATT.macToPhoneControlUUID)
     }
 
-    func testCentralConnectsAlreadyConnectedPeripheralOnStart() {
+    func testLinkConnectsAPeripheralTheSystemAlreadyHoldsOnStart() {
         let adapter = FakeCentralAdapter()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.preconnected = [peripheral]
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
-        XCTAssertEqual(transport.state, .connecting)
-        XCTAssertEqual(transport.visiblePeripheral, peripheral)
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(link.peerName, "Phone")
         XCTAssertEqual(adapter.connectCount, 1)
     }
 
-    func testCentralTickAdoptsPeripheralTheSystemConnectedWhileScanning() {
+    func testLinkTickAdoptsPeripheralTheSystemConnectedWhileScanning() {
         let adapter = FakeCentralAdapter()
-        let transport = MacBLECentralTransport(adapter: adapter)
-        transport.start()
-        XCTAssertEqual(transport.state, .scanning)
-        transport.tick()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        XCTAssertEqual(link.state, .searching)
+        link.tick()
         XCTAssertEqual(adapter.connectCount, 0)
 
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.preconnected = [peripheral]
-        transport.tick()
-        XCTAssertEqual(transport.state, .connecting)
-        XCTAssertEqual(transport.visiblePeripheral, peripheral)
+        link.tick()
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(link.peerName, "Phone")
         XCTAssertEqual(adapter.connectCount, 1)
     }
 }
@@ -440,6 +414,7 @@ private final class FakeCentralAdapter: MacCentralManagerAdapter {
     func emitNotification(_ id: UUID, characteristicUUID: UUID) { onNotificationState?(id, characteristicUUID, true, nil) }
     func emitDisconnected(_ id: UUID) { onDisconnected?(id, nil) }
     func emitServicesInvalidated(_ id: UUID, services: Set<UUID>) { onServicesInvalidated?(id, services) }
+    func emitValue(_ id: UUID, characteristicUUID: UUID, data: Data) { onValue?(id, characteristicUUID, data, nil) }
     func emitWriteComplete(error: Error? = nil) { onWriteComplete?(error) }
 }
 

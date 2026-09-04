@@ -152,7 +152,7 @@ MVP message types:
 
 ```mermaid
 flowchart LR
-    I["iPhone app"] -->|"Encrypted BLE GATT"| M["Mac companion"]
+    I["iPhone app"] -->|"Encrypted, over a MessageLink (BLE today)"| M["Mac companion"]
     I --> T["Touch + Motion + Mic"]
     M --> C["Safe input injector"]
     M --> S["Audio + transcription"]
@@ -167,18 +167,27 @@ PhoneRemote/
 ├── Shared/
 │   ├── Protocol/
 │   ├── Crypto/
+│   ├── Transport/          # MessageLink, the seam a new wire implements
+│   │   └── BLE/            # framing and the GATT contract
+│   ├── Observability/
 │   └── TestTransport/
 ├── iPhone/
 │   ├── Bluetooth/
+│   ├── Link/               # BLEMessageLink
 │   ├── Pairing/
+│   ├── Input/
 │   ├── Trackpad/
 │   ├── MotionPointer/
-│   └── Audio/
+│   ├── Haptics/
+│   ├── Audio/
+│   └── Debug/
 ├── Mac/
 │   ├── Bluetooth/
+│   ├── Link/               # BLEMessageLink
 │   ├── Pairing/
 │   ├── InputInjection/
-│   └── Transcription/
+│   ├── Transcription/
+│   └── Debug/
 └── Tests/
 ```
 

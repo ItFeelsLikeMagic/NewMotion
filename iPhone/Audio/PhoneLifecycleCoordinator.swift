@@ -4,8 +4,8 @@ public enum PhoneLifecycleEvent: Equatable, Sendable {
     case startup
     case foreground
     case background
-    case bluetoothPoweredOff
-    case bluetoothPoweredOn
+    case transportUnavailable
+    case transportAvailable
     case transportDisconnected
     case trustAdded
     case trustRevoked
@@ -43,10 +43,10 @@ public struct PhoneLifecycleTransition: Equatable, Sendable {
     }
 }
 
-/// Coordinates iPhone foreground/Bluetooth/trust transitions without importing
-/// BLE or pairing implementations.  Reconnect is offered only for a known
-/// trust record, active foreground apps, and powered-on Bluetooth; the pairing
-/// layer still performs a fresh authenticated handshake.
+/// Coordinates iPhone foreground/transport/trust transitions without importing
+/// link or pairing implementations.  Reconnect is offered only for a known
+/// trust record, active foreground apps, and an available transport; the
+/// pairing layer still performs a fresh authenticated handshake.
 public final class PhoneLifecycleCoordinator {
     private let motion: PhoneLifecycleStopping?
     private let audio: PhoneLifecycleStopping?
@@ -55,7 +55,7 @@ public final class PhoneLifecycleCoordinator {
 
     private(set) public var state: PhoneSafeState = .inactive
     private(set) public var appForegrounded = false
-    private(set) public var bluetoothPoweredOn = false
+    private(set) public var transportAvailable = false
     private(set) public var trustedDevicePresent = false
 
     public init(
@@ -71,7 +71,7 @@ public final class PhoneLifecycleCoordinator {
     }
 
     public var reconnectEligible: Bool {
-        appForegrounded && bluetoothPoweredOn && trustedDevicePresent
+        appForegrounded && transportAvailable && trustedDevicePresent
     }
 
     @discardableResult
@@ -103,15 +103,15 @@ public final class PhoneLifecycleCoordinator {
             disconnectTransport()
             state = .inactive
 
-        case .bluetoothPoweredOff:
-            bluetoothPoweredOn = false
+        case .transportUnavailable:
+            transportAvailable = false
             stopResources()
             sensorsStopped = true
             disconnectTransport()
             state = .disconnected
 
-        case .bluetoothPoweredOn:
-            bluetoothPoweredOn = true
+        case .transportAvailable:
+            transportAvailable = true
             state = appForegrounded ? .foreground : .inactive
             if reconnectEligible {
                 state = .reconnecting

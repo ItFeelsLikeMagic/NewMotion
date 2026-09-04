@@ -5,6 +5,14 @@ the foreground iPhone peripheral and the macOS central. The service is
 application transport only; it is not a Bluetooth HID service and it does not
 replace the application authentication handshake.
 
+Everything here describes **one** implementation of `MessageLink`
+(`Shared/Transport/MessageLink.swift`), the seam the rest of the app talks to.
+Nothing above that protocol knows any of the detail below, so a second transport
+can be added without touching this document. The code for this one lives in
+`Shared/Transport/BLE/`, `iPhone/Link/BLEMessageLink.swift`, and
+`Mac/Link/BLEMessageLink.swift`. See `docs/input_pipeline.md` for the seam
+itself.
+
 ## Service and characteristics
 
 The iPhone advertises exactly one custom primary service:

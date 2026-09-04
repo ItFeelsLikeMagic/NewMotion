@@ -8,15 +8,15 @@ final class DebugServerTests: XCTestCase {
             status: "Remote: Active",
             paused: false,
             accessibility: "granted",
-            bluetooth: "Ready",
-            bluetoothKind: "ready",
+            link: "Connected",
+            linkKind: "connected",
             pairingProgress: "Paired with Phone",
             pairingProgressKind: "paired",
             authenticated: true,
             pairingOffer: "idle",
             hasPairingQR: false,
             pairingError: nil,
-            visiblePeripheralName: "Phone",
+            peerName: "Phone",
             pairedDevices: [
                 MacDebugPairedDevice(displayName: "Phone", pairedAt: Date(timeIntervalSince1970: 1_700_000_000))
             ]
@@ -35,6 +35,26 @@ final class DebugServerTests: XCTestCase {
         XCTAssertFalse(json.contains("deviceID"))
     }
 
+    func testStateCarriesLatencySummariesAndKeepsKeyPostMs() throws {
+        let probes = MacLatencyProbes()
+        probes.receiveToInject.record(microseconds: 1_500)
+        probes.linkSend.recordRefusal()
+        var snapshot = MacDebugSnapshot.empty
+        snapshot.keyPostMs = 12.5
+        let response = MacDebugHTTP.handle(
+            request: "GET /state HTTP/1.1\r\n\r\n",
+            snapshot: snapshot,
+            latency: { probes.summaries() }
+        )
+        let json = try XCTUnwrap(String(data: response.body, encoding: .utf8))
+        XCTAssertTrue(json.contains("\"keyPostMs\":12.5"))
+        XCTAssertTrue(json.contains("\"name\":\"receiveToInject\""))
+        XCTAssertTrue(json.contains("\"medianMs\":1.5"))
+        XCTAssertTrue(json.contains("\"name\":\"linkSend\""))
+        // A stage that never ran says nothing rather than reading as zero.
+        XCTAssertFalse(json.contains("\"name\":\"keyPost\""))
+    }
+
     func testHealthAndUnknownRoutes() {
         let health = MacDebugHTTP.handle(request: "GET /health HTTP/1.1\r\n\r\n", snapshot: .empty)
         XCTAssertEqual(health.status, 200)
@@ -50,8 +70,8 @@ final class DebugServerTests: XCTestCase {
                 status: "Remote: Active",
                 paused: false,
                 accessibility: "granted",
-                bluetooth: "Scanning",
-                bluetoothKind: "scanning",
+                link: "Searching",
+                linkKind: "searching",
                 pairingProgress: "Paired with Phone",
                 pairingProgressKind: "paired",
                 authenticated: true,
@@ -74,6 +94,6 @@ final class DebugServerTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
         XCTAssertTrue(json.contains("\"pairingProgressKind\":\"paired\""))
-        XCTAssertTrue(json.contains("\"bluetoothKind\":\"scanning\""))
+        XCTAssertTrue(json.contains("\"linkKind\":\"searching\""))
     }
 }
