@@ -11,7 +11,7 @@ the host below on 2026-09-03. Update this file with a ticket when a pin changes.
 | Swift | 6.4 (`swiftlang-6.4.0.33.1`), strict concurrency `complete` |
 | XcodeGen | Not installed. `scripts/generate.sh` falls back to `scripts/generate_fallback.py`. `project.yml` needs 2.38.0 or newer. |
 | Deployment targets | iOS 18.0, macOS 15.0 |
-| Default bundle prefix | `com.example.phoneremote` (in `project.yml` and the fallback generator) |
+| Default bundle prefix | `com.davidliao.phoneremote` (in `project.yml` and the fallback generator) |
 
 ## Device matrix
 
@@ -28,12 +28,12 @@ into the repo. Developer Mode is on. Keep the phone unlocked and on-screen for
 
 ## Bundle prefix on the phone
 
-The installed phone app uses prefix `com.davidliao.phoneremote`. It was built
-with `PHONE_REMOTE_BUNDLE_PREFIX=com.davidliao.phoneremote`. Only the fallback
-generator reads that variable, and only for the shared framework and the iOS
-app. `debug-phone.sh` and `launch-phone.sh` default to the `com.example`
-bundle ID, so set `PHONE_REMOTE_IOS_BUNDLE_ID=com.davidliao.phoneremote.ios`
-for both. The Mac app stays `com.example.phoneremote.macos`.
+`com.davidliao.phoneremote` is now the default everywhere: the fallback
+generator, `project.yml`, `debug-phone.sh`, and `launch-phone.sh` all agree with
+what the phone carries, so no environment variable is needed for the normal
+loop. `PHONE_REMOTE_BUNDLE_PREFIX` still overrides the whole prefix for a
+different signing account, and `PHONE_REMOTE_IOS_BUNDLE_ID` still overrides the
+one ID the phone scripts talk to.
 
 ## Commands
 

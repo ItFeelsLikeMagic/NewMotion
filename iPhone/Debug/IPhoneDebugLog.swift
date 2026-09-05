@@ -9,6 +9,9 @@ private func iPhoneDebugStamp() -> String {
 /// Privacy-safe iPhone debug log. Never records QR text, secrets, keys, or
 /// device identifiers. Written to the app Documents folder so it can be
 /// copied off the phone with `devicectl device copy from`.
+///
+/// Debug builds only: in release the emit calls compile away, so a shipped app
+/// writes no log file and shows no log screen. Call sites stay unchanged.
 @MainActor
 final class IPhoneDebugLog: ObservableObject {
     static let shared = IPhoneDebugLog()
@@ -19,6 +22,7 @@ final class IPhoneDebugLog: ObservableObject {
     private var snapshot: [String: String] = [:]
 
     nonisolated static func emit(_ name: String, _ fields: [String: String] = [:]) {
+#if DEBUG
         let safe = fields.filter { key, _ in
             let lower = key.lowercased()
             return !iPhoneDebugBlockedKeys.contains(where: { lower.contains($0) })
@@ -30,6 +34,7 @@ final class IPhoneDebugLog: ObservableObject {
         let line = parts.joined(separator: " ")
         NSLog("PRDBG %@", line)
         Task { @MainActor in shared.record(name, safe, line) }
+#endif
     }
 
     func event(_ name: String, _ fields: [String: String] = [:]) {
@@ -46,10 +51,12 @@ final class IPhoneDebugLog: ObservableObject {
     }
 
     func note(_ key: String, _ value: String) {
+#if DEBUG
         let lower = key.lowercased()
         guard !iPhoneDebugBlockedKeys.contains(where: { lower.contains($0) }) else { return }
         snapshot[key] = value
         Self.write(line: nil, snapshot: snapshot)
+#endif
     }
 
     var onScreen: String { lines.suffix(8).joined(separator: "\n") }

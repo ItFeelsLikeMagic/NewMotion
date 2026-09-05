@@ -16,6 +16,9 @@ import shutil
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROJECT_DIR = ROOT / "PhoneRemote.xcodeproj"
 
+# Override with PHONE_REMOTE_BUNDLE_PREFIX for a different signing account.
+DEFAULT_BUNDLE_PREFIX = "com.davidliao.phoneremote"
+
 
 def oid(key: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:24].upper()
@@ -168,12 +171,14 @@ class Builder:
         framework_refs: list[str] | None = None,
         dependencies: list[str] | None = None,
         embed_refs: list[str] | None = None,
+        resource_refs: list[str] | None = None,
     ) -> str:
         source_files = [self.build_file(ref, f"{name}:source:{index}") for index, ref in enumerate(source_refs)]
         source_phase = self.phase("PBXSourcesBuildPhase", source_files, f"{name}:sources")
         framework_files = [self.build_file(ref, f"{name}:framework:{index}") for index, ref in enumerate(framework_refs or [])]
         framework_phase = self.phase("PBXFrameworksBuildPhase", framework_files, f"{name}:frameworks")
-        resource_phase = self.phase("PBXResourcesBuildPhase", [], f"{name}:resources")
+        resource_files = [self.build_file(ref, f"{name}:resource:{index}") for index, ref in enumerate(resource_refs or [])]
+        resource_phase = self.phase("PBXResourcesBuildPhase", resource_files, f"{name}:resources")
         phases = [source_phase, framework_phase, resource_phase]
         if embed_refs:
             embed_files = [
@@ -219,7 +224,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
         "SWIFT_STRICT_CONCURRENCY": "complete",
         "SWIFT_VERSION": "6.0",
     }
-    bundle_prefix = os.environ.get("PHONE_REMOTE_BUNDLE_PREFIX", "com.example.phoneremote")
+    bundle_prefix = os.environ.get("PHONE_REMOTE_BUNDLE_PREFIX", DEFAULT_BUNDLE_PREFIX)
     if kind == "shared":
         settings.update({
             "DEFINES_MODULE": "YES",
@@ -234,6 +239,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
         })
     elif kind == "ios":
         settings.update({
+            "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
             "CODE_SIGN_IDENTITY": "",
             "ENABLE_TESTABILITY": "YES",
             "INFOPLIST_FILE": "Config/iPhone-Info.plist",
@@ -254,7 +260,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "INFOPLIST_FILE": "Config/Mac-Info.plist",
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @executable_path/../Frameworks @executable_path/Frameworks",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
-            "PRODUCT_BUNDLE_IDENTIFIER": "com.example.phoneremote.macos",
+            "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.macos",
             "PRODUCT_MODULE_NAME": "PhoneRemote_macOS",
             "PRODUCT_NAME": "PhoneRemoteMac",
             "SUPPORTED_PLATFORMS": "macosx",
@@ -264,7 +270,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "BUNDLE_LOADER": "$(TEST_HOST)",
             "GENERATE_INFOPLIST_FILE": "YES",
             "IPHONEOS_DEPLOYMENT_TARGET": "18.0",
-            "PRODUCT_BUNDLE_IDENTIFIER": "com.example.phoneremote.ios-tests",
+            "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.ios-tests",
             "PRODUCT_NAME": "PhoneRemoteiOSTests",
             "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
             "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/PhoneRemote.app/PhoneRemote",
@@ -274,7 +280,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "BUNDLE_LOADER": "$(TEST_HOST)",
             "GENERATE_INFOPLIST_FILE": "YES",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
-            "PRODUCT_BUNDLE_IDENTIFIER": "com.example.phoneremote.macos-tests",
+            "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.macos-tests",
             "PRODUCT_NAME": "PhoneRemoteMacTests",
             "SUPPORTED_PLATFORMS": "macosx",
             "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/PhoneRemoteMac.app/Contents/MacOS/PhoneRemoteMac",
@@ -286,7 +292,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             # the build products directory three levels above the executable.
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @loader_path/../../..",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
-            "PRODUCT_BUNDLE_IDENTIFIER": "com.example.phoneremote.shared-tests",
+            "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.shared-tests",
             "PRODUCT_NAME": "PhoneRemoteSharedTests",
             "SUPPORTED_PLATFORMS": "macosx",
         })
@@ -294,6 +300,8 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
         raise ValueError(kind)
     settings["SWIFT_OPTIMIZATION_LEVEL"] = "-O" if release else "-Onone"
     if not release:
+        # Debug-only code (the on-screen debug log) is compiled out of Release.
+        settings["SWIFT_ACTIVE_COMPILATION_CONDITIONS"] = "DEBUG"
         settings["GCC_OPTIMIZATION_LEVEL"] = "0"
         if kind == "shared":
             settings["ENABLE_TESTABILITY"] = "YES"
@@ -351,6 +359,12 @@ def generate() -> None:
         "mac-test": swift_paths("Tests/macOS"),
     }
     refs = {path: b.file(path) for paths in source_paths.values() for path in paths}
+    # The app icon and the privacy manifest are copied, not compiled, so they
+    # ride the iOS target's resources phase rather than its sources phase.
+    ios_resources = [
+        b.file("iPhone/Resources/Assets.xcassets", "folder.assetcatalog"),
+        b.file("iPhone/Resources/PrivacyInfo.xcprivacy", "text.plist.xml"),
+    ]
     shared_protocol = [path for path in source_paths["shared"] if path.startswith("Shared/Protocol/")]
     shared_transport = [path for path in source_paths["shared"] if path.startswith("Shared/TestTransport/")]
     shared_observability = [path for path in source_paths["shared"] if path.startswith("Shared/Observability/")]
@@ -361,7 +375,7 @@ def generate() -> None:
         "protocol": b.group("Protocol", [refs[path] for path in shared_protocol]),
         "transport": b.group("TestTransport", [refs[path] for path in shared_transport]),
         "observability": b.group("Observability", [refs[path] for path in shared_observability]),
-        "ios": b.group("iPhone", [refs[path] for path in source_paths["ios"]]),
+        "ios": b.group("iPhone", [refs[path] for path in source_paths["ios"]] + ios_resources),
         "mac": b.group("Mac", [refs[path] for path in source_paths["mac"]]),
         "shared-tests": b.group("SharedTests", [refs[path] for path in source_paths["shared-tests"]]),
         "ios-test": b.group("iOSTests", [refs[path] for path in source_paths["ios-test"]]),
@@ -421,6 +435,7 @@ def generate() -> None:
             framework_refs=[products["shared"]] if key != "shared" else [],
             dependencies=dependencies.get(key),
             embed_refs=embeds.get(key),
+            resource_refs=ios_resources if key == "ios" else None,
         )
         if target_id != target_ids[key]:
             raise RuntimeError(f"target ID mismatch for {key}")

@@ -1424,7 +1424,9 @@ private struct KeyboardToggleButton: View {
 
 private struct RemoteSettingsSheet: View {
     @ObservedObject var model: PhoneRemoteFeatureModel
+#if DEBUG
     @ObservedObject private var debugLog = IPhoneDebugLog.shared
+#endif
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -1651,11 +1653,12 @@ private struct RemoteSettingsSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
-                    Text("Experimental")
+                    Text("Extra features")
                 } footer: {
-                    Text("Both are off by default and may change or go away.")
+                    Text("Off until you turn them on. Change them whenever you like.")
                 }
 
+#if DEBUG
                 Section("Debug log") {
                     if debugLog.lines.isEmpty {
                         Text("No events yet")
@@ -1672,6 +1675,7 @@ private struct RemoteSettingsSheet: View {
                         .frame(height: 220)
                     }
                 }
+#endif
             }
             .navigationTitle("Settings")
             .toolbar {

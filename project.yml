@@ -35,7 +35,7 @@ targets:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.shared
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.shared
         PRODUCT_NAME: PhoneRemoteShared
         DEFINES_MODULE: YES
         ENABLE_TESTABILITY: YES
@@ -55,7 +55,8 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.ios
         PRODUCT_MODULE_NAME: PhoneRemote_iOS
         PRODUCT_NAME: PhoneRemote
         INFOPLIST_FILE: Config/iPhone-Info.plist
@@ -74,7 +75,7 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.macos
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.macos
         PRODUCT_MODULE_NAME: PhoneRemote_macOS
         PRODUCT_NAME: PhoneRemoteMac
         INFOPLIST_FILE: Config/Mac-Info.plist
@@ -93,7 +94,7 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.shared-tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.shared-tests
         PRODUCT_NAME: PhoneRemoteSharedTests
         TEST_HOST: ""
         GENERATE_INFOPLIST_FILE: YES
@@ -111,7 +112,7 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.ios-tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.ios-tests
         PRODUCT_NAME: PhoneRemoteiOSTests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PhoneRemote.app/PhoneRemote"
@@ -127,7 +128,7 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.phoneremote.macos-tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.macos-tests
         PRODUCT_NAME: PhoneRemoteMacTests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PhoneRemoteMac.app/Contents/MacOS/PhoneRemoteMac"
