@@ -18,6 +18,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Pairing uses CryptoKit, which is encryption inside the operating
+	     system, so the app is exempt from export filing. Revisit if a
+	     non-Apple crypto library is ever linked. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>NSCameraUsageDescription</key>

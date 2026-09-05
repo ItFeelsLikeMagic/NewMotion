@@ -8,7 +8,7 @@ if [ -z "$DEVICE" ]; then
     DEVICE="dliao's iPhone"
 fi
 DEST="${PHONE_REMOTE_PHONE_DEBUG:-/tmp/phoneremote-phone-debug}"
-BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.example.phoneremote.ios}"
+BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.davidliao.phoneremote.ios}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'

@@ -2,7 +2,7 @@
 set -eu
 
 UDID="${IPHONE_UDID:-}"
-BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.example.phoneremote.ios}"
+BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.davidliao.phoneremote.ios}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
