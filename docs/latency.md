@@ -174,7 +174,6 @@ entries defined in `Mac/Debug/MacLatencyProbes.swift`:
 | `dispatch` | Routing the decoded message to the thing that acts on it |
 | `keyPost` | One paced key burst, hand-off to the last event reaching the window server |
 | `linkSend` | One message on its way back to the phone |
-| `voiceCommitToTyped` | Speech commit to the words landing in the field |
 
 `decrypt`, `decode`, and `dispatch` are the inside of `receiveToInject`, so they
 sum to roughly it. If the total is high and the three parts are not, the time
@@ -182,16 +181,14 @@ went somewhere none of them covers.
 
 **Phone.** `./scripts/debug-phone.sh` shows a `latency` event, emitted every five
 seconds while the app is in front and connected. A phone in a pocket measures
-nothing. Seven trackers, defined in `iPhone/Debug/PhoneLatency.swift`:
+nothing. Five trackers, defined in `iPhone/Debug/PhoneLatency.swift`:
 
 | Log key | Name | Times |
 | --- | --- | --- |
-| `linkData` | `link.send.data` | Cursor, click and voice traffic into Core Bluetooth |
+| `linkData` | `link.send.data` | Cursor, click and typed traffic into Core Bluetooth |
 | `linkCtrl` | `link.send.control` | Handshake traffic, kept apart so a slow pairing does not read as a slow cursor |
 | `input` | `input.gesture->wire` | Seal plus wire for one input message |
 | `held` | `input.held` | How long accumulated travel sat waiting on a busy link. This is the lag the hand feels |
-| `voiceEnc` | `voice.encode` | Compressing and sealing one voice chunk |
-| `voiceWire` | `voice.wire` | Handing one sealed voice chunk to the link |
 | `rtt` | `link.rtt` | Phone to Mac and back, sampled automatically every couple of seconds |
 
 Subtract `link.send.data` from `input.gesture->wire` and what is left is the
@@ -261,13 +258,11 @@ What it says:
 - **Nothing is backing up.** Zero refusals across 89 sends, and `input.held`
   produced no samples at all, meaning travel never once waited for room. The
   keep-and-retry path is present but was not needed at this traffic level.
-- **`voiceCommitToTyped` is the speech model, not the link.** 1.2 s from commit
-  to text in the field, against a 0.13 ms wire cost for the audio chunks that
-  fed it.
-
-`voice.encode` recorded 5 refusals in 72 attempts, but all five landed during
-the reconnect before the session existed, alongside `ptt_drop reason=no_session`
-in the phone log. Not a steady-state loss.
+- **`voiceCommitToTyped` was the speech model, not the link.** 1.2 s from
+  commit to text in the field, against a 0.13 ms wire cost for the audio chunks
+  that fed it. That tracker and the audio chunks are gone: the phone transcribes
+  now and only the finished text crosses. The row is left here because it is
+  what the run measured.
 
 The old advice stands and is now measured rather than argued: the connection
 interval is the floor, and no code above the transport can move it.

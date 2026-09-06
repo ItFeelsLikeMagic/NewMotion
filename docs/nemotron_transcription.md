@@ -4,6 +4,9 @@ Written the day it was removed, so the design is recoverable without reading a
 diff. Nothing here describes current behaviour. Voice typing now runs on
 Apple's on-device analyser on the phone; see `docs/status.md`.
 
+Removed in `999e741` on 2026-09-06. Every file named below is recoverable with
+`git log --diff-filter=D -- <path>` and `git show <commit>^:<path>`.
+
 ## Why it was removed
 
 It worked, and on the owner's voice it was good. It cost three local models on
@@ -86,8 +89,9 @@ The recogniser was told what to listen for before any audio reached it:
 
 `boost` was clamped at 5 by that recogniser and 3.0 was its documented working
 value. One strength applied to the whole list; there was no per-phrase weight.
-The list itself came from `Mac/Transcription/ScreenVocabulary.swift`, which is
-**still in use** and is now pushed to the phone instead. Its behaviour is
+The list itself came from `ScreenVocabulary.swift`, which is **still in use**,
+now at `Mac/ScreenReading/ScreenVocabulary.swift` and pushed to the phone
+instead. Its behaviour is
 unchanged: an Accessibility walk of the front window, candidates filtered
 against the system spell checker, a cache with a 600 s lease that extends to
 three hours once a phrase is actually heard, capacity 400, output capped at 40.
@@ -117,7 +121,7 @@ commit for real speech, and the Mac padded 400 ms of silence before committing.
 
 ## Known weaknesses at the time of removal
 
-- Every gate in `docs/verification/gate-f-audio.md` was `NOT RUN`. There was no
+- Every gate in `docs/verification/gate-f-voice.md` was `NOT RUN`. There was no
   five-minute soak, no WAV inspection, and no concurrent pointer-latency
   measurement.
 - `audioMerge` frequently reported `caretNotAtEnd`, refusing to type when the
@@ -134,7 +138,7 @@ Everything is in history. Find the removal and take the files back:
 git log --diff-filter=D --oneline -- Mac/Transcription/NemotronRealtime.swift
 git checkout <that-commit>^ -- Mac/Transcription Shared/Protocol/VoiceStream.swift \
     Shared/Protocol/IMAADPCM.swift iPhone/Audio/VoiceUplink.swift \
-    scripts/install-s1-mini.sh
+    Tests/macOS/VoicePTTTests.swift scripts/install-s1-mini.sh
 ```
 
 `scripts/install-s1-mini.sh` registered the normalizer with Ollama and was

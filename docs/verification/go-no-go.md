@@ -11,7 +11,7 @@ Status: **BLOCKED — Gate A install/launch pass, device diagnostics blocked; Ga
 | C — pairing security | NOT RUN | Crypto, token, trust, and scanner tests pass; one owner-observed QR pair on 2026-09-02, then the phone camera went black until a phone restart on 2026-09-03 (see `docs/postmortem_camera_black_preview.md`); no physical scan/reconnect/revoke matrix or complete redaction run. See [`gate-c-pairing.md`](./gate-c-pairing.md). |
 | D — input safety | NOT RUN | Mock-sink policy/watchdog/integration tests pass; no Accessibility event-posting run or 100+100 forced-disconnect trials. See [`gate-d-input-safety.md`](./gate-d-input-safety.md). |
 | E — air mouse | NOT RUN | Deterministic motion filter/clutch test passes; no drift/calibration/32 px target measurement. See [`gate-e-air-mouse.md`](./gate-e-air-mouse.md). |
-| F — voice path | NOT RUN | PTT gating, ADPCM round-trip, reassembly, and stream-then-type tests pass; the live path is an IMA ADPCM stream into the local Nemotron ASR helper, not raw PCM plus Apple Speech; no five-minute physical WAV or concurrent pointer-latency measurement. See [`gate-f-audio.md`](./gate-f-audio.md). |
+| F — voice path | NOT RUN | Press gating, cancel, boost parsing and merging, sentence splitting, and the `vocabulary`/`spokenText` bounds all pass in tests, and the path is in daily use. Transcription runs on the iPhone, so no audio crosses and there is nothing to reassemble. No timed run against the criteria. See [`gate-f-voice.md`](./gate-f-voice.md). |
 
 ## Automated verification snapshot
 

@@ -76,11 +76,10 @@ queue. Every transport has to offer both.
 | `InputDelivery` | Input pipeline | `.latestWins` travel, or an `.ordered` click? |
 | `LinkDelivery` | Transport | If there is no room now, is waiting better than giving up? |
 
-They do not line up, which is why they stay separate. Voice is unreliable on the
-wire and still worth queueing, because a dropped chunk is a hole in what someone
-said, so it is `.unreliableQueued`. Cursor travel is the opposite: it is
-`.latestWins`, and the transport must never queue it, because a stored delta
-replays a path the hand has already left.
+They do not line up, which is why they stay separate. A spoken sentence is
+reliable and ordered: half a sentence is worse than a slow one. Cursor travel is
+the opposite: it is `.latestWins`, and the transport must never queue it,
+because a stored delta replays a path the hand has already left.
 
 ## Backpressure
 
@@ -102,6 +101,8 @@ are needed:
 
 ## What is deliberately not here
 
-- Voice has its own path (`VoiceUplink`), because it is a stream with its own
-  queue and its own message ID range, not discrete input.
+- Dictation is not here. Speech becomes text on the phone and arrives as a
+  `spokenText` message, which the Mac routes to the transcript path so it feeds
+  the word cache and is refused while a password field is focused. Nothing
+  about it is a gesture.
 - The handshake stays on the model and the control channel. It is not input.

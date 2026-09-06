@@ -37,7 +37,7 @@ numeric/format bound fails.
 | text input | 5 | reliable | non-empty valid UTF-8, maximum 2048 bytes |
 | hotkey | 6 | reliable | copy, paste, undo, redo, select all, escape, return, tab, arrow, Mission Control, or app-windows action |
 | motion pointer delta | 7 | unreliable | signed X/Y logical points ±8192, sample rate 1–100 Hz |
-| audio chunk | 8 | unreliable | Live voice uses a binary PRA1 frame (IMA ADPCM) encrypted as this type. JSON audio chunks remain valid for tests. |
+| _retired_ | 8 | | Was audio chunk, when the Mac transcribed. The phone transcribes now; 8 must not be reused. |
 | acknowledgement | 9 | reliable | positive acknowledged sequence and accepted/duplicate/rejected status |
 | connection status | 10 | reliable | disconnected/connecting/connected/authenticated/paused and numeric reason |
 | error | 11 | reliable | fixed error code and retryable flag; no free-form text |
@@ -46,6 +46,8 @@ numeric/format bound fails.
 | mouse double click | 14 | reliable | which button was double-clicked |
 | tab walk | 15 | reliable | phase (begin, next, previous, commit, cancel) and the modifier held open for the whole walk (command, option, control, shift) |
 | delete scrub | 16 | reliable | phase (begin, delete, restore, end) and granularity (character or word). The phone counts notches and never says how much text a notch stands for |
+| vocabulary | 17 | reliable | Mac to phone only. Up to 40 boost phrases, each at most 64 bytes, 2048 bytes in total. The declared array length is checked before anything is allocated |
+| spoken text | 18 | reliable | Phone to Mac only. Non-empty valid UTF-8, maximum 2048 bytes. Takes the transcript path on the Mac, so it feeds the word cache and is refused while a password field is focused |
 
 Reliable state transitions are classified by `SequenceTracker`. A duplicate is
 the same sequence as the last accepted one; an older sequence is out of order;

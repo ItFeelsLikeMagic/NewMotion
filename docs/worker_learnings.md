@@ -145,21 +145,16 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
   mouse path.
 - Push-to-talk is local-only. Backgrounding, interruption, route change, cancel, or
   permission loss stops capture and resets chunking.
-- Audio capture is 16 kHz mono Int16 with explicit sequence and sample metadata. The
-  wire format is `VoiceStreamFrame` with the IMA ADPCM codec. The Mac decodes to PCM16,
-  measures gaps and duplicates, and never hides them.
-- Transcription runs locally through `NemotronRealtime.swift`, a Swift WebSocket client
-  for `nemo-speech serve`. Neither side prints transcripts or audio bytes to logs.
-- Cleanup runs locally too: `S1MiniNormalizer.swift` sends each final transcript to
-  "S1-mini" by "Superwhisper" on the local Ollama before it is typed. The model is not a
-  chat model. Send the trained system prompt, the control line, the empty think block,
-  and temperature 0 through the raw endpoint, or it hallucinates. An empty result is a
-  real answer for filler-only speech; every failure types the raw transcript instead.
-- Word boosting is the only place keyword context belongs. `speech_contexts` on
-  `session.update` must be sent before the first audio frame; the server refuses a
-  session update once audio has started, and the boost list cannot be changed
-  mid-stream. One strength covers every phrase, so a long noisy list drags ordinary
-  speech toward screen furniture. Keep the list short.
+- Audio capture is 16 kHz mono Int16, regrouped into 40 ms chunks. It goes straight
+  into Apple's `SpeechAnalyzer` on the phone and never travels: only the finished
+  sentence does, as a `spokenText` message. Nothing prints a transcript to a log.
+- A finished sentence is split at 1 KB before it is sent. `ProtocolBytes` allows 2 KB,
+  but the payload is a JSON array of byte numbers inside an 8 KB envelope, so the real
+  ceiling is far lower than the field cap says.
+- Word boosting is the only place keyword context belongs. Apple's analyser takes it
+  as `AnalysisContext.contextualStrings[.general]`, set before the first buffer. There
+  is no per-phrase strength, so a long noisy list drags ordinary speech toward screen
+  furniture. Keep the list short: the owner's typed words first, then the Mac's.
 - The Accessibility walk that gathers those words costs 17 ms in some apps and over two
   seconds in others (Notes). It runs on its own queue and its result is never waited on:
   a press is answered from the cache, and the walk it starts pays the next press. Keep it

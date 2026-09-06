@@ -186,7 +186,7 @@ PhoneRemote/
 │   ├── Link/               # BLEMessageLink
 │   ├── Pairing/
 │   ├── InputInjection/
-│   ├── Transcription/
+│   ├── ScreenReading/
 │   └── Debug/
 └── Tests/
 ```
@@ -247,8 +247,8 @@ Capture locally, without recording input content. Built unless noted:
 - Round-trip latency, as `link.rtt`, reported as median, p95 and worst rather than a
   histogram
 - Heartbeat timeouts and forced input releases
-- Audio chunk gaps and reconstructed duration, as `audioMissingChunks` and
-  `audioTiming`
+- The last front-window word walk, as `vocabulary`: milliseconds, nodes, and
+  word count, never a word
 - Motion sample rate and filtered output rate: **not measured**. Open.
 - App lifecycle transitions
 

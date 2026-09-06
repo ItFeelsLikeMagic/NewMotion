@@ -101,29 +101,15 @@ PHONE_REMOTE_LOG_WINDOW=5m ./scripts/logs-mac.sh
 Accessibility to that copy only, then click Refresh Accessibility. Never open a
 `/tmp` or DerivedData build.
 
-Voice typing talks straight to a local `nemo-speech serve` WebSocket
-(`~/.local/bin/nemo-speech`, Nemotron 0.6b GGUF from the Hugging Face hub cache).
-At launch the Mac app checks `GET /health` on `PHONE_REMOTE_NEMO_PORT` (default
-18766) and spawns the server itself when nothing answers; its output goes to
-`/tmp/phoneremote-nemo-speech.log` and the child is stopped on quit.
-`PHONE_REMOTE_DEBUG_SERVER=0` disables the Mac debug server.
+Voice typing needs nothing on the Mac. The iPhone turns speech into text
+with Apple's on-device recogniser and sends the finished sentence as text,
+so there is no speech server, no Ollama, and no model to install. The Mac's
+only share of it is the front-window word walk it pushes to the phone as a
+boost list. `PHONE_REMOTE_DEBUG_SERVER=0` disables the Mac debug server.
 
-Each final transcript then goes through "S1-mini" by "Superwhisper", a 0.6B
-normalizer that removes fillers, resolves false starts, and writes out numbers,
-dates and addresses. It is served by the local Ollama on
-`PHONE_REMOTE_S1_PORT` (default 11434) as model `PHONE_REMOTE_S1_MODEL`
-(default `s1-mini`). Register it once:
-
-```bash
-./scripts/install-s1-mini.sh
-```
-
-The script builds the Ollama model from whichever `s1-mini-*.gguf` is in the
-Hugging Face hub cache, preferring Q4_K_M. Ollama is not spawned by the app: if
-it is not running, or the model is missing, the raw transcript is typed instead.
-The app sends the trained prompt itself through `/api/generate` with `raw` set,
-so no Ollama chat template is involved. Keep Ollama's own debug logging off; the
-request body carries the transcript.
+The first launch on a given iPhone downloads Apple's language model. Settings
+shows the percentage while it comes down; until it says Ready, a press records
+but produces nothing.
 
 ## CLI versus GUI
 
@@ -136,7 +122,7 @@ Never commit a team ID, identity, or profile.
 
 - `LatencyTracker` (Shared) is the shared observability API. It accepts a stage name and a duration or a refusal, and nothing else: no strings, no bytes, no payload. It keeps a 256-sample rolling window per stage and reports median, p95, worst, and a running refusal count.
 - Timings are recorded in microseconds, because most stages are under a millisecond. `refused=` and its attempt count are running totals while the timings are a rolling window, so the recent refusal rate is the difference between two readings.
-- iPhone debug log: `Documents/phoneremote-debug.jsonl` (events) and `Documents/phoneremote-debug-state.json` (latest snapshot). Events cover app init, scanner and camera state, camera diagnostics (`running`, `previewing`, `iso`, `lens`, `zoom`), link state, handshake steps, trust saves, reconnect, push-to-talk press, send, release, and drop, and a `latency` event every five seconds carrying the seven phone probes (`linkData`, `linkCtrl`, `input`, `held`, `voiceEnc`, `voiceWire`, `rtt`). Fields whose key contains `qr`, `secret`, `token`, `key`, `udid`, or `payload` are dropped before writing.
-- Mac debug snapshot (`GET /state`): status, paused, accessibility, `link` and `linkKind`, pairing progress, authenticated flag, offer state, whether a QR is showing, last failure and probe, `peerName`, last application message type, `cursorEvents`, `keyPostMs`, audio phase and counters (`audioFrames`, `audioSamples`, `audioMissingChunks`, `audioMerge`, `audioTiming`, `audioVocabulary`), `deleteScrub`, a `latency` array of seven `LatencySummary` entries, app path, and paired display names with pair time.
+- iPhone debug log: `Documents/phoneremote-debug.jsonl` (events) and `Documents/phoneremote-debug-state.json` (latest snapshot). Events cover app init, scanner and camera state, camera diagnostics (`running`, `previewing`, `iso`, `lens`, `zoom`), link state, handshake steps, trust saves, reconnect, push-to-talk press, send, release, and drop, and a `latency` event every five seconds carrying the five phone probes (`linkData`, `linkCtrl`, `input`, `held`, `rtt`). Fields whose key contains `qr`, `secret`, `token`, `key`, `udid`, or `payload` are dropped before writing.
+- Mac debug snapshot (`GET /state`): status, paused, accessibility, `link` and `linkKind`, pairing progress, authenticated flag, offer state, whether a QR is showing, last failure and probe, `peerName`, last application message type, `cursorEvents`, `keyPostMs`, `vocabulary` (the last boost walk), `deleteScrub`, a `latency` array of six `LatencySummary` entries, app path, and paired display names with pair time.
 - No log, snapshot, or metric may ever contain QR text, keys or handshake bytes, typed text, transcripts, audio bytes, or device identifiers.
 - There is no remote analytics sink. A future local file sink must keep bounded retention (default seven days), write only structured fields, and offer a Clear diagnostics action. Uninstalling the app removes persisted diagnostics today.
