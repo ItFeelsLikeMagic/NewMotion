@@ -52,6 +52,10 @@ final class MacRemoteAppModel: ObservableObject {
     /// here, beside the session it is waiting for.
     private static let authenticationTimeout: TimeInterval = 12
 
+    /// Owned here so it can be told when a phone comes and goes; that is what
+    /// decides when a downloaded update is allowed to apply itself.
+    let softwareUpdates = SoftwareUpdateController()
+
     private let injector: SafeInputInjector
     private let reliableInput: ReliableInputCoordinator
     /// Runs only while a phone is authenticated.  The watchdog itself stays
@@ -92,6 +96,9 @@ final class MacRemoteAppModel: ObservableObject {
             } else if oldValue == nil {
                 startWatchdog()
             }
+            // A staged update waits for a stretch with no phone on the link,
+            // because this app is never quit and Sparkle installs on quit.
+            softwareUpdates.phoneSessionChanged(active: authenticatedSession != nil)
             refreshAuthenticationDeadline()
         }
     }
@@ -931,6 +938,7 @@ final class MacRemoteAppModel: ObservableObject {
 
 struct MacRemoteStatusView: View {
     @ObservedObject var model: MacRemoteAppModel
+    @ObservedObject var updates: SoftwareUpdateController
 
     var body: some View {
         content.onAppear { model.recheckAccessibility() }
@@ -1038,6 +1046,11 @@ struct MacRemoteStatusView: View {
             }
 
             Divider()
+            // Updates install themselves after a quit. This is only for
+            // someone who does not want to wait for the daily check.
+            Button("Check for Updates") { updates.checkForUpdates() }
+                .disabled(!updates.canCheckForUpdates)
+
             // This app has no Dock icon and no menu bar of its own, so this is
             // the only way out of it that is not Activity Monitor.
             Button("Quit NewMotion") { NSApplication.shared.terminate(nil) }
@@ -1058,7 +1071,7 @@ struct NewMotionMacApp: App {
 
     var body: some Scene {
         MenuBarExtra("NewMotion", systemImage: "cursorarrow.rays") {
-            MacRemoteStatusView(model: model)
+            MacRemoteStatusView(model: model, updates: model.softwareUpdates)
         }
         .menuBarExtraStyle(.window)
     }

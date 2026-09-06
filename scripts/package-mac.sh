@@ -156,6 +156,28 @@ if [ -d "$FRAMEWORK" ]; then
     codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
         --options runtime --timestamp "$FRAMEWORK"
 fi
+
+# Sparkle carries four executables of its own, and signing the framework does
+# not reach inside them. Each is signed before the framework that contains it.
+# Downloader.xpc keeps the entitlements it ships with; the others must not be
+# given them, which is why --deep is wrong here and each one is named.
+SPARKLE="$STAGE_APP/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE" ]; then
+    SPARKLE_VERSION="$SPARKLE/Versions/B"
+    for nested in XPCServices/Installer.xpc Autoupdate Updater.app; do
+        [ -e "$SPARKLE_VERSION/$nested" ] || continue
+        codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
+            --options runtime --timestamp "$SPARKLE_VERSION/$nested"
+    done
+    if [ -e "$SPARKLE_VERSION/XPCServices/Downloader.xpc" ]; then
+        codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
+            --options runtime --timestamp --preserve-metadata=entitlements \
+            "$SPARKLE_VERSION/XPCServices/Downloader.xpc"
+    fi
+    codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
+        --options runtime --timestamp "$SPARKLE"
+fi
+
 codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
     --options runtime --timestamp "$STAGE_APP"
 

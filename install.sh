@@ -88,7 +88,7 @@ open "$APP" || true
 
 cat <<DONE
 
-NewMotion is installed at $APP and running.
+NewMotion is installed at $APP and running. It updates itself from now on.
 
 It lives in the menu bar, not the Dock. Look for the cursor icon up there.
 

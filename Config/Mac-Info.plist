@@ -24,5 +24,15 @@
 	<string>NewMotion needs Accessibility access to inject the input you explicitly send.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>NewMotion uses Bluetooth to connect to your paired iPhone.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/ItFeelsLikeMagic/NewMotion/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>D93sAQNfBGDhmHBEis9ekaCy6JRTGi4nLoaOGSB18SU=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

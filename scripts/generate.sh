@@ -9,22 +9,20 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
 Usage: ./scripts/generate.sh
 
-Generate NewMotion.xcodeproj from project.yml. XcodeGen is preferred; when
-it is not installed, the checked-in deterministic Python fallback is used.
-The generated project is ignored by Git.
+Generate NewMotion.xcodeproj from project.yml. Needs XcodeGen. The generated
+project is ignored by Git.
 HELP
     exit 0
 fi
 
-if command -v xcodegen >/dev/null 2>&1; then
-    xcodegen generate --spec "$ROOT_DIR/project.yml"
-    echo "Generated NewMotion.xcodeproj with XcodeGen"
-else
-    command -v python3 >/dev/null 2>&1 || {
-        echo "error: xcodegen is unavailable and python3 is required by the fallback generator" >&2
-        exit 1
-    }
-    python3 "$SCRIPT_DIR/generate_fallback.py"
-    echo "Generated NewMotion.xcodeproj with the checked-in fallback (XcodeGen not installed)"
-fi
+command -v xcodegen >/dev/null 2>&1 || {
+    cat >&2 <<'NEEDS_XCODEGEN'
+error: XcodeGen is required to generate the project.
 
+    brew install xcodegen
+NEEDS_XCODEGEN
+    exit 1
+}
+
+xcodegen generate --spec "$ROOT_DIR/project.yml"
+echo "Generated NewMotion.xcodeproj with XcodeGen"

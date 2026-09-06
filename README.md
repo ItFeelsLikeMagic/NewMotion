@@ -45,6 +45,13 @@ There is a `NewMotion.zip` beside it holding the same notarized app, if you
 would rather have a plain file. Either works. The disk image is the one to lead
 with, because macOS mounts it itself and no unarchiver ever touches the app.
 
+**It keeps itself up to date.** Once a day it asks GitHub whether there is a
+newer release and downloads it quietly. It applies the update during a quiet
+spell, once no phone has been connected for two minutes, so it never lands
+mid-session. Usually that happens overnight and you never see it. That daily
+question is the only thing this app ever sends over the internet. There is a
+**Check for Updates** item in the menu if you would rather not wait.
+
 If a Mac says Apple cannot verify the app, in order:
 
 1. Open System Settings, Privacy and Security, and check **Allow applications
