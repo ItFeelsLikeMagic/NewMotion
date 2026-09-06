@@ -14,8 +14,8 @@ settings:
     ARCHS: "$(ARCHS_STANDARD)"
     SWIFT_VERSION: 6.0
     SWIFT_STRICT_CONCURRENCY: complete
-    CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 2
+    MARKETING_VERSION: 0.1.1
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Manual
     CODE_SIGNING_ALLOWED: "NO"
@@ -26,6 +26,11 @@ settings:
 configs:
   Debug: debug
   Release: release
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.9.6
 
 targets:
   NewMotionShared:
@@ -52,7 +57,7 @@ targets:
     sources:
       - path: iPhone
     dependencies:
-      - target: NewMotionShared
+      - target: NewMotionShared_iOS
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -72,7 +77,8 @@ targets:
     sources:
       - path: Mac
     dependencies:
-      - target: NewMotionShared
+      - target: NewMotionShared_macOS
+      - package: Sparkle
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -95,7 +101,7 @@ targets:
     sources:
       - path: Tests/Shared
     dependencies:
-      - target: NewMotionShared
+      - target: NewMotionShared_macOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.shared-tests
@@ -113,7 +119,7 @@ targets:
       - path: Tests/iOS
     dependencies:
       - target: NewMotion-iOS
-      - target: NewMotionShared
+      - target: NewMotionShared_iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.ios-tests
@@ -129,7 +135,7 @@ targets:
       - path: Tests/macOS
     dependencies:
       - target: NewMotion-macOS
-      - target: NewMotionShared
+      - target: NewMotionShared_macOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.macos-tests

@@ -16,7 +16,8 @@ is for people using the app; this one is for people building it.
 | `fuzz-protocol.sh` | Runs the fixed-seed decoder corpus. Logs no input bytes. |
 
 The Xcode project is generated and not checked in. Change
-[`project.yml`](../project.yml), never the `.xcodeproj`.
+[`project.yml`](../project.yml), never the `.xcodeproj`. `generate.sh` needs
+XcodeGen (`brew install xcodegen`).
 
 ## Running it on your own devices
 
@@ -49,7 +50,7 @@ carry counts and states only, on purpose.
 | Script | What it does |
 | --- | --- |
 | `package-mac.sh` | Release build, Developer ID signature, hardened runtime, notarized by Apple, stapled. Writes `build/dist/NewMotion.dmg` and `NewMotion.zip`. |
-| `release-mac.sh` | Packages, tags the commit, and publishes the GitHub release with both files attached. |
+| `release-mac.sh` | Packages, writes the Sparkle update feed, tags the commit, and publishes the GitHub release with all three files attached. `--critical` marks a release users are asked to install now. |
 
 The whole release, once your changes are on main:
 
@@ -69,6 +70,39 @@ commits, which is thinner than the install help the last release carried.
 [`install.sh`](../install.sh) installs from the newest release's
 `NewMotion.dmg`, so publishing the release is the step that hands people the
 build.
+
+## Updates
+
+Installed copies update themselves. Sparkle reads `appcast.xml` from the newest
+release once a day and downloads the new build quietly. Applying needs no
+network: the notarization ticket is stapled into the file.
+
+Sparkle installs on quit, and nobody quits a menu bar app, so the timing is
+taken over in [`SoftwareUpdateController`](../Mac/Updates/SoftwareUpdateController.swift).
+A staged build is held until no phone has been authenticated for two minutes,
+then installs and relaunches silently. Two minutes rather than none so that
+walking out of Bluetooth range and back does not relaunch the app mid-use.
+
+Two things decide whether anyone is offered a build:
+
+- `CURRENT_PROJECT_VERSION` has to go up. Sparkle compares that, not
+  `MARKETING_VERSION`, which is only what people read.
+- The release has to carry the same Developer ID. A signature from anywhere
+  else installs and then loses the Accessibility grant.
+
+`release-mac.sh` builds the feed with `generate_appcast`, which ships inside the
+Sparkle package under `DerivedData/SourcePackages/artifacts`. It signs the feed
+with an EdDSA key kept in your login Keychain under `https://sparkle-project.org`.
+Lose that key and installed copies stop accepting updates until you publish a
+build carrying a new public key. A copy is in 1Password. To write it out again,
+on this machine or another, and never inside this tree, which is synced:
+
+```sh
+generate_keys -x ~/sparkle-private-key.txt   # delete it once it is stored
+```
+
+The matching public key is `SUPublicEDKey` in
+[`Config/Mac-Info.plist`](../Config/Mac-Info.plist).
 
 ## Environment
 

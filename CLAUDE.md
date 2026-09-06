@@ -34,12 +34,16 @@ touches building, installing, packaging, or releasing. Each script also takes
 - **The Xcode project is generated.** Edit [`project.yml`](project.yml) and run
   `./scripts/generate.sh`. Never edit `NewMotion.xcodeproj`; it is not checked
   in. Sources are picked up by directory, so a new file needs no project edit,
-  only a regenerate, which every build script does for you.
+  only a regenerate, which every build script does for you. Needs XcodeGen:
+  `brew install xcodegen`.
 - **Swift 6, strict concurrency complete.** Both apps. Assume main-actor
   isolation and no implicit hops.
-- **Nothing goes over the network.** BLE between the two devices, and nothing
-  else. No accounts, no telemetry, no crash reporting. Do not add a dependency
-  that phones home.
+- **One thing goes over the network, and it is the updater.** Sparkle asks
+  GitHub once a day whether there is a newer release, and applies it only
+  during a stretch with no phone on the link. That is the whole list.
+  BLE carries everything between the two devices. No accounts, no telemetry,
+  no crash reporting, nothing about what anyone typed or pointed at. Do not
+  add a second thing that phones home.
 - **Nothing logs content.** No transcripts, keystrokes, pointer paths, QR text,
   or keys, in any log or debug surface. Counts and states only.
 - **Every injected event goes through `SafeInputInjector`.** It re-checks
@@ -49,6 +53,8 @@ touches building, installing, packaging, or releasing. Each script also takes
   injection and the word-boost walk. Keep it that way.
 - **Accessibility is tied to the exact app path and signature.** Only the copy
   in `~/Applications` is trusted, and an unsigned rebuild drops the grant.
+  This is also why every release has to carry the same Developer ID: an update
+  that swaps the app in place keeps the grant only if the signature matches.
 
 ## The hot path
 
