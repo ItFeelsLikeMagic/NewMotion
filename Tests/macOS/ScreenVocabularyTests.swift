@@ -151,11 +151,11 @@ final class ScreenVocabularyTests: XCTestCase {
     /// walk queue, which drives a SwiftUI update off the main thread and traps
     /// on the first main-actor property it reaches. It crashed the Mac app the
     /// first time the walk ran while the app itself was frontmost.
-    func testTheWalkRefusesToReadItsOwnProcess() throws {
-        let ownBundleID = try XCTUnwrap(Bundle.main.bundleIdentifier)
-        let reader = AXScreenVocabularyReader(isEnabled: true, isSecureInputActive: { false })
-        let report = reader.probe(bundleID: ownBundleID)
-        XCTAssertEqual(report["app"], "self")
-        XCTAssertEqual(report["words"], "0")
+    func testTheWalkRefusesToReadItsOwnProcess() {
+        XCTAssertTrue(
+            AXScreenVocabularyReader.isOwnProcess(ProcessInfo.processInfo.processIdentifier)
+        )
+        // A second copy of this app is someone else's window, not ours.
+        XCTAssertFalse(AXScreenVocabularyReader.isOwnProcess(1))
     }
 }

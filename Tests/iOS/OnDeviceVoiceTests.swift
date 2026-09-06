@@ -138,6 +138,31 @@ final class SpokenTextChunkerTests: XCTestCase {
         XCTAssertEqual(pieces.joined(), long.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// The Mac credits the word cache from the text it receives, one message
+    /// at a time, so a word cut across two of them is credited to neither.
+    func testSplitCutsBetweenWordsSoNoWordIsLostToTheCache() {
+        let long = (0..<400).map { "Testaflight\($0)" }.joined(separator: " ")
+        let pieces = SpokenTextChunker.split(long)
+        XCTAssertGreaterThan(pieces.count, 1)
+        XCTAssertEqual(pieces.joined(), long)
+        // Every word in the original survives whole inside some one piece.
+        let words = Set(long.split(separator: " ").map(String.init))
+        let carried = Set(pieces.flatMap { $0.split(separator: " ").map(String.init) })
+        XCTAssertEqual(words.subtracting(carried), [])
+    }
+
+    /// One word longer than a whole piece has no space to cut at, and arriving
+    /// in halves beats not arriving.
+    func testAWordLongerThanAPieceIsStillSent() {
+        let monster = String(repeating: "a", count: SpokenTextChunker.maximumPieceUTF8Bytes * 2 + 7)
+        let pieces = SpokenTextChunker.split(monster)
+        XCTAssertEqual(pieces.count, 3)
+        XCTAssertEqual(pieces.joined(), monster)
+        for piece in pieces {
+            XCTAssertLessThanOrEqual(piece.utf8.count, SpokenTextChunker.maximumPieceUTF8Bytes)
+        }
+    }
+
     /// A piece must never end halfway through a grapheme cluster, or the Mac
     /// types a replacement character where an emoji was.
     func testSplitKeepsGraphemeClustersWhole() {
