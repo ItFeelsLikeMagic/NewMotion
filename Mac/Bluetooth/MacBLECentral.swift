@@ -33,7 +33,7 @@ public protocol MacCentralManagerAdapter: AnyObject {
     var onReadyToWriteWithoutResponse: (() -> Void)? { get set }
     var onWriteComplete: ((Error?) -> Void)? { get set }
 
-    func scan(for serviceUUID: UUID)
+    func scan(for serviceUUIDs: [UUID])
     func stopScan()
     func connectedPeripherals(for serviceUUID: UUID) -> [BLEDiscoveredPeripheral]
     func connect(peripheralID: UUID)

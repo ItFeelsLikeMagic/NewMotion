@@ -5,9 +5,12 @@ import XCTest
 @testable import NewMotionShared
 
 final class BluetoothPairingTests: XCTestCase {
+    private static let beacon = UUID()
+
     func testLinkConnectsByServiceAndOnlyReportsConnectedAfterSubscriptions() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
         link.start()
         XCTAssertEqual(link.state, .searching)
 
@@ -51,6 +54,7 @@ final class BluetoothPairingTests: XCTestCase {
     func testLinkRefusesWhatItCannotCarry() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
         link.start()
         XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .notConnected)
 
@@ -95,6 +99,7 @@ final class BluetoothPairingTests: XCTestCase {
         let link = BLEMessageLink(adapter: adapter, connectionTimeout: 5, now: { clock })
         var failures: [LinkError] = []
         link.onError = { failures.append($0) }
+        link.setBeacons([Self.beacon])
         link.start()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
@@ -116,6 +121,7 @@ final class BluetoothPairingTests: XCTestCase {
         _ link: BLEMessageLink,
         adapter: FakeCentralAdapter
     ) -> BLEDiscoveredPeripheral {
+        link.setBeacons([Self.beacon])
         link.start()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
@@ -133,6 +139,7 @@ final class BluetoothPairingTests: XCTestCase {
         let link = BLEMessageLink(adapter: adapter)
         var failures: [LinkError] = []
         link.onError = { failures.append($0) }
+        link.setBeacons([Self.beacon])
         link.start()
         let peripheralID = UUID()
         adapter.emitDiscover(BLEDiscoveredPeripheral(identifier: peripheralID, name: nil))
@@ -319,6 +326,7 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(failures, [.peerDisconnected])
         XCTAssertEqual(link.state, .searching)
         XCTAssertEqual(adapter.scanCount, 2)
+        XCTAssertEqual(adapter.scannedFor.last, [Self.beacon])
         XCTAssertNil(link.peerName)
     }
 
@@ -338,6 +346,7 @@ final class BluetoothPairingTests: XCTestCase {
     func testLinkWritesControlBeforeTheSubscriptionsFinish() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
         link.start()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
@@ -358,6 +367,7 @@ final class BluetoothPairingTests: XCTestCase {
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.preconnected = [peripheral]
         let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
         link.start()
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(link.peerName, "Phone")
@@ -367,6 +377,7 @@ final class BluetoothPairingTests: XCTestCase {
     func testLinkTickAdoptsPeripheralTheSystemConnectedWhileScanning() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
         link.start()
         XCTAssertEqual(link.state, .searching)
         link.tick()
@@ -378,6 +389,69 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(link.peerName, "Phone")
         XCTAssertEqual(adapter.connectCount, 1)
+    }
+
+    func testLinkWithNoBeaconsSearchesWithoutScanningAndStillAdoptsASystemPeripheral() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.scanCount, 0)
+
+        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
+        adapter.preconnected = [peripheral]
+        link.tick()
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(adapter.connectCount, 1)
+        XCTAssertEqual(adapter.scanCount, 0)
+    }
+
+    func testLinkScansForExactlyTheBeaconsItIsGiven() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let beacons = [UUID(), UUID()]
+        link.setBeacons(beacons)
+        link.start()
+        XCTAssertEqual(adapter.scannedFor, [beacons])
+        XCTAssertFalse(beacons.contains(NewMotionGATT.serviceUUID))
+    }
+
+    func testChangingBeaconsWhileSearchingRestartsTheScan() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
+        link.start()
+        let stops = adapter.stopScanCount
+
+        let replacement = [Self.beacon, UUID()]
+        link.setBeacons(replacement)
+        XCTAssertEqual(adapter.stopScanCount, stops + 1)
+        XCTAssertEqual(adapter.scanCount, 2)
+        XCTAssertEqual(adapter.scannedFor.last, replacement)
+        XCTAssertEqual(link.state, .searching)
+
+        link.setBeacons(replacement)
+        XCTAssertEqual(adapter.scanCount, 2)
+
+        link.setBeacons([])
+        XCTAssertEqual(adapter.stopScanCount, stops + 2)
+        XCTAssertEqual(adapter.scanCount, 2)
+        XCTAssertEqual(link.state, .searching)
+    }
+
+    func testChangingBeaconsWhileConnectedKeepsTheConnection() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        bringLinkToConnected(link, adapter: adapter)
+        let scans = adapter.scanCount
+        let stops = adapter.stopScanCount
+
+        link.setBeacons([UUID()])
+        XCTAssertEqual(link.state, .connected)
+        XCTAssertEqual(adapter.scanCount, scans)
+        XCTAssertEqual(adapter.stopScanCount, stops)
+        XCTAssertTrue(adapter.cancelledConnections.isEmpty)
+        XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .sent)
     }
 }
 
@@ -403,13 +477,17 @@ private final class FakeCentralAdapter: MacCentralManagerAdapter {
     var onWriteComplete: ((Error?) -> Void)?
     var writes: [(Data, UUID, BLEWriteType)] = []
     var scanCount = 0
+    var scannedFor: [[UUID]] = []
     var connectCount = 0
     var stopScanCount = 0
     var cancelledConnections: [UUID] = []
     var discoverServicesCount = 0
     var preconnected: [BLEDiscoveredPeripheral] = []
 
-    func scan(for serviceUUID: UUID) { scanCount += 1 }
+    func scan(for serviceUUIDs: [UUID]) {
+        scanCount += 1
+        scannedFor.append(serviceUUIDs)
+    }
     func stopScan() { stopScanCount += 1 }
     func connectedPeripherals(for serviceUUID: UUID) -> [BLEDiscoveredPeripheral] { preconnected }
     func connect(peripheralID: UUID) { connectCount += 1 }

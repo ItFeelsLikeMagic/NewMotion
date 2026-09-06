@@ -173,6 +173,7 @@ final class MacRemoteAppModel: ObservableObject {
         self.pairingCoordinator = pairingCoordinator
         self.qrRenderer = MacPairingQRCodeRenderer()
         self.pairedDevices = pairingCoordinator?.trustedDevices ?? []
+        refreshBeacons()
 
         // Core Bluetooth already calls back on the main queue.  A `Task` hop
         // per message queued every packet behind whatever the main actor was
@@ -197,6 +198,8 @@ final class MacRemoteAppModel: ObservableObject {
             Task { @MainActor in
                 self?.pairingState = state
                 guard let self else { return }
+                // An offer's beacon is listened for only while the offer is live.
+                self.refreshBeacons()
                 if case .active = state {
                     self.pairingProgress = .waitingForScan
                     return
@@ -343,6 +346,14 @@ final class MacRemoteAppModel: ObservableObject {
 
     func cancelPairingOffer() {
         pairingOffer.cancel()
+    }
+
+    /// The Mac listens for the phones it trusts and, while a QR code is up,
+    /// for the phone that code will bring, and for nobody else.
+    private func refreshBeacons() {
+        var pairingIDs = pairedDevices.map(\.deviceID)
+        if let offered = pairingOffer.activePairingID { pairingIDs.append(offered) }
+        link.setBeacons(pairingIDs.map(NewMotionBeacon.uuid(pairingID:)))
     }
 
     func tick() {
@@ -515,6 +526,7 @@ final class MacRemoteAppModel: ObservableObject {
             peerIdentityPublicKey: result.peerIdentityPublicKey
         )
         pairedDevices = pairingCoordinator.trustedDevices
+        refreshBeacons()
         authenticatedSession = result.session
         pushVocabulary(force: true)
         pairingServer = nil

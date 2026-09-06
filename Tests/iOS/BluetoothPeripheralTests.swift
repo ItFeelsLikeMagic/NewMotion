@@ -5,9 +5,12 @@ import XCTest
 @testable import NewMotionShared
 
 final class BluetoothPeripheralTests: XCTestCase {
+    private static let beacon = UUID()
+
     func testPeripheralWaitsForForegroundAndPoweredOnBeforeAdvertising() {
         let adapter = FakePeripheralAdapter(state: .poweredOff)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
 
         transport.setForeground(true)
         XCTAssertEqual(transport.state, .waitingForBluetooth)
@@ -22,12 +25,13 @@ final class BluetoothPeripheralTests: XCTestCase {
 
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
-        XCTAssertEqual(adapter.advertisedService, NewMotionGATT.serviceUUID)
+        XCTAssertEqual(adapter.advertisedService, Self.beacon)
     }
 
     func testPeripheralRequiresBothDataSubscriptionsForReady() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
 
@@ -43,49 +47,47 @@ final class BluetoothPeripheralTests: XCTestCase {
         XCTAssertTrue(adapter.stopAdvertisingCalled)
     }
 
-    func testBackgroundKeepsTheServiceAndResumesTheSameLink() {
+    func testBackgroundTakesTheServiceDownAndForegroundRepublishesIt() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
+        var states: [BLEPeripheralLifecycleState] = []
+        transport.onStateChange = { states.append($0) }
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
         adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
-        let published = adapter.published.count
-        let advertised = adapter.startAdvertisingCount
+        states.removeAll()
 
         transport.setForeground(false)
         XCTAssertEqual(transport.state, .stopped)
-        XCTAssertFalse(adapter.removeAllServicesCalled)
-        XCTAssertEqual(transport.subscriberIDs, Set(["mac-test"]))
+        XCTAssertTrue(adapter.stopAdvertisingCalled)
+        XCTAssertTrue(adapter.removeAllServicesCalled)
+        XCTAssertTrue(transport.subscriberIDs.isEmpty)
 
-        transport.setForeground(true)
-        XCTAssertEqual(transport.state, .ready)
-        XCTAssertEqual(adapter.published.count, published)
-        XCTAssertEqual(adapter.startAdvertisingCount, advertised)
-    }
-
-    func testForegroundAdvertisesAgainWhenTheMacLeftDuringBackground() {
-        let adapter = FakePeripheralAdapter(state: .poweredOn)
-        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
-        transport.setForeground(true)
-        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
-        transport.setForeground(false)
-
+        // A subscriber from before the trip is not one the phone can still
+        // count on: the Mac drops a link whose service vanished.
         adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
-        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
-        transport.setForeground(true)
+        XCTAssertEqual(transport.state, .stopped)
 
+        transport.setForeground(true)
+        XCTAssertEqual(transport.state, .publishing)
+        XCTAssertEqual(adapter.published.count, 2)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
         XCTAssertEqual(adapter.startAdvertisingCount, 2)
-        XCTAssertEqual(adapter.published.count, 1)
+        adapter.emitSubscribe("mac-again", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-again", characteristic: NewMotionGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.state, .ready)
+        // The app relies on the trip through `.advertising` to handshake again.
+        XCTAssertEqual(states, [.stopped, .publishing, .advertising, .connected, .ready])
     }
 
     func testLosingTheLastSubscriberRelightsTheBeacon() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
@@ -104,6 +106,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testAFreshCentralReplacesAStaleSubscriberAndForcesAHandshake() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         var states: [BLEPeripheralLifecycleState] = []
         transport.onStateChange = { states.append($0) }
         transport.setForeground(true)
@@ -123,6 +126,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testPeripheralQueueIsBoundedAndDisconnectClearsFrames() {
         let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
+        transport.setBeacon(Self.beacon)
         var queueFull: [BLETransportChannel] = []
         transport.onQueueFull = { queueFull.append($0) }
         transport.setForeground(true)
@@ -144,6 +148,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testUnreliableSendDropsInsteadOfQueueing() {
         let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
@@ -158,6 +163,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testQueueCapacityCountsFreeSlotsOnlyWhenReady() {
         let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
+        transport.setBeacon(Self.beacon)
         XCTAssertEqual(transport.queueCapacity(on: .data), 0)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
@@ -172,6 +178,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testAdvertisingStartErrorDoesNotTearDownALiveBeacon() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         var errors = 0
         transport.onTransportError = { _ in errors += 1 }
         transport.setForeground(true)
@@ -187,6 +194,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testPulseDoesNotRestartALiveAdvertisement() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(adapter.startAdvertisingCount, 1)
@@ -206,6 +214,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testPulseRestartsAdvertisingAfterAStop() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         transport.stop()
@@ -220,6 +229,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testPulseDoesNotRepublishWhileServiceIsPublishing() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         XCTAssertEqual(transport.state, .publishing)
         XCTAssertEqual(adapter.published.count, 1)
@@ -233,6 +243,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testForegroundRefreshDoesNotDropAReadyCentral() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         transport.setForeground(true)
         adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
@@ -249,6 +260,7 @@ final class BluetoothPeripheralTests: XCTestCase {
     func testControlWriteReachesTheAppWithoutAMatchingSubscriberId() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
         var received: [(BLETransportChannel, Data)] = []
         transport.onFrameReceived = { received.append(($0, $1)) }
         transport.setForeground(true)
@@ -263,6 +275,69 @@ final class BluetoothPeripheralTests: XCTestCase {
         )
         XCTAssertEqual(received.map(\.0), [.control])
         XCTAssertEqual(received.map(\.1), [Data([7, 8])])
+    }
+
+    func testWithoutABeaconTheServiceIsPublishedButNeverAdvertised() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setForeground(true)
+        XCTAssertEqual(transport.state, .publishing)
+        XCTAssertEqual(adapter.published.map(\.uuid), [NewMotionGATT.serviceUUID])
+
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        XCTAssertEqual(transport.state, .stopped)
+        XCTAssertEqual(adapter.startAdvertisingCount, 0)
+        XCTAssertNil(adapter.advertisedService)
+
+        transport.setBeacon(Self.beacon)
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertEqual(adapter.startAdvertisingCount, 1)
+        XCTAssertEqual(adapter.advertisedService, Self.beacon)
+        XCTAssertEqual(adapter.published.count, 1)
+    }
+
+    func testChangingTheBeaconWhileAdvertisingRestartsTheAdvertisement() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
+        transport.setForeground(true)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertEqual(adapter.startAdvertisingCount, 1)
+
+        transport.setBeacon(Self.beacon)
+        XCTAssertEqual(adapter.startAdvertisingCount, 1)
+        XCTAssertFalse(adapter.stopAdvertisingCalled)
+
+        let other = UUID()
+        transport.setBeacon(other)
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertTrue(adapter.stopAdvertisingCalled)
+        XCTAssertEqual(adapter.startAdvertisingCount, 2)
+        XCTAssertEqual(adapter.advertisedService, other)
+    }
+
+    func testSettingTheBeaconWhileReadyLeavesTheLinkAlone() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
+        transport.setBeacon(Self.beacon)
+        transport.setForeground(true)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
+        XCTAssertEqual(transport.state, .ready)
+
+        let other = UUID()
+        transport.setBeacon(other)
+        XCTAssertEqual(transport.state, .ready)
+        XCTAssertEqual(transport.beacon, other)
+        XCTAssertEqual(adapter.startAdvertisingCount, 1)
+        XCTAssertFalse(adapter.stopAdvertisingCalled)
+
+        // The next advertisement, once the Mac lets go, carries the new beacon.
+        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        XCTAssertEqual(transport.state, .advertising)
+        XCTAssertEqual(adapter.advertisedService, other)
     }
 
     func testAdvertisementDictionaryUsesCBUUIDNotFoundationUUID() {

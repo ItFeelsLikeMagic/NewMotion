@@ -53,7 +53,15 @@ final class NewMotionFeatureModel: ObservableObject {
     /// spinner from the moment the code is scanned until the Mac answers.
     @Published private(set) var awaitingMacName: String?
     @Published private(set) var linkState: RemoteLinkState = .unavailable
-    @Published var trustedMacName: String?
+    @Published private(set) var trustedMacs: [TrustedDeviceSummary] = []
+    @Published private(set) var selectedMacID: UUID? = UserDefaults.standard.string(forKey: "selectedMacID").flatMap(UUID.init) {
+        didSet { UserDefaults.standard.set(selectedMacID?.uuidString, forKey: "selectedMacID") }
+    }
+    /// The Mac this phone reaches for: the chosen one, else the newest pairing.
+    var selectedMac: TrustedDeviceSummary? {
+        trustedMacs.first { $0.deviceID == selectedMacID } ?? trustedMacs.max { $0.pairedAt < $1.pairedAt }
+    }
+    var trustedMacName: String? { selectedMac?.displayName }
     /// Round trip over the link, measured end to end from this app.
     @Published var linkLatency = "Not measured"
 
@@ -203,8 +211,8 @@ final class NewMotionFeatureModel: ObservableObject {
                 self?.latestAction = "Pairing offer rejected"
             }
         }
-        trustedMacName = pairingCoordinator?.trustedDevices.first?.displayName
-        IPhoneDebugLog.emit("trust", ["count": "\(pairingCoordinator?.trustedDevices.count ?? 0)"])
+        refreshTrustedMacs()
+        IPhoneDebugLog.emit("trust", ["count": "\(trustedMacs.count)"])
         beginTrustedReconnect()
         motionSink.onFlush = { [weak self] delta in
             // The coalescer is the hop from the Core Motion queue to this one,
@@ -328,6 +336,25 @@ final class NewMotionFeatureModel: ObservableObject {
         if pairingCoordinator?.trustedDevices.isEmpty == false {
             beginTrustedReconnect()
         }
+    }
+
+    private func refreshTrustedMacs() {
+        trustedMacs = pairingCoordinator?.trustedDevices ?? []
+    }
+
+    /// Dropping the session is what makes the current Mac let go; the beacon
+    /// then names the new one before the link comes back up.
+    func selectMac(_ id: UUID) {
+        guard id != selectedMacID else { return }
+        selectedMacID = id
+        if authenticatedSession != nil || pairingClient != nil {
+            authenticatedSession = nil
+            pairingClient = nil
+            handshakeHelloSent = false
+            awaitingMacName = nil
+            link.stop()
+        }
+        beginTrustedReconnect()
     }
 
     /// The camera can come up black, so an open scanner says every few seconds
@@ -548,6 +575,7 @@ final class NewMotionFeatureModel: ObservableObject {
         reconnectFailures = 0
         awaitingMacName = token.macDisplayName
         IPhoneDebugLog.emit("handshake_begin", ["link": linkState.label])
+        link.setBeacons([NewMotionBeacon.uuid(pairingID: token.pairingID)])
         link.start()
         latestAction = "Waiting for \(token.macDisplayName) to connect"
         sendHandshakeHelloIfNeeded()
@@ -558,6 +586,11 @@ final class NewMotionFeatureModel: ObservableObject {
         if pairingClient != nil {
             pairingConfirmed = true
             IPhoneDebugLog.emit("reconnect", ["path": "client", "link": linkState.label])
+            // The client belongs to the QR pairing when one is under way,
+            // otherwise to the trusted Mac it was made for.
+            if let pairingID = pairingToken?.pairingID ?? trustedPeer?.deviceID {
+                link.setBeacons([NewMotionBeacon.uuid(pairingID: pairingID)])
+            }
             link.start()
             sendHandshakeHelloIfNeeded()
             return
@@ -566,20 +599,20 @@ final class NewMotionFeatureModel: ObservableObject {
             IPhoneDebugLog.emit("reconnect_skip", ["reason": "no_store"])
             return
         }
-        guard let device = pairingCoordinator.trustedDevices.first else {
+        guard let device = selectedMac else {
             IPhoneDebugLog.emit("reconnect_skip", ["reason": "no_trust"])
             return
         }
         do {
             pairingClient = try pairingCoordinator.makeReconnectClient(for: device.deviceID)
             trustedPeer = device
-            trustedMacName = device.displayName
             pairingConfirmed = true
             pairingToken = nil
             handshakeHelloSent = false
             _ = lifecycle.handle(.trustAdded)
             latestAction = "Reconnecting to \(device.displayName)"
             IPhoneDebugLog.emit("reconnect", ["path": "trust", "link": linkState.label])
+            link.setBeacons([NewMotionBeacon.uuid(pairingID: device.deviceID)])
             link.start()
             sendHandshakeHelloIfNeeded()
         } catch {
@@ -793,8 +826,9 @@ final class NewMotionFeatureModel: ObservableObject {
                 peerIdentityPublicKey: result.result.peerIdentityPublicKey
             )
             trustedPeer = summary
-            trustedMacName = summary.displayName
-            IPhoneDebugLog.emit("trust_save", ["ok": "yes", "count": "\(pairingCoordinator.trustedDevices.count)"])
+            selectedMacID = summary.deviceID
+            refreshTrustedMacs()
+            IPhoneDebugLog.emit("trust_save", ["ok": "yes", "count": "\(trustedMacs.count)"])
         } catch {
             IPhoneDebugLog.emit("trust_save", ["ok": "no"])
             latestAction = "Paired, but this phone could not save the Mac"
@@ -1530,7 +1564,16 @@ private struct RemoteSettingsSheet: View {
 
                     LabeledContent("Link", value: model.linkStatus)
                     LabeledContent("Link round trip", value: model.linkLatency)
-                    if let trustedMacName = model.trustedMacName {
+                    if model.trustedMacs.count > 1 {
+                        Picker("Mac", selection: Binding(
+                            get: { model.selectedMac?.deviceID },
+                            set: { if let id = $0 { model.selectMac(id) } }
+                        )) {
+                            ForEach(model.trustedMacs, id: \.deviceID) { mac in
+                                Text(mac.displayName).tag(Optional(mac.deviceID))
+                            }
+                        }
+                    } else if let trustedMacName = model.trustedMacName {
                         LabeledContent("Trusted Mac", value: trustedMacName)
                     }
                     Text(model.latestAction)

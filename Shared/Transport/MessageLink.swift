@@ -33,6 +33,14 @@ public protocol MessageLink: AnyObject {
     @discardableResult
     func send(_ message: Data, on channel: LinkChannel, delivery: LinkDelivery) -> LinkSendResult
 
+    /// Which peers this link should meet, each named by its beacon.  A link
+    /// that announces itself, as the phone does, announces the first; a link
+    /// that searches, as the Mac does, searches for all of them.  Empty means
+    /// nobody: the link neither announces nor searches until told again.  May
+    /// be called at any time; a link already announcing or searching changes
+    /// over in place, and one already connected keeps its connection.
+    func setBeacons(_ beacons: [UUID])
+
     /// Begin looking for the peer and keep the connection up. A link owns its
     /// own timers; nothing above it has to tick it.
     func start()
