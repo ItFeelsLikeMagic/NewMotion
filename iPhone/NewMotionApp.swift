@@ -953,11 +953,14 @@ final class NewMotionFeatureModel: ObservableObject {
             latestAction = "Pair before typing"
             return
         }
-        let pieces = SpokenTextChunker.split(text)
+        var pieces = SpokenTextChunker.split(text)
         guard !pieces.isEmpty else {
             IPhoneDebugLog.emit("ondevice_drop", ["why": "empty"])
             return
         }
+        // The recogniser hands back a trimmed sentence, so without this the
+        // next utterance would butt straight against this one.
+        pieces[pieces.count - 1] += " "
         for piece in pieces {
             guard let payload = try? SpokenTextPayload(text: piece),
                   inputUplink.send(.spokenText(payload)) else {
