@@ -113,7 +113,9 @@ DMG="$DIST_DIR/NewMotion.dmg"
 ZIP="$DIST_DIR/NewMotion.zip"
 APPCAST="$DIST_DIR/appcast.xml"
 
-[ -f "$DMG" ] || { echo "error: no disk image at $DMG" >&2; exit 1; }
+# The feed is built from the zip, so it has to be here even for a dry run.
+# The disk image is only needed to publish, and --skip-notarize does not make
+# one, because an unnotarized image is refused everywhere but this Mac.
 [ -f "$ZIP" ] || { echo "error: no zip at $ZIP" >&2; exit 1; }
 
 # The feed installed copies read. Sparkle compares CURRENT_PROJECT_VERSION,
@@ -156,6 +158,8 @@ if [ "$PUBLISH" = "0" ]; then
     echo "Nothing published. Files are in $DIST_DIR."
     exit 0
 fi
+
+[ -f "$DMG" ] || { echo "error: no disk image at $DMG" >&2; exit 1; }
 
 echo "==> Tagging $TAG"
 git tag -a "$TAG" -m "NewMotion $VERSION"
