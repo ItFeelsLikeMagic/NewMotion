@@ -45,6 +45,22 @@ every rebuild and you re-approve it each time.
 Nothing here can print a transcript, a keystroke, or audio. The debug surfaces
 carry counts and states only, on purpose.
 
+## Finding the notary profile again
+
+`notarytool` keeps its credentials in the data protection keychain, which the
+`security` command cannot read at all. `security dump-keychain` and
+`security find-generic-password` both come back empty whether or not a profile
+exists, so neither is evidence of anything. Ask `notarytool` instead:
+
+```sh
+xcrun notarytool history --keychain-profile phoneremote
+```
+
+A name that does not exist answers "No Keychain password item found for
+profile". A real one returns submission history. The profile on David's Mac is
+`phoneremote`, named before the app was, and it does not sync between Macs: a
+new machine needs `notarytool store-credentials` run on it once.
+
 ## Shipping
 
 | Script | What it does |
@@ -112,7 +128,7 @@ The matching public key is `SUPublicEDKey` in
 | `NEWMOTION_SIGNING` | install scripts | `1` turns on development signing. Off by default. |
 | `NEWMOTION_DEVELOPMENT_TEAM` | install, package | Your ten-character Apple team id. |
 | `NEWMOTION_CODE_SIGN_IDENTITY` | install, package | Overrides the certificate picked from your keychain. |
-| `NEWMOTION_NOTARY_PROFILE` | package, release | The `notarytool` keychain profile name. |
+| `NEWMOTION_NOTARY_PROFILE` | package, release | The `notarytool` keychain profile name. On David's Mac it is `phoneremote`, after the app's old name. |
 | `IPHONE_UDID` | phone scripts | The device to install to, launch, or pull logs from. `--udid` does the same. |
 | `NEWMOTION_RUN_IOS_TESTS` | `test.sh` | `1` also runs the iOS suite on a simulator. |
 | `NEWMOTION_KEYCHAIN_TESTS` | `test.sh` | `1` runs the tests that use the real Keychain and prompt you. |
