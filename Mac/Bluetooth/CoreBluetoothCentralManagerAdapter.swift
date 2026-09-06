@@ -32,9 +32,12 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
         manager = CBCentralManager(delegate: self, queue: callbackQueue)
     }
 
-    public func scan(for serviceUUID: UUID) {
+    public func scan(for serviceUUIDs: [UUID]) {
         guard state == .poweredOn else { return }
-        manager.scanForPeripherals(withServices: [CBUUID(string: serviceUUID.uuidString)], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        manager.scanForPeripherals(
+            withServices: serviceUUIDs.map { CBUUID(string: $0.uuidString) },
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
     }
 
     public func stopScan() {

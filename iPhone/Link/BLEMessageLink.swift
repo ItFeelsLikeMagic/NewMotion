@@ -60,6 +60,10 @@ final class BLEMessageLink: MessageLink, @unchecked Sendable {
         return min(BLEFramingLimits.maximumEnvelopeBytes, perFragment * BLEFramingLimits.maximumFragments)
     }
 
+    func setBeacons(_ beacons: [UUID]) {
+        peripheral.setBeacon(beacons.first)
+    }
+
     func start() {
         peripheral.setForeground(true)
         guard pulseTimer == nil else { return }

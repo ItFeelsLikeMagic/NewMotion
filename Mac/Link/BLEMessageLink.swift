@@ -8,6 +8,10 @@ import NewMotionShared
 /// gives up on a peer all live here. Above this line there are only whole
 /// messages and four states.
 ///
+/// The scan asks the radio only for the beacons it has been given, so a phone
+/// addressed to another Mac is never seen, let alone connected to. The GATT
+/// service itself stays `NewMotionGATT.serviceUUID` on every phone.
+///
 /// Core Bluetooth delivers every callback on the main queue and the link's own
 /// timer runs there too, so the connection state below is single-threaded.
 public final class BLEMessageLink: MessageLink, @unchecked Sendable {
@@ -43,6 +47,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     private let fragmenter = BLEFragmenter()
     private let inbound: [LinkChannel: BLEReassembler]
 
+    private var beacons: [UUID] = []
     private var lifecycle: BLECentralLifecycleState = .idle
     private var connectedPeripheral: BLEDiscoveredPeripheral?
     private var pendingPeripheral: BLEDiscoveredPeripheral?
@@ -91,6 +96,14 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
 
     deinit { pollTimer?.invalidate() }
 
+    public func setBeacons(_ beacons: [UUID]) {
+        guard beacons != self.beacons else { return }
+        self.beacons = beacons
+        guard lifecycle == .scanning else { return }
+        adapter.stopScan()
+        scanForBeacons()
+    }
+
     public func start() {
         guard adapter.state == .poweredOn else {
             transition(to: .waitingForBluetooth)
@@ -98,9 +111,16 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         }
         clearConnection()
         transition(to: .scanning)
-        adapter.scan(for: serviceUUID)
+        scanForBeacons()
         adoptSystemConnectedPeripheral()
         startPolling()
+    }
+
+    /// With no beacons there is nobody to look for, but a phone the system
+    /// already holds a link to is still adopted by polling.
+    private func scanForBeacons() {
+        guard !beacons.isEmpty else { return }
+        adapter.scan(for: beacons)
     }
 
     public func stop() {
