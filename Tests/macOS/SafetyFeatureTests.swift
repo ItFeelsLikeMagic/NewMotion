@@ -4,6 +4,17 @@ import XCTest
 @testable import PhoneRemoteShared
 
 final class SafetyFeatureTests: XCTestCase {
+    func testUnicodeChunksAreAtMostTwentyUnitsAndKeepSurrogatePairs() {
+        let plain = UnicodeKeyEvents.chunks(of: String(repeating: "a", count: 45))
+        XCTAssertEqual(plain.map(\.count), [20, 20, 5])
+
+        let emojiOnBoundary = String(repeating: "a", count: 19) + "😀b"
+        let chunks = UnicodeKeyEvents.chunks(of: emojiOnBoundary)
+        XCTAssertEqual(chunks.map(\.count), [19, 3])
+        XCTAssertEqual(String(utf16CodeUnits: chunks.flatMap { $0 }, count: 22), emojiOnBoundary)
+        XCTAssertTrue(UnicodeKeyEvents.chunks(of: "").isEmpty)
+    }
+
     /// The whole point of the watchdog: a phone that stops talking must not
     /// leave a button pressed.
     func testWatchdogReleasesAHeldButtonWhenTheHeartbeatStops() {

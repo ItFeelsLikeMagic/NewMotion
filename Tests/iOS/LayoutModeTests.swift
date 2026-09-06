@@ -33,10 +33,9 @@ final class LayoutModeTests: XCTestCase {
 
     func testOneSidedTargetsLeaveTheOtherSideAlone() {
         XCTAssertTrue(PushToTalkZoneSides.leading.includes(.cancelLeading))
-        XCTAssertTrue(PushToTalkZoneSides.leading.includes(.editLeading))
         XCTAssertFalse(PushToTalkZoneSides.leading.includes(.cancelTrailing))
-        XCTAssertFalse(PushToTalkZoneSides.trailing.includes(.editLeading))
-        XCTAssertTrue(PushToTalkZoneSides.both.includes(.editTrailing))
+        XCTAssertFalse(PushToTalkZoneSides.trailing.includes(.cancelLeading))
+        XCTAssertTrue(PushToTalkZoneSides.both.includes(.cancelTrailing))
     }
 
     func testTheStoredNameRestoresTheMode() {

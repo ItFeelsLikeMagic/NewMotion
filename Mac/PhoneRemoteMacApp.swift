@@ -106,7 +106,6 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var pairingExpiry: Date? { didSet { publishDebugState() } }
     @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
-    @Published private(set) var voice = VoicePTTState() { didSet { publishDebugState() } }
     @Published var smoothCursor = UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true
     @Published var smoothScroll = UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
     @Published var screenVocabulary = UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true
@@ -117,8 +116,6 @@ final class MacRemoteAppModel: ObservableObject {
     /// sixty times a second, on the same actor that applies the packets.
     private var cursorEvents: UInt64 = 0
     private var lastCursorPublish: TimeInterval = 0
-    private let voiceCoordinator: VoicePTTCoordinator
-    private let speechServer: NemotronServer
     private let screenVocabularyReader: AXScreenVocabularyReader
     /// The phone transcribes, so the cache has to reach it.  Held here as well
     /// as inside the reader, because spoken words are credited to it directly.
@@ -126,10 +123,6 @@ final class MacRemoteAppModel: ObservableObject {
     private var lastSentVocabulary: [String] = []
     private var vocabularyTimer: Timer?
     private var frontAppObserver: NSObjectProtocol?
-    private let normalizer = S1MiniNormalizer()
-    /// Experimental: only ever reached when the phone marks an utterance as an
-    /// instruction, which its own setting gates.
-    private let editor = QwenTranscriptEditor()
     private let latency: MacLatencyProbes
     private let debugSnapshotBox = MacDebugSnapshotBox()
     private var debugServer: MacDebugHTTPServer?
@@ -146,7 +139,6 @@ final class MacRemoteAppModel: ObservableObject {
         )
         self.screenVocabularyReader = screenVocabularyReader
         self.vocabularyCache = vocabularyCache
-        self.speechServer = NemotronServer(speechContext: screenVocabularyReader)
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust, keyPost: latency.keyPost)
         self.inputSink = sink
@@ -182,16 +174,6 @@ final class MacRemoteAppModel: ObservableObject {
             heartbeatTimeout: Self.heartbeatTimeout
         )
         self.lifecycle = MacLifecycleCoordinator(injector: injector)
-        let voiceCoordinator = VoicePTTCoordinator(
-            sessions: speechServer,
-            insertionSink: injector,
-            normalizer: normalizer,
-            editor: editor,
-            focusedText: focusedTextReader,
-            vocabulary: vocabularyCache,
-            latency: latency.voiceCommitToTyped
-        )
-        self.voiceCoordinator = voiceCoordinator
         self.link = link
         self.pairingOffer = pairingOffer
         self.pairingCoordinator = pairingCoordinator
@@ -250,35 +232,10 @@ final class MacRemoteAppModel: ObservableObject {
             }
         }
 
-        voiceCoordinator.onStateChange = { [weak self] state in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let phaseChanged = state.phase != self.voice.phase
-                self.voice = state
-                guard phaseChanged else { return }
-                switch state.phase {
-                case .listening:
-                    self.lastApplicationMessage = "Listening"
-                case .transcribing:
-                    self.lastApplicationMessage = "Transcribing"
-                case .typed:
-                    self.lastApplicationMessage = "Typed spoken text"
-                case .failed:
-                    self.lastApplicationMessage = "Voice typing failed"
-                case .idle:
-                    break
-                }
-            }
-        }
         if !inert {
-            speechServer.start()
-            normalizer.warmUp()
             screenVocabularyReader.warmUp()
+            startVocabularyPush()
         }
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [speechServer] _ in speechServer.stop() }
-        if !inert { startVocabularyPush() }
 
         _ = lifecycle.handle(.startup)
         refreshAccessibility(prompt: false)
@@ -622,15 +579,6 @@ final class MacRemoteAppModel: ObservableObject {
             let decrypted = try session.decrypt(message)
             latency.decrypt.record(microseconds: unsealing.elapsedMicroseconds)
             let decoding = LatencyClock()
-            if decrypted.messageType == MessageType.audioChunk.rawValue,
-               decrypted.plaintext.starts(with: VoiceStreamFrame.magic) {
-                let frame = try VoiceStreamFrame.decode(decrypted.plaintext)
-                latency.decode.record(microseconds: decoding.elapsedMicroseconds)
-                // Audio is handed to another queue and typed much later, which
-                // `voiceCommitToTyped` covers instead.
-                voiceCoordinator.receive(frame)
-                return
-            }
             if decrypted.messageType == MessageType.pointerDelta.rawValue,
                decrypted.plaintext.starts(with: PointerStreamFrame.magic) {
                 let frame = try PointerStreamFrame.decode(decrypted.plaintext)
@@ -948,13 +896,7 @@ final class MacRemoteAppModel: ObservableObject {
             deleteScrub: deleteScrub.lastSlide.isEmpty ? nil : deleteScrub.lastSlide,
             keyPostMs: inputSink.lastKeyBurstMilliseconds,
             cursorEvents: cursorEvents,
-            audioPhase: voice.phase.rawValue,
-            audioFrames: voice.health.receivedFrames,
-            audioSamples: voice.health.receivedSamples,
-            audioMissingChunks: voice.health.missingChunks,
-            audioMerge: voice.merge,
-            audioTiming: voice.timing,
-            audioVocabulary: vocabularyLabel,
+            vocabulary: vocabularyLabel,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
                 MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)
@@ -1013,22 +955,6 @@ struct MacRemoteStatusView: View {
                 Text(probe)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            if model.voice.phase != .idle {
-                Text(model.voice.phase.rawValue.capitalized)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                AudioHealthIndicatorView(health: model.voice.health)
-            }
-            if !model.voice.preview.isEmpty {
-                Text(model.voice.preview)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let final = model.voice.lastFinalText {
-                Text(final)
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Toggle("Boost words on screen", isOn: Binding(

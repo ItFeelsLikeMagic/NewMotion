@@ -26,7 +26,8 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case textInput = 5
     case hotkey = 6
     case motionPointerDelta = 7
-    case audioChunk = 8
+    // 8 was audioChunk, when the Mac transcribed and the phone shipped it the
+    // sound. The phone transcribes now; 8 must not be reused for anything else.
     case acknowledgement = 9
     case connectionStatus = 10
     case error = 11
@@ -40,7 +41,7 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
 
     public var deliveryClass: DeliveryClass {
         switch self {
-        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta, .audioChunk:
+        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
              .deleteScrub, .vocabulary, .spokenText, .acknowledgement,
@@ -537,82 +538,6 @@ public struct MotionPointerDeltaPayload: Codable, Equatable, Sendable {
     }
 }
 
-public struct AudioChunkPayload: Equatable, Sendable {
-    public let streamID: SessionID
-    public let chunkIndex: UInt32
-    public let sampleRateHz: UInt32
-    public let channels: UInt8
-    public let bitsPerSample: UInt8
-    public let pcm: ProtocolBytes
-    public let samplePosition: UInt64
-    public let isLast: Bool
-
-    public init(
-        streamID: SessionID,
-        chunkIndex: UInt32,
-        sampleRateHz: UInt32 = 16_000,
-        channels: UInt8 = 1,
-        bitsPerSample: UInt8 = 16,
-        pcm: [UInt8],
-        samplePosition: UInt64 = 0,
-        isLast: Bool = false
-    ) throws {
-        self.streamID = streamID
-        self.chunkIndex = chunkIndex
-        self.sampleRateHz = sampleRateHz
-        self.channels = channels
-        self.bitsPerSample = bitsPerSample
-        self.pcm = try ProtocolBytes(bytes: pcm)
-        self.samplePosition = samplePosition
-        self.isLast = isLast
-    }
-}
-
-extension AudioChunkPayload: Codable {
-    private enum CodingKeys: String, CodingKey {
-        case streamID
-        case chunkIndex
-        case sampleRateHz
-        case channels
-        case bitsPerSample
-        case pcm
-        case samplePosition
-        case isLast
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        streamID = try container.decode(SessionID.self, forKey: .streamID)
-        chunkIndex = try container.decode(UInt32.self, forKey: .chunkIndex)
-        sampleRateHz = try container.decode(UInt32.self, forKey: .sampleRateHz)
-        channels = try container.decode(UInt8.self, forKey: .channels)
-        bitsPerSample = try container.decode(UInt8.self, forKey: .bitsPerSample)
-        samplePosition = try container.decodeIfPresent(UInt64.self, forKey: .samplePosition) ?? 0
-        isLast = try container.decodeIfPresent(Bool.self, forKey: .isLast) ?? false
-
-        if let encoded = try? container.decode(String.self, forKey: .pcm) {
-            guard let data = Data(base64Encoded: encoded) else {
-                throw ProtocolError.invalidField("audio_pcm_base64")
-            }
-            pcm = try ProtocolBytes(bytes: Array(data))
-        } else {
-            pcm = try container.decode(ProtocolBytes.self, forKey: .pcm)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(streamID, forKey: .streamID)
-        try container.encode(chunkIndex, forKey: .chunkIndex)
-        try container.encode(sampleRateHz, forKey: .sampleRateHz)
-        try container.encode(channels, forKey: .channels)
-        try container.encode(bitsPerSample, forKey: .bitsPerSample)
-        try container.encode(Data(pcm.bytes).base64EncodedString(), forKey: .pcm)
-        try container.encode(samplePosition, forKey: .samplePosition)
-        try container.encode(isLast, forKey: .isLast)
-    }
-}
-
 public enum AcknowledgementStatus: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case accepted = 1
     case duplicate = 2
@@ -690,7 +615,6 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case vocabulary(VocabularyPayload)
     case spokenText(SpokenTextPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
-    case audioChunk(AudioChunkPayload)
     case acknowledgement(AcknowledgementPayload)
     case connectionStatus(ConnectionStatusPayload)
     case error(ErrorPayload)
@@ -711,7 +635,6 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .vocabulary: return .vocabulary
         case .spokenText: return .spokenText
         case .motionPointerDelta: return .motionPointerDelta
-        case .audioChunk: return .audioChunk
         case .acknowledgement: return .acknowledgement
         case .connectionStatus: return .connectionStatus
         case .error: return .error
@@ -757,8 +680,6 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .spokenText(try container.decode(SpokenTextPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
-        case .audioChunk:
-            self = .audioChunk(try container.decode(AudioChunkPayload.self, forKey: .value))
         case .acknowledgement:
             self = .acknowledgement(try container.decode(AcknowledgementPayload.self, forKey: .value))
         case .connectionStatus:
@@ -789,7 +710,6 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .vocabulary(let value): try container.encode(value, forKey: .value)
         case .spokenText(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
-        case .audioChunk(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
         case .connectionStatus(let value): try container.encode(value, forKey: .value)
         case .error(let value): try container.encode(value, forKey: .value)
@@ -836,19 +756,6 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")
             guard (1...100).contains(Int(value.sampleRateHz)) else {
                 throw ProtocolError.outOfRange("motion_sample_rate_hz")
-            }
-        case .audioChunk(let value):
-            guard value.streamID.bytes.count == SessionID.byteCount else {
-                throw ProtocolError.invalidField("audio_stream_id_length")
-            }
-            guard value.sampleRateHz == 16_000, value.channels == 1, value.bitsPerSample == 16 else {
-                throw ProtocolError.invalidField("audio_format")
-            }
-            guard !value.pcm.bytes.isEmpty else {
-                throw ProtocolError.invalidField("audio_empty")
-            }
-            guard value.pcm.bytes.count.isMultiple(of: 2) else {
-                throw ProtocolError.invalidField("audio_pcm_alignment")
             }
         case .acknowledgement(let value):
             guard value.acknowledgedSequence > 0 else {

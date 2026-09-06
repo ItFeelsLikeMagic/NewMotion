@@ -36,10 +36,11 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var edgeScrollEnabled = UserDefaults.standard.bool(forKey: "edgeScrollEnabled")
     @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
     @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
-    @Published var spokenEditEnabled = UserDefaults.standard.bool(forKey: "spokenEditEnabled")
-    @Published var onDeviceVoiceEnabled = UserDefaults.standard.bool(forKey: "onDeviceVoiceEnabled")
     @Published var voiceBoostWords = UserDefaults.standard.string(forKey: "voiceBoostWords") ?? ""
-    @Published var onDeviceVoiceStatus = "Off"
+    @Published var onDeviceVoiceStatus = OnDeviceVoiceReadiness.preparing.label
+    /// The words heard so far in the utterance under way, shown on the remote
+    /// and cleared when it ends. Never logged and never stored.
+    @Published var voicePreview = ""
     /// The Mac's screen vocabulary, as last pushed. Not persisted: it belongs
     /// to whatever is on that screen now, not to this app's settings.
     private var macVocabulary: [String] = []
@@ -115,7 +116,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var pairingToken: PairingToken?
     private var authenticatedSession: PairingSession? {
         didSet {
-            voiceUplink.setSession(authenticatedSession)
             inputLink.setSession(authenticatedSession)
             if authenticatedSession == nil { inputUplink.reset() }
             refreshAirMouse()
@@ -129,11 +129,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
     private var trustedPeer: TrustedDeviceSummary?
     private var reconnectFailures = 0
-    private let voiceUplink: VoiceUplink
-    /// The other way an utterance can leave: transcribed here, then typed as
-    /// ordinary text.  Only one of the two handles any given press.
+    /// Speech becomes text here and travels as text; nothing the microphone
+    /// hears ever leaves the phone.
     private let onDeviceVoice = OnDeviceVoice()
-    private let voiceRoute = VoiceRouteSettings()
+    private let voiceBoost = VoiceBoostBox()
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     init(link: MessageLink = BLEMessageLink(
@@ -144,7 +143,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             permissionGranted: AVAudioApplication.shared.recordPermission == .granted
         )
         self.audioController = audioController
-        voiceUplink = VoiceUplink(queue: audioController.queue)
         let motionSink = DeltaCoalescer<MotionPointerDelta>.motionPointer()
         self.motionSink = motionSink
         motionSession = MotionPointerSession(
@@ -231,37 +229,25 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 self?.cursorMixer.handleScrollTravel(CursorDelta(x: 0, y: delta.y))
             }
         }
-        let uplink = voiceUplink
         let onDevice = onDeviceVoice
-        let route = voiceRoute
-        // One utterance goes one way or the other. The edit callbacks stay on
-        // the Mac route because only the Mac can read the field being edited,
-        // and `refreshVoiceRoute` keeps the pencil zones off the other way.
-        audioController.onUtteranceStart = {
-            if route.isOnDevice { onDevice.begin(boostWords: route.boostWords) } else { uplink.beginStream() }
+        let boost = voiceBoost
+        // The audio callbacks arrive on the voice queue, so the boost list is
+        // read through its lock rather than off the main actor.
+        audioController.onUtteranceStart = { onDevice.begin(boostWords: boost.words) }
+        audioController.onChunk = { onDevice.append($0) }
+        audioController.onUtteranceEnd = { onDevice.end() }
+        audioController.onUtteranceCancel = { [weak self] in
+            onDevice.cancel()
+            Task { @MainActor in self?.voicePreview = "" }
         }
-        audioController.onChunk = {
-            if route.isOnDevice { onDevice.append($0) } else { uplink.send(samples: $0) }
-        }
-        audioController.onUtteranceEnd = {
-            if route.isOnDevice { onDevice.end() } else { uplink.endStream() }
-        }
-        audioController.onUtteranceCancel = {
-            if route.isOnDevice { onDevice.cancel() } else { uplink.cancelStream() }
-        }
-        audioController.onUtteranceEndAsEdit = { uplink.endStreamAsEdit() }
-        audioController.onEditIntent = { uplink.sendIntent(edit: $0) }
         onDeviceVoice.onText = { [weak self] text in
             Task { @MainActor in self?.typeTranscribedText(text) }
         }
         onDeviceVoice.onPartialText = { [weak self] text in
-            Task { @MainActor in self?.latestAction = text.isEmpty ? "Listening" : text }
+            Task { @MainActor in self?.voicePreview = text }
         }
         onDeviceVoice.onReadiness = { [weak self] readiness in
             Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
-        }
-        uplink.deliver = { [weak self] message, flags in
-            MainActor.assumeIsolated { self?.deliverVoiceMessage(message, flags: flags) }
         }
         let center = NotificationCenter.default
         audioSessionObservers = [
@@ -276,7 +262,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         ]
         motionSession.updateFilter(motionConfiguration)
         refreshAirMouse()
-        refreshVoiceRoute()
+        refreshVoiceBoost()
         IPhoneDebugLog.emit("app_init", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
             "screenCaptured": UIScreen.main.isCaptured ? "yes" : "no"
@@ -396,34 +382,6 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    /// A message the link has no room for is dropped whole; its sequence number
-    /// was already advanced on the voice queue.
-    private func deliverVoiceMessage(_ message: Data, flags: VoiceStreamFlags) {
-        // The tracker is the only tally: what this utterance sent and dropped
-        // is what the window holds since the start flag reset it.
-        if flags.contains(.start) { PhoneLatency.voiceWire.reset() }
-        // The end of a stream is the one voice message the Mac cannot infer, so
-        // it is the one that goes reliably.
-        // Voice is unreliable on the wire but still worth queueing: a dropped
-        // chunk is a hole in what someone said, unlike a stale cursor delta.
-        let delivery: LinkDelivery = flags.contains(.end) ? .reliable : .unreliableQueued
-        let clock = LatencyClock()
-        PhoneLatency.voiceWire.record(clock, sent: link.send(message, on: .data, delivery: delivery) == .sent)
-        if flags.contains(.end) {
-            let cancelled = flags.contains(.cancel)
-            let edit = flags.contains(.edit)
-            let stream = PhoneLatency.voiceWire.summary()
-            latestAction = cancelled ? "Voice thrown away" : (edit ? "Edit sent" : "Voice sent")
-            IPhoneDebugLog.emit("ptt_end", [
-                "sent": "\(stream.map { $0.attempts - $0.refusals } ?? 0)",
-                "dropped": "\(stream?.refusals ?? 0)",
-                "cancelled": cancelled ? "yes" : "no",
-                "edit": edit ? "yes" : "no",
-                "link": linkState.label
-            ])
-        }
-    }
-
     func setAirMouseEnabled(_ enabled: Bool) {
         airMouseEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "airMouseEnabled")
@@ -494,47 +452,26 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "deleteScrubEnabled")
     }
 
-    func setSpokenEditEnabled(_ enabled: Bool) {
-        spokenEditEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "spokenEditEnabled")
-        refreshVoiceRoute()
-    }
-
-    func setOnDeviceVoiceEnabled(_ enabled: Bool) {
-        onDeviceVoiceEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "onDeviceVoiceEnabled")
-        refreshVoiceRoute()
-    }
-
     func setVoiceBoostWords(_ raw: String) {
         voiceBoostWords = raw
         UserDefaults.standard.set(raw, forKey: "voiceBoostWords")
-        refreshVoiceRoute()
+        refreshVoiceBoost()
     }
 
-    /// Publishes the route to the voice queue and keeps the pencil zones off
-    /// when the phone is transcribing, since a spoken edit needs the Mac to
-    /// read the field first.
-    private func refreshVoiceRoute() {
+    /// Publishes the boost list to the voice queue and makes sure the model is
+    /// on its way down.  Called whenever either half of the list changes: the
+    /// Settings field here, or a fresh walk pushed by the Mac.
+    private func refreshVoiceBoost() {
         // The Settings field is a permanent extra on top of whatever the Mac
         // can see, so a name you always want heard survives a window change.
-        voiceRoute.update(
-            onDevice: onDeviceVoiceEnabled,
-            boostWords: VoiceBoostWords.merge(
-                typed: VoiceBoostWords.parse(voiceBoostWords),
-                fromMac: macVocabulary
-            )
-        )
-        pushToTalk.setEditEnabled(spokenEditEnabled && !onDeviceVoiceEnabled)
-        guard onDeviceVoiceEnabled else {
-            onDeviceVoiceStatus = "Off"
-            return
-        }
+        voiceBoost.update(VoiceBoostWords.merge(
+            typed: VoiceBoostWords.parse(voiceBoostWords),
+            fromMac: macVocabulary
+        ))
         guard onDeviceVoice.isSupported else {
             onDeviceVoiceStatus = OnDeviceVoiceReadiness.unsupported.label
             return
         }
-        onDeviceVoiceStatus = "Preparing"
         onDeviceVoice.prepare()
     }
 
@@ -900,7 +837,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 // The Mac walks its own screen and sends what it found. It
                 // arrives between presses, so a press never waits for it.
                 macVocabulary = value.phrases
-                refreshVoiceRoute()
+                refreshVoiceBoost()
                 IPhoneDebugLog.emit("vocabulary", ["n": "\(value.phrases.count)"])
             default:
                 break
@@ -1001,6 +938,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     /// four places it can be dropped without a word, so this one says which;
     /// counts only, never the text.
     private func typeTranscribedText(_ text: String) {
+        voicePreview = ""
         guard isControllable else {
             IPhoneDebugLog.emit("ondevice_drop", ["why": "notReady", "link": linkState.label])
             latestAction = "Pair before typing"
@@ -1141,30 +1079,21 @@ private final class PairingConfirmFlag {
     var value = false
 }
 
-/// Which way an utterance leaves, and the words the phone-side recogniser
-/// should lean towards.  Written on the main actor and read on the voice
-/// queue, so both go through the lock.
-private final class VoiceRouteSettings: @unchecked Sendable {
+/// The words the recogniser should lean towards.  Written on the main actor
+/// and read on the voice queue, so both go through the lock.
+private final class VoiceBoostBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var onDevice = false
     private var boost: [String] = []
 
-    var isOnDevice: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return onDevice
-    }
-
-    var boostWords: [String] {
+    var words: [String] {
         lock.lock()
         defer { lock.unlock() }
         return boost
     }
 
-    func update(onDevice: Bool, boostWords: [String]) {
+    func update(_ words: [String]) {
         lock.lock()
-        self.onDevice = onDevice
-        boost = boostWords
+        boost = words
         lock.unlock()
     }
 }
@@ -1408,6 +1337,9 @@ struct PhoneRemoteControlView: View {
             )
                 .ignoresSafeArea()
         }
+        // Above the keys rather than over the trackpad, so the words being
+        // heard are readable without covering anything the thumb is using.
+        .overlay(alignment: .top) { VoicePreviewBanner(text: model.voicePreview) }
         .onAppear { model.scenePhaseChanged(.active) }
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(phase)
@@ -1810,16 +1742,6 @@ private struct RemoteSettingsSheet: View {
                     Text("Slide left to rub out text a buzz at a time, right to bring it back. A tap still sends one delete.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Toggle(
-                        "Edit text with a spoken instruction",
-                        isOn: Binding(
-                            get: { model.spokenEditEnabled },
-                            set: { model.setSpokenEditEnabled($0) }
-                        )
-                    )
-                    Text("While holding to talk, drag to the pencil on either side. What you say becomes an instruction for the text already in the field, and the Mac rewrites it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Extra features")
                 } footer: {
@@ -1827,38 +1749,26 @@ private struct RemoteSettingsSheet: View {
                 }
 
                 Section {
-                    Toggle(
-                        "Turn speech into words on the iPhone",
-                        isOn: Binding(
-                            get: { model.onDeviceVoiceEnabled },
-                            set: { model.setOnDeviceVoiceEnabled($0) }
-                        )
-                    )
-                    Text("Apple's recogniser runs here instead of the Mac's, so the Mac needs no speech server. Off means the audio still goes to the Mac.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     LabeledContent("Status", value: model.onDeviceVoiceStatus)
                         .font(.caption)
-                    if model.onDeviceVoiceEnabled {
-                        TextField(
-                            "Nemotron, Ollama, Xcode",
-                            text: Binding(
-                                get: { model.voiceBoostWords },
-                                set: { model.setVoiceBoostWords($0) }
-                            ),
-                            axis: .vertical
-                        )
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .lineLimit(1...4)
-                        Text("Names to listen harder for, separated by commas. The spoken-edit pencils stay off while this is on, because only the Mac can read the field being edited.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    TextField(
+                        "Ollama, Xcode, Testaflight",
+                        text: Binding(
+                            get: { model.voiceBoostWords },
+                            set: { model.setVoiceBoostWords($0) }
+                        ),
+                        axis: .vertical
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .lineLimit(1...4)
+                    Text("Names to listen harder for, separated by commas. Names on the Mac's screen are added to these on their own.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Voice typing")
                 } footer: {
-                    Text("Either way, push to talk works the same and nothing you say leaves your own devices.")
+                    Text("Hold to talk and your words are turned into text here on the iPhone, then typed on the Mac. The sound itself never leaves this phone.")
                 }
 
 #if DEBUG
@@ -1907,3 +1817,25 @@ struct PhoneRemoteApp: App {
     }
 }
 #endif
+
+/// The words heard so far, while the finger is still down.  It is the only
+/// place a transcript is ever shown, and it goes as soon as the sentence is
+/// sent; nothing here is logged or stored.
+private struct VoicePreviewBanner: View {
+    let text: String
+
+    var body: some View {
+        if !text.isEmpty {
+            Text(text)
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(.thinMaterial)
+                .transition(.opacity)
+                .allowsHitTesting(false)
+        }
+    }
+}

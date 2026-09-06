@@ -21,11 +21,6 @@ enum PhoneLatency {
     /// How long accumulated travel sat waiting on a busy link before it went
     /// out.  This is the lag the hand feels.
     static let inputHeld = LatencyTracker(name: "input.held")
-    /// Compressing and sealing one voice chunk on the audio queue.
-    static let voiceEncode = LatencyTracker(name: "voice.encode")
-    /// Handing one sealed voice chunk to the link.  Reset at the start of each
-    /// utterance, so it also counts what that utterance sent and dropped.
-    static let voiceWire = LatencyTracker(name: "voice.wire")
     /// Phone to Mac and back, sampled every couple of seconds.
     static let roundTrip = LatencyTracker(name: "link.rtt")
 
@@ -36,8 +31,6 @@ enum PhoneLatency {
         ("linkCtrl", linkSendControl),
         ("input", inputToWire),
         ("held", inputHeld),
-        ("voiceEnc", voiceEncode),
-        ("voiceWire", voiceWire),
         ("rtt", roundTrip)
     ]
 

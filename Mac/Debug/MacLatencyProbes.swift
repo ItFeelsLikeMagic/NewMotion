@@ -26,9 +26,6 @@ public final class MacLatencyProbes: Sendable {
     /// Sends towards the phone. Refusals here mean a backed-up write queue,
     /// which shows as a rising refusal rate while the timings stay flat.
     public let linkSend = LatencyTracker(name: "linkSend")
-    /// The commit that ended the speech to the words landing in the field.
-    /// This is the wait the speaker feels.
-    public let voiceCommitToTyped = LatencyTracker(name: "voiceCommitToTyped")
 
     public init() {}
 
@@ -36,7 +33,7 @@ public final class MacLatencyProbes: Sendable {
     /// their own. A stage that has never run is left out rather than reported
     /// as zero.
     public func summaries() -> [LatencySummary] {
-        [receiveToInject, decrypt, decode, dispatch, keyPost, linkSend, voiceCommitToTyped]
+        [receiveToInject, decrypt, decode, dispatch, keyPost, linkSend]
             .compactMap { $0.summary() }
     }
 }

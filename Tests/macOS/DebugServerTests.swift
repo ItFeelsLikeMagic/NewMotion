@@ -26,7 +26,7 @@ final class DebugServerTests: XCTestCase {
         let json = try XCTUnwrap(String(data: response.body, encoding: .utf8))
         XCTAssertTrue(json.contains("\"pairingProgressKind\":\"paired\""))
         XCTAssertTrue(json.contains("\"authenticated\":true"))
-        XCTAssertTrue(json.contains("\"audioFrames\":0"))
+        XCTAssertTrue(json.contains("\"vocabulary\":\"off\""))
         XCTAssertFalse(json.contains("qrText"))
         XCTAssertFalse(json.contains("prqr1."))
         XCTAssertFalse(json.contains("secret"))

@@ -35,11 +35,10 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     private var chunker: PCM16Chunker
     private var pendingRelease: DispatchWorkItem?
 
-    /// How the utterance leaves: typed, thrown away, or used as an instruction.
+    /// How the utterance leaves: transcribed, or thrown away.
     private enum Ending {
         case send
         case cancel
-        case edit
     }
 
     public var onUtteranceStart: (@Sendable () -> Void)?
@@ -48,10 +47,6 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     /// The utterance was thrown away. Audio still in the chunker is dropped
     /// rather than sent, and the Mac is told to forget the stream.
     public var onUtteranceCancel: (@Sendable () -> Void)?
-    /// The utterance is an instruction for editing the field, not text to type.
-    public var onUtteranceEndAsEdit: (@Sendable () -> Void)?
-    /// Which way the hold is leaning, while it is still down.
-    public var onEditIntent: (@Sendable (Bool) -> Void)?
 
     /// `releaseGrace` keeps the microphone open briefly after the finger lifts,
     /// because people let go while the last syllable is still sounding.
@@ -92,8 +87,8 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
         queue.async { self.prewarmNow() }
     }
 
-    /// The start frame goes out before the microphone starts so the Mac can
-    /// open its recognizer while the audio session is still warming up.
+    /// The utterance is opened before the microphone starts, so the
+    /// recogniser is loading while the audio session is still warming up.
     public func pushToTalkPressed(completion: @Sendable @escaping (AudioCaptureStartResult) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -125,21 +120,6 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
 
     public func pushToTalkReleased() {
         release(ending: .send)
-    }
-
-    /// Released over an edit target: the words are an instruction, so they
-    /// still travel, but they are marked as one.
-    public func pushToTalkReleasedAsEdit() {
-        release(ending: .edit)
-    }
-
-    /// Only meaningful while the finger is down; the release decides what
-    /// actually happens to the utterance.
-    public func setEditIntent(_ edit: Bool) {
-        queue.async {
-            guard self.stateMachine.state == .capturing else { return }
-            self.onEditIntent?(edit)
-        }
     }
 
     private func release(ending: Ending) {
@@ -229,9 +209,9 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
             switch ending {
             case .cancel:
                 onUtteranceCancel?()
-            case .send, .edit:
+            case .send:
                 if let pending { onChunk?(pending) }
-                if ending == .edit { onUtteranceEndAsEdit?() } else { onUtteranceEnd?() }
+                onUtteranceEnd?()
             }
             microphone.stop()
         }

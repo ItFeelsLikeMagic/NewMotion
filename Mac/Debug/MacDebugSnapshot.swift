@@ -42,19 +42,9 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     /// 60 Hz stream off `lastApplicationMessage`, whose every assignment
     /// rebuilds this snapshot and re-renders the menu bar surface.
     public var cursorEvents: UInt64
-    public var audioPhase: String
-    public var audioFrames: UInt64
-    public var audioSamples: UInt64
-    public var audioMissingChunks: UInt64
-    /// Which path the last spoken utterance took into the field.  A label, not
-    /// text: the field's contents never reach this snapshot.
-    public var audioMerge: String
-    /// Stage times for the last spoken utterance, from the commit that ended
-    /// the speech to the text landing: "asr 174/read 9/norm 380/type 6 = 569ms".
-    public var audioTiming: String
     /// The last front-window vocabulary walk: "off", or "12ms/430nodes/18words"
     /// with "+" when the node budget ran out. Counts only, never the words.
-    public var audioVocabulary: String
+    public var vocabulary: String
     /// One entry per pipeline stage, filled in as the response is written
     /// rather than as the snapshot is built: summarising sorts a window per
     /// stage, and the snapshot is rebuilt on the receive path.
@@ -82,13 +72,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         deleteScrub: String? = nil,
         keyPostMs: Double? = nil,
         cursorEvents: UInt64 = 0,
-        audioPhase: String = "idle",
-        audioFrames: UInt64 = 0,
-        audioSamples: UInt64 = 0,
-        audioMissingChunks: UInt64 = 0,
-        audioMerge: String = "none",
-        audioTiming: String = "none",
-        audioVocabulary: String = "off",
+        vocabulary: String = "off",
         latency: [LatencySummary] = [],
         appPath: String? = nil,
         pairedDevices: [MacDebugPairedDevice] = []
@@ -112,13 +96,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
         self.deleteScrub = deleteScrub
         self.keyPostMs = keyPostMs
         self.cursorEvents = cursorEvents
-        self.audioPhase = audioPhase
-        self.audioFrames = audioFrames
-        self.audioSamples = audioSamples
-        self.audioMissingChunks = audioMissingChunks
-        self.audioMerge = audioMerge
-        self.audioTiming = audioTiming
-        self.audioVocabulary = audioVocabulary
+        self.vocabulary = vocabulary
         self.latency = latency
         self.appPath = appPath
         self.pairedDevices = pairedDevices
