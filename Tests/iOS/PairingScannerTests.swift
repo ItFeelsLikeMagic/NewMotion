@@ -7,40 +7,36 @@ import XCTest
 @testable import PhoneRemoteShared
 
 final class PairingScannerTests: XCTestCase {
-    func testScannerRequiresExplicitConfirmationAndStopsCameraOnAllOutcomes() throws {
+    func testScannerHandsOnAValidTokenOnceAndStopsCameraOnAllOutcomes() throws {
         let permission = FakeCameraPermission(authorization: .authorized)
         let capture = FakeQRCodeCapture()
         let scanner = IPhonePairingScanner(permission: permission, capture: capture)
-        var confirmations = 0
-        scanner.onConfirmed = { _ in confirmations += 1 }
+        var scanned: [PairingToken] = []
+        scanner.onScanned = { scanned.append($0) }
         scanner.start()
         XCTAssertEqual(scanner.state, .scanning)
         capture.emit("not-a-pairing-token")
         XCTAssertEqual(scanner.state, .scanning)
         let token = try makeTestToken()
         capture.emit(try token.encodeText())
-        guard case let .awaitingConfirmation(name, expiresAt) = scanner.state else {
-            return XCTFail("expected confirmation state")
-        }
-        XCTAssertEqual(name, "Mac")
+        capture.emit(try token.encodeText())
+        XCTAssertEqual(scanner.state, .paired)
+        XCTAssertEqual(scanned.map(\.macDisplayName), ["Mac"])
         // Token timestamps are canonicalized to milliseconds on the wire.
-        XCTAssertEqual(expiresAt.timeIntervalSince1970, token.expiresAt.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(scanned[0].expiresAt.timeIntervalSince1970, token.expiresAt.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(capture.stopCount, 1)
-        scanner.confirm()
-        scanner.confirm()
-        XCTAssertEqual(confirmations, 1)
 
         let cancelledCapture = FakeQRCodeCapture()
         let cancelled = IPhonePairingScanner(permission: permission, capture: cancelledCapture)
+        cancelled.onScanned = { _ in XCTFail("a cancelled scanner must not hand on a token") }
         cancelled.start()
         cancelled.cancel()
         cancelledCapture.emit(try token.encodeText())
-        cancelled.confirm()
         XCTAssertEqual(cancelled.state, .cancelled)
         XCTAssertEqual(cancelledCapture.stopCount, 1)
     }
 
-    func testScannerRejectsExpiredTokenBeforeConfirmation() throws {
+    func testScannerRejectsExpiredToken() throws {
         let clock = MutablePairingClock(Date(timeIntervalSince1970: 500))
         let permission = FakeCameraPermission(authorization: .authorized)
         let capture = FakeQRCodeCapture()
@@ -59,7 +55,6 @@ final class PairingScannerTests: XCTestCase {
         capture.emit(try token.encodeText())
         XCTAssertEqual(scanner.state, .rejected)
         XCTAssertEqual(rejected, .tokenExpired)
-        XCTAssertNil(scanner.pendingToken)
         XCTAssertEqual(capture.stopCount, 1)
     }
 
@@ -167,7 +162,6 @@ final class PairingScannerTests: XCTestCase {
 
         let token = try makeTestToken()
         capture.emit(try token.encodeText())
-        scanner.confirm()
         XCTAssertEqual(scanner.state, .paired)
         XCTAssertEqual(scanner.beginQRPairingScan(onCameraReady: {}), .scanning)
         XCTAssertEqual(capture.startCount, 3)

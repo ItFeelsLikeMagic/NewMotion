@@ -49,7 +49,7 @@ Android and Windows are explicitly deferred, but the wire protocol must avoid Ap
 - Mac displays a one-time QR code
 - QR contains protocol version, Mac display name, ephemeral public key, random one-time secret, pairing identifier, and expiration
 - Token expires within 120 seconds and can be used once
-- Phone scans the code, displays one explicit confirmation, then begins BLE advertising
+- Phone scans the code and begins BLE advertising; the Mac shows one explicit Allow/Don't Allow prompt before answering the handshake
 - Apps authenticate using CryptoKit X25519 key agreement, HKDF, and authenticated encryption
 - Trusted device keys are persisted in Keychain
 - Replayed, expired, malformed, and unknown pairing attempts are rejected
@@ -207,7 +207,7 @@ PhoneRemote/
 
 ### Gate C — Pairing security
 
-- Scan plus one confirmation establishes trust
+- Scan plus one confirmation on the Mac establishes trust
 - Unknown phones, modified QR payloads, expired tokens, and QR replay attempts are rejected
 - Reconnection uses stored device keys and never silently trusts a new device
 

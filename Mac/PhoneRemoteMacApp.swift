@@ -66,6 +66,11 @@ final class MacRemoteAppModel: ObservableObject {
     private let pairingCoordinator: MacPairingCoordinator?
     private let qrRenderer: MacPairingQRCodeRenderer
     private var pairingServer: PairingHandshakeServer?
+    /// The hello from a phone that scanned the QR code, held until the user
+    /// answers the prompt. The offer is consumed only on Allow, so a phone
+    /// that gives up first leaves the code usable.
+    private var pendingHello: PairingClientHello?
+    private let approvalWindow = MacPhoneApprovalWindow()
     private var authenticationDeadline: Date?
     private var pairingID: UUID?
     private var pairingDeviceName: String?
@@ -93,6 +98,8 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var linkState: RemoteLinkState = .unavailable { didSet { publishDebugState() } }
     @Published private(set) var pairingState: MacPairingOfferState = .idle { didSet { publishDebugState() } }
     @Published private(set) var pairingProgress: MacPairingProgress = .idle { didSet { publishDebugState() } }
+    /// Set while the Allow/Deny prompt is up for a phone with this name.
+    @Published private(set) var pendingApprovalName: String?
     @Published private(set) var pairedDevices: [TrustedDeviceSummary] = [] { didSet { publishDebugState() } }
     @Published private(set) var pairingError: String? { didSet { publishDebugState() } }
     @Published private(set) var pairingQRImage: NSImage? { didSet { publishDebugState() } }
@@ -208,9 +215,11 @@ final class MacRemoteAppModel: ObservableObject {
                 self?.pairingState = state
                 guard let self else { return }
                 if case .active = state {
-                    self.pairingProgress = .waitingForConfirmation
+                    self.pairingProgress = .waitingForScan
                     return
                 }
+                // An offer that expired under the prompt cannot be allowed.
+                self.dismissApproval()
                 self.pairingQRImage = nil
                 self.pairingExpiry = nil
                 if self.authenticatedSession == nil {
@@ -339,7 +348,7 @@ final class MacRemoteAppModel: ObservableObject {
         do {
             pairingError = nil
             _ = try pairingCoordinator.issueOffer(displayName: Host.current().localizedName ?? "Mac")
-            pairingProgress = .waitingForConfirmation
+            pairingProgress = .waitingForScan
         } catch {
             pairingState = .idle
             pairingQRImage = nil
@@ -374,6 +383,12 @@ final class MacRemoteAppModel: ObservableObject {
             _ = lifecycle.handle(.disconnected)
             updateStatus()
         }
+        if state != .connected, pendingHello != nil {
+            // The phone left while the prompt was up. Its code was never
+            // consumed, so it can scan again.
+            dismissApproval()
+            pairingProgress = .waitingForScan
+        }
         refreshAuthenticationDeadline()
         // A live QR offer is its own progress; the link looking behind it is
         // not news.
@@ -394,8 +409,10 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
+    /// Paused while the prompt is up: there the Mac's user is the one being
+    /// waited on, and a phone dropped mid-decision would only scan again.
     private func refreshAuthenticationDeadline() {
-        guard link.state == .connected, authenticatedSession == nil else {
+        guard link.state == .connected, authenticatedSession == nil, pendingHello == nil else {
             authenticationDeadline = nil
             return
         }
@@ -432,17 +449,71 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
+    /// A phone presenting the displayed code is new to this Mac, so its hello
+    /// waits for the user. A trusted phone reconnecting was allowed once
+    /// already and goes straight through.
     private func beginHandshake(payload: Data) throws {
         guard let pairingCoordinator else { throw PairingError.tokenNotActive }
         let hello = try PairingClientHello.decode(payload)
-        let server = try pairingCoordinator.makeHandshakeServer(pairingID: hello.pairingID)
+        if pairingOffer.activePairingID == hello.pairingID {
+            // The phone repeats its hello while it waits; one prompt covers them all.
+            guard pendingHello?.pairingID != hello.pairingID else { return }
+            holdForApproval(hello)
+            return
+        }
+        let server = try pairingCoordinator.makeReconnectServer(for: hello.pairingID)
+        try startHandshake(server: server, hello: hello)
+    }
+
+    private func holdForApproval(_ hello: PairingClientHello) {
+        let name = peerName
+        pendingHello = hello
+        pendingApprovalName = name
+        refreshAuthenticationDeadline()
+        pairingProgress = .awaitingApproval(deviceName: name)
+        approvalWindow.show(
+            deviceName: name,
+            onAllow: { [weak self] in self?.allowPendingPhone() },
+            onDeny: { [weak self] in self?.denyPendingPhone() }
+        )
+    }
+
+    func allowPendingPhone() {
+        guard let hello = pendingHello, let pairingCoordinator else { return }
+        dismissApproval()
+        do {
+            let server = try pairingCoordinator.makeOneTimeServer(pairingID: hello.pairingID)
+            try startHandshake(server: server, hello: hello)
+        } catch {
+            failPairing(error)
+        }
+    }
+
+    /// The phone drops the link when it reads the decline; the authentication
+    /// deadline, resumed here, drops it for a phone that does not.
+    func denyPendingPhone() {
+        guard let hello = pendingHello else { return }
+        dismissApproval()
+        pairingOffer.cancel()
+        _ = link.send(PairingServerDecline(pairingID: hello.pairingID).encode(), on: .control, delivery: .reliable)
+        refreshAuthenticationDeadline()
+        lastApplicationMessage = "Declined \(peerName)"
+    }
+
+    private func dismissApproval() {
+        approvalWindow.close()
+        pendingHello = nil
+        pendingApprovalName = nil
+    }
+
+    private func startHandshake(server: PairingHandshakeServer, hello: PairingClientHello) throws {
         pairingID = hello.pairingID
         pairingDeviceName = peerName
         pairingServer = server
         if authenticatedSession == nil {
             pairingProgress = .authenticating(deviceName: peerName)
         }
-        let response = try server.accept(clientHelloData: payload)
+        let response = try server.accept(clientHelloData: hello.encode())
         try sendHandshake(response.response)
     }
 
@@ -485,10 +556,12 @@ final class MacRemoteAppModel: ObservableObject {
             failPairing(error)
             return
         }
-        // The phone vanished before hello. Keep the QR offer and wait again.
+        // The phone vanished before hello, or under the prompt. Keep the QR
+        // offer and wait again.
+        dismissApproval()
         updateStatus()
         if case .active = pairingOffer.state {
-            pairingProgress = .waitingForConfirmation
+            pairingProgress = .waitingForScan
         }
     }
 
@@ -686,6 +759,7 @@ final class MacRemoteAppModel: ObservableObject {
         // A press whose end never arrived must not restore its characters into
         // whatever the next session is pointed at.
         deleteScrub.abandon()
+        dismissApproval()
         pairingServer = nil
         pairingID = nil
         pairingDeviceName = nil
@@ -851,6 +925,13 @@ struct MacRemoteStatusView: View {
                   systemImage: model.pairingProgress.isAuthenticated ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
                 .font(.caption)
                 .foregroundStyle(model.pairingProgress.isAuthenticated ? .green : .secondary)
+            if let name = model.pendingApprovalName {
+                HStack {
+                    Button("Allow \(name)") { model.allowPendingPhone() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Don't Allow") { model.denyPendingPhone() }
+                }
+            }
             if let paired = model.pairedDevices.last {
                 LabeledContent("Paired device", value: paired.displayName)
                     .font(.caption)

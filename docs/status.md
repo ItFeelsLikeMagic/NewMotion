@@ -61,7 +61,7 @@ Status: done = acceptance criteria verified; partial = code and tests exist, req
 | BLE-004 | Fragmentation, reassembly, reliable frames | done | `BLEFragmenter`, `BLEReassembler` in `Shared/Transport/BLE/BLEFraming.swift`; each `BLEMessageLink` queues against its own transport's capacity |
 | BLE-005 | 100 Hz soak and latency proof | partial | In-app Ping Mac gives round-trip samples (first run 2026-09-03, average 68 ms) and `docs/latency.md` records the method; no 30 minute soak, no p95 or stall run |
 | PAIR-001 | One-time QR tokens on Mac | partial | `Mac/Pairing/MacPairingOffer.swift`, `Shared/Crypto/PairingTypes.swift` (`prqr1.` tag, 120 s expiry); injected-clock tests pass; owner-visible QR confirmed |
-| PAIR-002 | iPhone QR scan and one confirmation | partial | `iPhone/Pairing/IPhonePairingScanner.swift`; camera live again after phone restart; formal scan/cancel/confirm pass not recorded |
+| PAIR-002 | iPhone QR scan, Mac allows the phone | partial | `iPhone/Pairing/IPhonePairingScanner.swift`, `Mac/Pairing/MacPhoneApprovalWindow.swift`; since 2026-09-05 the phone has no Confirm button: it scans, sends its hello, and spins until the Mac's floating Allow/Don't Allow prompt is answered; Don't Allow sends `PairingServerDecline` (`PRD1`) and cancels the offer; formal scan/cancel/allow/deny pass not recorded |
 | PAIR-003 | X25519/HKDF authenticated session | done | `Shared/Crypto/PairingHandshake.swift`; tamper, replay, wrong secret, rollback tests |
 | PAIR-004 | Persist, reconnect, list, revoke trust | partial | `KeychainTrustedDeviceStore`, `TrustedDeviceManager`; reconnect tests pass; no physical reconnect/revoke run; no revoke UI observed |
 | PAIR-005 | Pairing attack and redaction matrix | open | `gate-c-pairing.md` rows all `TBD` |
@@ -123,7 +123,7 @@ Mac app and Accessibility
 - `scripts/logs-mac.sh` shows unified logs, but the app emits no pairing events there. Use `/state`.
 
 BLE and pairing ordering rules
-- The iPhone never appears in macOS Bluetooth Settings. Pairing is in-app only: Mac shows QR, phone scans and confirms, phone advertises, Mac auto-connects. There is no device picker.
+- The iPhone never appears in macOS Bluetooth Settings. Pairing is in-app only: Mac shows QR, phone scans and advertises, Mac auto-connects and asks its user to allow the phone. There is no device picker.
 - Advertise with `CBUUID(nsuuid:)`. A Foundation `UUID` in `CBAdvertisementDataServiceUUIDsKey` silently drops the service.
 - Guard `stopScan`, `stopAdvertising`, `removeAllServices` on `.poweredOn` or Core Bluetooth logs `API MISUSE`.
 - After an unpaired connect or discovery failure the Mac must resume scanning. After a ready disconnect it must rescan for trusted reconnect.
@@ -131,7 +131,7 @@ BLE and pairing ordering rules
 - An advertise error must not tear down a live beacon. The Mac keeps its QR offer if hello never started.
 - "Waiting for Bluetooth" is not powered-off. Treating it as off killed advertising before it could start.
 - The Mac must accept a new control hello even when it believes it is already paired, answer hello while still subscribing, and keep a live session if a later hello arrives. The phone marks itself paired as soon as finish is sent and forwards Mac control writes without a matching subscriber id.
-- QR scan never stops Bluetooth. Any advertising pause waits for the camera's `onStarted`. Opening the camera pauses saved-Mac reconnect until Confirm; Cancel resumes it. A QR handshake failure stays on the QR path and never falls back to old trust.
+- QR scan never stops Bluetooth. Any advertising pause waits for the camera's `onStarted`. Opening the camera pauses saved-Mac reconnect until the Mac answers; Cancel, a decline, or the code expiring resumes it. A QR handshake failure stays on the QR path and never falls back to old trust.
 - `KeychainTrustedDeviceStore` keeps every trust record in one Keychain item (account `trusted-devices`) holding a JSON array. Never fetch many records with `kSecReturnData` plus `kSecMatchLimitAll`; that returns `errSecParam` on macOS and the menu bar shows "Pairing storage is unavailable". One item also means one approval prompt per read instead of one per paired phone.
 - Keep BLE-ready and authenticated separate in every UI and snapshot. `MacPairingProgress` is presentation only.
 - The QR pairing ID is the trust-record device ID on both sides.

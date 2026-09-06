@@ -162,6 +162,23 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertNil(controller.activeQRText)
     }
 
+    /// The Mac holds a hello that names the displayed code for the user's
+    /// answer, so the pairing ID has to be readable without consuming it.
+    func testOfferExposesItsPairingIDUntilConsumedOrCancelled() throws {
+        let controller = MacPairingOfferController()
+        XCTAssertNil(controller.activePairingID)
+        let offer = try controller.issue(displayName: "Mac", lifetime: 10)
+        XCTAssertEqual(controller.activePairingID, offer.token.pairingID)
+        XCTAssertEqual(controller.activePairingID, offer.token.pairingID)
+        _ = try controller.consume(pairingID: offer.token.pairingID)
+        XCTAssertNil(controller.activePairingID)
+
+        let cancelled = try controller.issue(displayName: "Mac", lifetime: 10)
+        XCTAssertEqual(controller.activePairingID, cancelled.token.pairingID)
+        controller.cancel()
+        XCTAssertNil(controller.activePairingID)
+    }
+
     func testCoordinatorBridgesOneTimeOfferAndPersistsAuthenticatedPhone() throws {
         let store = InMemoryTrustedDeviceStore()
         let coordinator = try MacPairingCoordinator(store: store)

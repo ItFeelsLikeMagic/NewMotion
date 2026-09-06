@@ -289,6 +289,14 @@ public final class OneTimePairingOfferStore {
         lock.unlock()
     }
 
+    /// Lets the Mac tell a phone that scanned the displayed code apart from a
+    /// trusted one reconnecting, before deciding whether to consume the offer.
+    public var activePairingID: UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        return active?.token.pairingID
+    }
+
     public func consume(encodedToken: String) throws -> PairingOffer {
         let parsed = try PairingToken.decodeText(encodedToken)
         lock.lock()

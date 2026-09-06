@@ -46,6 +46,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
     @Published var scrollMomentum = UserDefaults.standard.object(forKey: "scrollMomentum") as? Double ?? TrackpadTouchCaptureView.defaultMomentumStrength
     @Published var pairingState: IPhonePairingScannerState = .idle
+    /// The Mac whose user has yet to allow this phone. Drives the waiting
+    /// spinner from the moment the code is scanned until the Mac answers.
+    @Published private(set) var awaitingMacName: String?
     @Published private(set) var linkState: RemoteLinkState = .unavailable
     @Published var trustedMacName: String?
     /// Round trip over the link, measured end to end from this app.
@@ -177,20 +180,15 @@ final class PhoneRemoteFeatureModel: ObservableObject {
                 self?.pairingState = state
             }
         }
-        pairingScanner.onConfirmationRequired = { [weak self] name, _ in
-            Task { @MainActor in
-                self?.latestAction = "Confirm pairing with \(name)"
-            }
-        }
         if let pairingCoordinator {
-            pairingCoordinator.onConfirmedPairing = { [weak self] token, _, client in
+            pairingCoordinator.onPairingReady = { [weak self] token, _, client in
                 Task { @MainActor [weak self] in
                     self?.beginPairingHandshake(token: token, client: client)
                 }
             }
             pairingCoordinator.attach(scanner: pairingScanner)
         } else {
-            pairingScanner.onConfirmed = { [weak self] _ in
+            pairingScanner.onScanned = { [weak self] _ in
                 Task { @MainActor [weak self] in
                     self?.latestAction = "Pairing storage is unavailable"
                 }
@@ -255,7 +253,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     var isPairingVisible: Bool {
         switch pairingState {
-        case .scanning, .requestingCamera, .awaitingConfirmation:
+        case .scanning, .requestingCamera:
             return true
         case .idle, .paired, .cancelled, .rejected, .failed:
             return false
@@ -273,6 +271,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         pairingToken = nil
         handshakeHelloSent = false
         pairingConfirmed = false
+        awaitingMacName = nil
         authenticatedSession = nil
         isPaired = false
         pairingState = pairingScanner.beginQRPairingScan { [weak self] in
@@ -290,18 +289,24 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         }
     }
 
-    func confirmPairing() {
-        IPhoneDebugLog.emit("tap_confirm", ["pairing": "\(pairingState)"])
-        pairingScanner.confirm()
-        pairingState = pairingScanner.state
-        IPhoneDebugLog.emit("after_confirm", ["pairing": "\(pairingState)"])
-    }
-
+    /// Covers both the open scanner and the wait for the Mac's answer.
     func cancelPairing() {
         pairingScanner.cancel()
         pairingState = pairingScanner.state
+        if awaitingMacName != nil { abandonOneTimePairing() }
         latestAction = "Pairing cancelled"
         resumeReconnectIfNeeded()
+    }
+
+    /// Ends a one-time pairing that never produced a session, leaving the
+    /// phone free to reconnect to a Mac it already trusts.
+    private func abandonOneTimePairing() {
+        pairingClient = nil
+        pairingToken = nil
+        handshakeHelloSent = false
+        pairingConfirmed = false
+        awaitingMacName = nil
+        link.stop()
     }
 
     private func resumeReconnectIfNeeded() {
@@ -559,9 +564,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         authenticatedSession = nil
         handshakeHelloSent = false
         reconnectFailures = 0
+        awaitingMacName = token.macDisplayName
         IPhoneDebugLog.emit("handshake_begin", ["link": linkState.label])
         link.start()
-        latestAction = "Pairing confirmed; waiting for an authenticated link"
+        latestAction = "Waiting for \(token.macDisplayName) to connect"
         sendHandshakeHelloIfNeeded()
     }
 
@@ -607,7 +613,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             try sendHandshake(client.hello)
             handshakeHelloSent = true
             IPhoneDebugLog.emit("hello_sent", ["link": linkState.label])
-            latestAction = "Authenticating with Mac…"
+            latestAction = awaitingMacName.map { "Waiting for \($0) to allow this iPhone" } ?? "Authenticating with Mac…"
             scheduleHandshakeHelloRetry()
         } catch {
             failPairing()
@@ -619,6 +625,13 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             try? await Task.sleep(for: .seconds(2))
             guard authenticatedSession == nil, pairingClient != nil, pairingConfirmed,
                   link.state == .connected else { return }
+            if let pairingToken, pairingToken.isExpired(at: Date()) {
+                // The Mac's user never answered within the code's lifetime.
+                abandonOneTimePairing()
+                latestAction = "The pairing code expired; show a new one on the Mac"
+                resumeReconnectIfNeeded()
+                return
+            }
             handshakeHelloSent = false
             sendHandshakeHelloIfNeeded()
         }
@@ -743,12 +756,28 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             handleApplicationMessage(message)
         case .control:
             guard pairingClient != nil, authenticatedSession == nil else { return }
+            if message.starts(with: PairingServerDecline.magic) {
+                handleDecline(message)
+                return
+            }
             do {
                 try acceptServerHello(message)
             } catch {
                 failPairing()
             }
         }
+    }
+
+    private func handleDecline(_ message: Data) {
+        guard let pairingToken,
+              (try? PairingServerDecline.decode(message))?.pairingID == pairingToken.pairingID else {
+            failPairing()
+            return
+        }
+        IPhoneDebugLog.emit("pairing_declined", ["link": linkState.label])
+        abandonOneTimePairing()
+        latestAction = "\(pairingToken.macDisplayName) did not allow this iPhone"
+        resumeReconnectIfNeeded()
     }
 
     private func acceptServerHello(_ payload: Data) throws {
@@ -769,6 +798,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         let result = try pairingClient.accept(serverHelloData: payload)
         try sendHandshake(result.finish)
         authenticatedSession = result.result.session
+        awaitingMacName = nil
         isPaired = true
         reconnectFailures = 0
         _ = lifecycle.handle(.trustAdded)
@@ -818,6 +848,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         pairingClient = nil
         pairingToken = nil
         authenticatedSession = nil
+        awaitingMacName = nil
         isPaired = false
         handshakeHelloSent = false
         if qrInProgress {
@@ -1433,7 +1464,20 @@ private struct RemoteSettingsSheet: View {
         NavigationStack {
             Form {
                 Section("Pairing") {
-                    if model.isPairingVisible {
+                    if let name = model.awaitingMacName {
+                        VStack(spacing: 10) {
+                            ProgressView()
+                            Text("Waiting for \(name)")
+                                .font(.headline)
+                            Text("Click Allow on the Mac to finish pairing.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("Cancel", action: Haptics.tap { model.cancelPairing() })
+                                .buttonStyle(.bordered)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                    } else if model.isPairingVisible {
                         PairingCameraPreview(capture: model.pairingCapture)
                             .frame(maxWidth: .infinity)
                             .frame(height: 240)
@@ -1448,24 +1492,7 @@ private struct RemoteSettingsSheet: View {
                             }
                             .listRowInsets(EdgeInsets())
 
-                        if case let .awaitingConfirmation(name, expiry) = model.pairingState {
-                            VStack(spacing: 8) {
-                                Text("Pair with \(name)?")
-                                    .font(.headline)
-                                Text("Expires \(expiry.formatted(date: .omitted, time: .shortened))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                HStack {
-                                    Button("Confirm", action: Haptics.tap { model.confirmPairing() })
-                                        .buttonStyle(.borderedProminent)
-                                    Button("Cancel", action: Haptics.tap { model.cancelPairing() })
-                                        .buttonStyle(.bordered)
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                        } else {
-                            Button("Cancel scanner", action: Haptics.tap { model.cancelPairing() })
-                        }
+                        Button("Cancel scanner", action: Haptics.tap { model.cancelPairing() })
                     } else {
                         Button("Scan Mac QR Code", action: Haptics.tap { model.startPairing() })
                         Button(

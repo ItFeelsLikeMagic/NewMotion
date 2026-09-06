@@ -159,6 +159,20 @@ final class TransportPairingTests: XCTestCase {
         XCTAssertThrowsError(try wrongClient.accept(serverHelloData: serverHello.response))
     }
 
+    func testServerDeclineRoundTripsAndRejectsOtherControlMessages() throws {
+        let pairingID = UUID()
+        let decline = PairingServerDecline(pairingID: pairingID).encode()
+        XCTAssertTrue(decline.starts(with: PairingServerDecline.magic))
+        XCTAssertEqual(try PairingServerDecline.decode(decline).pairingID, pairingID)
+
+        var wrongVersion = decline
+        wrongVersion[4] = PairingToken.currentVersion &+ 1
+        XCTAssertThrowsError(try PairingServerDecline.decode(wrongVersion))
+        XCTAssertThrowsError(try PairingServerDecline.decode(decline.dropLast()))
+        let phone = try PairingHandshakeClient(mode: .trusted(deviceID: pairingID, peerIdentityPublicKey: PairingIdentity().publicKey), identity: PairingIdentity())
+        XCTAssertThrowsError(try PairingServerDecline.decode(phone.hello))
+    }
+
     func testTrustedReconnectRejectsUnknownIdentityAndCreatesFreshSession() throws {
         let deviceID = UUID()
         let macIdentity = PairingIdentity()
