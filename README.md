@@ -96,6 +96,23 @@ will not follow the app.
 To build a signed, notarized copy for other people, see
 [`scripts/package-mac.sh --help`](scripts/package-mac.sh).
 
+## Cutting a release
+
+Releases are named by `MARKETING_VERSION` in [`project.yml`](project.yml). Bump
+that and `CURRENT_PROJECT_VERSION`, merge it to main, then from main:
+
+```sh
+./scripts/test.sh
+./scripts/release-mac.sh
+```
+
+That packages the notarized disk image and zip, tags the commit, and publishes
+the GitHub release with both attached. `install.sh` serves whatever the newest
+release holds, so publishing is what hands people the build. Add `--dry-run` to
+build the files and publish nothing, and `--notes <file>` to ship written
+release notes instead of the list GitHub makes from the commits. See
+[`scripts/release-mac.sh --help`](scripts/release-mac.sh).
+
 ## How it is put together
 
 - `iPhone/`: the app you hold. Capture, dictation, pairing, and the BLE client.
@@ -103,7 +120,8 @@ To build a signed, notarized copy for other people, see
   peripheral.
 - `Shared/`: the wire protocol and the GATT contract both apps must match.
 - `Config/` and `project.yml`: build settings and the generated Xcode project.
-- `scripts/`: build, install, and packaging. Every script takes `--help`.
+- `scripts/`: build, install, packaging, and releasing. Every script takes
+  `--help`.
 - `Tests/`: unit tests for the shared protocol and the Mac input path.
 
 ## License
