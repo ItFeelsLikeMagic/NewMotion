@@ -28,9 +28,14 @@ drag NewMotion into Applications. It is signed and notarized by Apple, so it
 opens without a warning. It lives in the menu bar, not the Dock. Grant it
 Accessibility access when asked; that is what lets it move your cursor and type.
 
-Take the disk image rather than the zip. A zipped Mac app can lose its Apple
-seal passing through a chat app or a third-party unarchiver, and the Mac at the
-far end then refuses to open it.
+The disk image is the only download on purpose. A zipped Mac app can lose its
+Apple seal passing through a chat app or a third-party unarchiver, and the Mac
+at the far end then refuses to open it.
+
+If a Mac still says Apple cannot verify the app, open System Settings, Privacy
+and Security, and check **Allow applications from**. Set to **App Store**, a Mac
+turns down every app from outside the store however it is signed; it needs to
+say "App Store and known developers".
 
 **iPhone app.** Not on the App Store yet. Build and install it yourself with
 `./scripts/install-phone.sh` (needs Xcode, a paired iPhone with Developer Mode

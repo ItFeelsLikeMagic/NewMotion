@@ -18,13 +18,15 @@ hardened runtime on, secure timestamp, notarized by Apple, and stapled so it
 opens on a Mac that has never seen it and has no network.
 
 Output lands in build/dist:
-  NewMotion.dmg      the one to hand to people
-  NewMotion.zip      the same app zipped, for a download link
+  NewMotion.dmg      the only thing to hand out
 
-Send the disk image, not the zip. A zipped Mac app loses its Apple seal on
-the way through chat apps, file sync, and third-party unarchivers, and the
-Mac at the far end then refuses to open it. A disk image is one opaque file
-that macOS mounts itself, so nothing in the middle can touch the app inside.
+A disk image, and deliberately nothing else. A zipped Mac app loses its
+Apple seal on the way through chat apps, file sync, and third-party
+unarchivers, and the Mac at the far end then refuses to open it. A disk
+image is one opaque file that macOS mounts itself, so nothing in the middle
+can touch the app inside. A zip is still made on the way, because that is
+the shape Apple's notary service takes an app in, but it is not delivered:
+offering both downloads only lets someone pick the fragile one.
 
 Environment:
   NEWMOTION_DEVELOPMENT_TEAM  required. Your ten-character team id.
@@ -104,8 +106,11 @@ fi
 deliver() {
     rm -rf "$DIST_DIR"
     mkdir -p "$DIST_DIR"
-    ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
-    [ -f "$DMG" ] && ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
+    if [ -f "$DMG" ]; then
+        ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
+    else
+        ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
+    fi
 }
 
 # The app goes in beside a link to /Applications, which is the drag-to-install
@@ -203,5 +208,4 @@ spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG
 deliver
 echo
 echo "Ready to ship:"
-echo "  $DIST_DIR/NewMotion.dmg   <- send this one"
-echo "  $DIST_DIR/NewMotion.zip"
+echo "  $DIST_DIR/NewMotion.dmg"
