@@ -17,6 +17,7 @@ public final class MacPairingOfferController {
     public private(set) var state: MacPairingOfferState = .idle
     public private(set) var activeQRText: String?
     public private(set) var activeExpiry: Date?
+    public var activePairingID: UUID? { store.activePairingID }
 
     public var onStateChange: ((MacPairingOfferState) -> Void)?
     public var onOfferReady: ((String, Date) -> Void)?

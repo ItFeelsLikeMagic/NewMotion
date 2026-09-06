@@ -27,7 +27,6 @@ public enum IPhonePairingScannerState: Equatable {
     case idle
     case requestingCamera
     case scanning
-    case awaitingConfirmation(macDisplayName: String, expiresAt: Date)
     case paired
     case cancelled
     case rejected
@@ -35,14 +34,13 @@ public enum IPhonePairingScannerState: Equatable {
 }
 
 /// Scanner/coordinator boundary. It validates the complete canonical token
-/// before exposing a confirmation callback, and never starts BLE advertising
-/// itself. The owner starts advertising only after `onConfirmed` fires.
+/// before handing it on, and never starts BLE advertising itself. The owner
+/// starts advertising only after `onScanned` fires. Scanning is the phone's
+/// whole say in pairing; it is the Mac's user who allows the phone.
 public final class IPhonePairingScanner {
     public private(set) var state: IPhonePairingScannerState = .idle
-    public private(set) var pendingToken: PairingToken?
     public var onStateChange: ((IPhonePairingScannerState) -> Void)?
-    public var onConfirmationRequired: ((String, Date) -> Void)?
-    public var onConfirmed: ((PairingToken) -> Void)?
+    public var onScanned: ((PairingToken) -> Void)?
     public var onRejected: ((PairingError) -> Void)?
     public var onFailure: ((Error) -> Void)?
 
@@ -63,7 +61,6 @@ public final class IPhonePairingScanner {
     }
 
     public func start() {
-        pendingToken = nil
         IPhoneDebugLog.emit("scanner_start", ["auth": "\(permission.authorization)"])
         switch permission.authorization {
         case .authorized:
@@ -104,7 +101,6 @@ public final class IPhonePairingScanner {
 
     public func cancel() {
         capture.stop()
-        pendingToken = nil
         transition(to: .cancelled)
     }
 
@@ -112,30 +108,9 @@ public final class IPhonePairingScanner {
     /// disappears or the iPhone enters the background.
     public func applicationDidTransitionAway() {
         capture.stop()
-        pendingToken = nil
-        if state == .scanning || state == .requestingCamera || state.isAwaitingConfirmation {
+        if state == .scanning || state == .requestingCamera {
             transition(to: .cancelled)
         }
-    }
-
-    public func tick() {
-        guard case .awaitingConfirmation = state, let token = pendingToken else { return }
-        guard !token.isExpired(at: clock.now) else {
-            pendingToken = nil
-            transition(to: .rejected)
-            onRejected?(PairingError.tokenExpired)
-            return
-        }
-    }
-
-    /// This is the one and only confirmation path. A second confirmation or a
-    /// confirmation after cancellation is ignored.
-    public func confirm() {
-        guard case .awaitingConfirmation = state, let token = pendingToken,
-              !token.isExpired(at: clock.now) else { return }
-        pendingToken = nil
-        transition(to: .paired)
-        onConfirmed?(token)
     }
 
     private func handleCode(_ code: String) {
@@ -149,9 +124,8 @@ public final class IPhonePairingScanner {
                 return
             }
             capture.stop()
-            pendingToken = token
-            transition(to: .awaitingConfirmation(macDisplayName: token.macDisplayName, expiresAt: token.expiresAt))
-            onConfirmationRequired?(token.macDisplayName, token.expiresAt)
+            transition(to: .paired)
+            onScanned?(token)
         } catch let error as PairingError {
             onRejected?(error)
         } catch {
@@ -170,13 +144,6 @@ public final class IPhonePairingScanner {
         state = next
         IPhoneDebugLog.emit("scanner_state", ["state": "\(next)"])
         onStateChange?(next)
-    }
-}
-
-private extension IPhonePairingScannerState {
-    var isAwaitingConfirmation: Bool {
-        if case .awaitingConfirmation = self { return true }
-        return false
     }
 }
 

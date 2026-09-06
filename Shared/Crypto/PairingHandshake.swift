@@ -214,6 +214,37 @@ public struct PairingClientFinish: Equatable, Sendable {
     }
 }
 
+/// Sent instead of a server hello when the Mac's user refuses the phone. It
+/// carries nothing secret; the phone only needs to know to stop waiting.
+public struct PairingServerDecline: Equatable, Sendable {
+    public static let magic = Data([0x50, 0x52, 0x44, 0x31]) // "PRD1"
+    public let pairingID: UUID
+
+    public init(pairingID: UUID) {
+        self.pairingID = pairingID
+    }
+
+    public func encode() -> Data {
+        var output = Data()
+        output.append(Self.magic)
+        output.append(PairingToken.currentVersion)
+        output.append(PairingBinary.uuidBytes(pairingID))
+        return output
+    }
+
+    public static func decode(_ data: Data) throws -> PairingServerDecline {
+        guard data.count == 4 + 1 + 16, data.prefix(4) == Self.magic else {
+            throw PairingError.invalidHandshake
+        }
+        var cursor = 4
+        guard let version = data.readUInt8(at: &cursor), version == PairingToken.currentVersion,
+              let pairingData = data.readData(count: 16, at: &cursor),
+              let pairingID = UUID(data: pairingData),
+              cursor == data.count else { throw PairingError.invalidHandshake }
+        return PairingServerDecline(pairingID: pairingID)
+    }
+}
+
 public struct PairingHandshakeResult {
     public let session: PairingSession
     public let peerIdentityPublicKey: Data

@@ -3,13 +3,13 @@ import Foundation
 import PhoneRemoteShared
 #endif
 
-/// iPhone integration boundary. Scanner confirmation is the explicit user
-/// action that permits a one-time BLE handshake; trusted reconnects still use
-/// a new ephemeral exchange and never auto-trust a new identity.
+/// iPhone integration boundary. A scanned token permits one BLE handshake,
+/// which the Mac's user still has to allow; trusted reconnects use a new
+/// ephemeral exchange and never auto-trust a new identity.
 public final class IPhonePairingCoordinator {
     public private(set) var trustedDevices: [TrustedDeviceSummary] = []
     public let identity: PairingIdentity
-    public var onConfirmedPairing: ((PairingToken, PairingIdentity, PairingHandshakeClient) -> Void)?
+    public var onPairingReady: ((PairingToken, PairingIdentity, PairingHandshakeClient) -> Void)?
 
     private let trust: TrustedDeviceManager
     private let clock: PairingClock
@@ -33,7 +33,7 @@ public final class IPhonePairingCoordinator {
     }
 
     public func attach(scanner: IPhonePairingScanner) {
-        scanner.onConfirmed = { [weak self] token in self?.beginOneTimeHandshake(token: token) }
+        scanner.onScanned = { [weak self] token in self?.beginOneTimeHandshake(token: token) }
     }
 
     public func beginOneTimeHandshake(token: PairingToken) {
@@ -44,7 +44,7 @@ public final class IPhonePairingCoordinator {
                 clock: clock,
                 random: random
             )
-            onConfirmedPairing?(token, identity, client)
+            onPairingReady?(token, identity, client)
         } catch {
             // Construction can fail only for local key/random failures. The
             // caller maps it to a safe pairing error and leaves BLE stopped.
