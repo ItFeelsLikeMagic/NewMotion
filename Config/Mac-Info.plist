@@ -18,6 +18,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Phone Remote needs Accessibility access to inject the input you explicitly send.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>

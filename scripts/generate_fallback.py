@@ -254,8 +254,11 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
         })
     elif kind == "mac":
         settings.update({
+            "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
             "CODE_SIGN_IDENTITY": "",
             "ENABLE_DEBUG_DYLIB": "NO",
+            # Notarization refuses a build without the hardened runtime.
+            "ENABLE_HARDENED_RUNTIME": "YES",
             "ENABLE_TESTABILITY": "YES",
             "INFOPLIST_FILE": "Config/Mac-Info.plist",
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @executable_path/../Frameworks @executable_path/Frameworks",
@@ -365,6 +368,7 @@ def generate() -> None:
         b.file("iPhone/Resources/Assets.xcassets", "folder.assetcatalog"),
         b.file("iPhone/Resources/PrivacyInfo.xcprivacy", "text.plist.xml"),
     ]
+    mac_resources = [b.file("Mac/Resources/Assets.xcassets", "folder.assetcatalog")]
     shared_protocol = [path for path in source_paths["shared"] if path.startswith("Shared/Protocol/")]
     shared_transport = [path for path in source_paths["shared"] if path.startswith("Shared/TestTransport/")]
     shared_observability = [path for path in source_paths["shared"] if path.startswith("Shared/Observability/")]
@@ -376,7 +380,7 @@ def generate() -> None:
         "transport": b.group("TestTransport", [refs[path] for path in shared_transport]),
         "observability": b.group("Observability", [refs[path] for path in shared_observability]),
         "ios": b.group("iPhone", [refs[path] for path in source_paths["ios"]] + ios_resources),
-        "mac": b.group("Mac", [refs[path] for path in source_paths["mac"]]),
+        "mac": b.group("Mac", [refs[path] for path in source_paths["mac"]] + mac_resources),
         "shared-tests": b.group("SharedTests", [refs[path] for path in source_paths["shared-tests"]]),
         "ios-test": b.group("iOSTests", [refs[path] for path in source_paths["ios-test"]]),
         "mac-test": b.group("macOSTests", [refs[path] for path in source_paths["mac-test"]]),
@@ -435,7 +439,7 @@ def generate() -> None:
             framework_refs=[products["shared"]] if key != "shared" else [],
             dependencies=dependencies.get(key),
             embed_refs=embeds.get(key),
-            resource_refs=ios_resources if key == "ios" else None,
+            resource_refs={"ios": ios_resources, "mac": mac_resources}.get(key),
         )
         if target_id != target_ids[key]:
             raise RuntimeError(f"target ID mismatch for {key}")

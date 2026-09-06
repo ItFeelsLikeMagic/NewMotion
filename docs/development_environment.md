@@ -111,6 +111,35 @@ The first launch on a given iPhone downloads Apple's language model. Settings
 shows the percentage while it comes down; until it says Ready, a press records
 but produces nothing.
 
+## Shipping the Mac companion
+
+`install-mac.sh` is the local development copy and is signed for development.
+It is not distributable: another Mac refuses it.
+
+`./scripts/package-mac.sh` makes the copy other people can run. It builds
+Release, signs with Developer ID and the hardened runtime, gets a secure
+timestamp, sends it to Apple for notarization, staples the ticket on, and
+leaves `PhoneRemoteMac.app` and `PhoneRemoteMac.zip` in `build/dist`. The zip
+is what to upload somewhere; the stapled ticket means it opens on a Mac that
+is offline and has never heard of it.
+
+It needs two things that are not in this repository and must not be:
+
+- `PHONE_REMOTE_DEVELOPMENT_TEAM`, the ten-character team id.
+- `PHONE_REMOTE_NOTARY_PROFILE`, the name of a notarytool keychain profile.
+  Create it once with `xcrun notarytool store-credentials`, using an
+  app-specific password from appleid.apple.com.
+
+A "Developer ID Application" certificate is required and is not the same as
+the "Apple Development" one the local install uses. Only the paid Developer
+Program issues it; Xcode's Settings, Accounts, Manage Certificates panel is
+where it is created. `--skip-notarize` exercises everything up to Apple.
+
+Signing runs in a temporary directory rather than in the repository. This
+tree sits under a synced folder whose file provider stamps
+`com.apple.FinderInfo` back onto every file as fast as it is cleared, and
+`codesign --verify` refuses to look past that.
+
 ## CLI versus GUI
 
 Everything above is scriptable. GUI-only steps: Apple ID and team selection in

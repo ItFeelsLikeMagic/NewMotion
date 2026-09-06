@@ -75,13 +75,17 @@ targets:
       - target: PhoneRemoteShared
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.macos
         PRODUCT_MODULE_NAME: PhoneRemote_macOS
         PRODUCT_NAME: PhoneRemoteMac
         INFOPLIST_FILE: Config/Mac-Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/Frameworks"
         CODE_SIGN_IDENTITY: ""
-        ENABLE_HARDENED_RUNTIME: NO
+        # Notarization refuses a build without it, and nothing here needs an
+        # exception: no JIT, no unsigned memory, and the only bundled code is
+        # our own framework, signed by the same team.
+        ENABLE_HARDENED_RUNTIME: YES
         ENABLE_DEBUG_DYLIB: NO
         ENABLE_TESTABILITY: YES
 
