@@ -22,7 +22,18 @@ hardware but has not been through its release checklist.
 
 ## Install
 
-**Mac companion.** Download `NewMotion.dmg` from
+**Mac companion, one line.** Paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ItFeelsLikeMagic/NewMotion/main/install.sh | sh
+```
+
+It downloads the latest release, refuses to go on unless Apple signed and
+notarized it and the signature is ours, installs it into Applications, and
+starts it. Read [`install.sh`](install.sh) first if you would rather not pipe a
+script from the internet into a shell; that is a fair instinct.
+
+**Mac companion, by hand.** Download `NewMotion.dmg` from
 [Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), open it, and
 drag NewMotion into Applications. It is signed and notarized by Apple, so it
 opens without a warning. It lives in the menu bar, not the Dock. Grant it

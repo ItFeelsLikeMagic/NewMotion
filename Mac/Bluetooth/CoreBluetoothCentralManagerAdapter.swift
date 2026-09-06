@@ -136,10 +136,17 @@ extension CoreBluetoothCentralManagerAdapter: CBCentralManagerDelegate {
 
 extension CoreBluetoothCentralManagerAdapter: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        let serviceMap = Dictionary(uniqueKeysWithValues: (peripheral.services ?? []).compactMap { service -> (UUID, CBService)? in
-            guard let uuid = UUID(uuidString: service.uuid.uuidString) else { return nil }
-            return (uuid, service)
-        })
+        // A peripheral may legitimately publish the same service UUID twice: two
+        // apps on one phone offering the same service put two entries in its
+        // GATT table. Building the map with unique keys traps on that, which
+        // crashes the Mac app a second after it connects. Keep the last.
+        let serviceMap = Dictionary(
+            (peripheral.services ?? []).compactMap { service -> (UUID, CBService)? in
+                guard let uuid = UUID(uuidString: service.uuid.uuidString) else { return nil }
+                return (uuid, service)
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
         services[peripheral.identifier] = serviceMap
         // Handles from the previous discovery belong to services that are gone.
         characteristics[peripheral.identifier] = [:]
