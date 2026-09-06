@@ -58,6 +58,10 @@ final class MacRemoteAppModel: ObservableObject {
     /// disarmed until a heartbeat arrives, so a remote that holds nothing is
     /// never at risk of a release it did not need.
     private var watchdogTimer: Timer?
+    /// Runs only while Accessibility is missing.  macOS posts nothing when the
+    /// switch is flipped in System Settings, so the grant is noticed by asking
+    /// again; once granted the poll stops and stays off the input path.
+    private var accessibilityTimer: Timer?
     private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
@@ -238,7 +242,11 @@ final class MacRemoteAppModel: ObservableObject {
         }
 
         _ = lifecycle.handle(.startup)
-        refreshAccessibility(prompt: false)
+        // A fresh install has no Accessibility entry, so ask on launch rather
+        // than letting the first press from the phone be refused.  macOS shows
+        // its own dialog, and only ever once, which is why the poll apply()
+        // starts is what actually catches the grant.
+        apply(injector.refreshAccessibility(prompt: !inert))
         if !inert { link.start() }
         publishDebugState()
         startDebugServerIfNeeded()
@@ -287,11 +295,56 @@ final class MacRemoteAppModel: ObservableObject {
         updateStatus()
     }
 
-    func refreshAccessibility(prompt: Bool) {
-        if prompt { openAccessibilitySettings() }
-        accessibility = injector.refreshAccessibility(prompt: prompt)
-        _ = lifecycle.handle(.accessibilityChanged(accessibility))
+    /// The system dialog appears once per install, so a second ask has to be
+    /// the Settings pane where the switch lives.  Either way the poll below
+    /// notices the grant without the user coming back here.
+    func requestAccessibility() {
+        openAccessibilitySettings()
+        apply(injector.refreshAccessibility(prompt: true))
+    }
+
+    /// Called whenever the menu bar window opens.  Nothing refuses a command
+    /// while the phone is idle, so this is the only chance to notice a
+    /// revocation before the user reads the state it would have shown.
+    func recheckAccessibility() {
+        apply(injector.refreshAccessibility(prompt: false))
+    }
+
+    /// The injector re-checks Accessibility before every command, so a
+    /// revocation lands there first, as a refused move.  Reading its answer
+    /// back is what turns that into a visible state and restarts the poll that
+    /// recovers once the switch goes back on.
+    private func syncAccessibilityFromInjector() {
+        apply(injector.state.accessibility)
+    }
+
+    private func apply(_ state: AccessibilityState) {
+        guard state != accessibility else { return }
+        accessibility = state
+        _ = lifecycle.handle(.accessibilityChanged(state))
         updateStatus()
+        if state == .granted {
+            stopAccessibilityPolling()
+        } else {
+            startAccessibilityPolling()
+        }
+    }
+
+    private func startAccessibilityPolling() {
+        guard accessibilityTimer == nil, !MacHostRuntime.isInert else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.apply(self.injector.refreshAccessibility(prompt: false))
+            }
+        }
+        timer.tolerance = 0.25
+        accessibilityTimer = timer
+    }
+
+    private func stopAccessibilityPolling() {
+        accessibilityTimer?.invalidate()
+        accessibilityTimer = nil
     }
 
     private func openAccessibilitySettings() {
@@ -391,6 +444,11 @@ final class MacRemoteAppModel: ObservableObject {
         case .data:
             guard authenticatedSession != nil else { return }
             handleApplicationMessage(message, arrival: arrival)
+            // One read of a value the injector has already updated, rather
+            // than a permission check per command: everything the phone can
+            // trigger passes through here, including the paths that submit
+            // events without going back through this model.
+            syncAccessibilityFromInjector()
         case .control:
             handleControlMessage(message)
         }
@@ -911,6 +969,10 @@ struct MacRemoteStatusView: View {
     @ObservedObject var model: MacRemoteAppModel
 
     var body: some View {
+        content.onAppear { model.recheckAccessibility() }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("NewMotion", systemImage: "cursorarrow.rays")
                 .font(.headline)
@@ -925,7 +987,7 @@ struct MacRemoteStatusView: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             if model.accessibility != .granted {
-                Text("Turn on this copy in System Settings, then tap Refresh Accessibility. Do not enable a /tmp or DerivedData build.")
+                Text("Turn on this copy in System Settings. It switches on here by itself, no refresh needed. Do not enable a /tmp or DerivedData build.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1003,8 +1065,10 @@ struct MacRemoteStatusView: View {
             }
             .keyboardShortcut(.defaultAction)
 
-            Button("Refresh Accessibility") {
-                model.refreshAccessibility(prompt: true)
+            if model.accessibility != .granted {
+                Button("Open Accessibility Settings") {
+                    model.requestAccessibility()
+                }
             }
 
             Divider()
