@@ -1040,6 +1040,12 @@ struct MacRemoteStatusView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider()
+            // This app has no Dock icon and no menu bar of its own, so this is
+            // the only way out of it that is not Activity Monitor.
+            Button("Quit Phone Remote") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q")
         }
         .padding(12)
         .frame(width: 280)
