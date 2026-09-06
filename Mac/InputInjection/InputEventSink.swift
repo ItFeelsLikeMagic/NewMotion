@@ -218,7 +218,7 @@ public final class CGEventInputSink: InputEventSink {
     /// presses are identical by definition, and the window server neither
     /// coalesces them nor reads them as a key repeat, which is set by a flag on
     /// the event rather than worked out from timing.  Measured with
-    /// `/keyburst`; see docs/latency.md.
+    /// `/keyburst`.
     private static let keyRunGap: TimeInterval = 0
 
     private let trust: AccessibilityTrustProviding

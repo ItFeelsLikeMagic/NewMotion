@@ -72,18 +72,13 @@ To build a signed, notarized copy for other people, see
 
 ## How it is put together
 
-- [`docs/status.md`](docs/status.md): what is built, what is proven on real
-  hardware, and the traps that cost time before.
-- [`docs/worker_learnings.md`](docs/worker_learnings.md): the rules and
-  invariants. Read it before changing project, transport, pairing, or safety
-  behavior.
-- [`docs/development_environment.md`](docs/development_environment.md): pinned
-  toolchain, device setup, environment variables, and exact commands.
-- [`docs/protocol_v1.md`](docs/protocol_v1.md) and
-  [`docs/ble_gatt_contract.md`](docs/ble_gatt_contract.md): the wire contracts
-  both apps must match.
-- [`docs/postmortem_camera_black_preview.md`](docs/postmortem_camera_black_preview.md):
-  a day lost to a black QR camera that turned out to be the phone, not the app.
+- `iPhone/`: the app you hold. Capture, dictation, pairing, and the BLE client.
+- `Mac/`: the menu bar companion. Input injection, word boosting, and the BLE
+  peripheral.
+- `Shared/`: the wire protocol and the GATT contract both apps must match.
+- `Config/` and `project.yml`: build settings and the generated Xcode project.
+- `scripts/`: build, install, and packaging. Every script takes `--help`.
+- `Tests/`: unit tests for the shared protocol and the Mac input path.
 
 ## License
 

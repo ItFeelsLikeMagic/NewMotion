@@ -32,3 +32,6 @@ xcuserdata/
 
 # Serena agent workspace (tool residue)
 .serena/
+
+# Internal design notes (kept local, not published)
+docs/
