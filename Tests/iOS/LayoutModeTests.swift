@@ -1,6 +1,6 @@
 import UIKit
 import XCTest
-@testable import PhoneRemote_iOS
+@testable import NewMotion_iOS
 
 /// The layout mode decides which way the screen faces, so the mode and the
 /// orientation lock have to agree.

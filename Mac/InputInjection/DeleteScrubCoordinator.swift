@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 
 /// Anything that can put a remote command through the safety policy.  The
 /// scrub owns no injection path of its own, so a test can watch what it asks

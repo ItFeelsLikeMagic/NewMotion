@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// A central adapter that never touches Core Bluetooth. The macOS test bundle

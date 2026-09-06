@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 /// The gesture engine no longer rate limits; `CursorMixer` is the
 /// only pacer on the way to the link.

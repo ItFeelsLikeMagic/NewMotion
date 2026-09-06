@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// iPhone integration boundary. A scanned token permits one BLE handshake,

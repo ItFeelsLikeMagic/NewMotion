@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 public enum PairingCameraAuthorization: Equatable {
@@ -185,7 +185,7 @@ public final class AVFoundationQRCodeCaptureAdapter: NSObject, PairingQRCodeCapt
     public let previewLayer = AVCaptureVideoPreviewLayer()
     private let metadataOutput = AVCaptureMetadataOutput()
     private let callbackQueue: DispatchQueue
-    private let sessionQueue = DispatchQueue(label: "phoneremote.camera.session")
+    private let sessionQueue = DispatchQueue(label: "newmotion.camera.session")
     private var configured = false
     private var observers: [NSObjectProtocol] = []
 

@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 
 public enum TrackpadProtocolAdapterError: Error, Equatable, Sendable {
     case valueOutOfRange

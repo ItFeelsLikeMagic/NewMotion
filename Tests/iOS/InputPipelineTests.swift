@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 /// A link that records what the pipeline hands it and can refuse on demand,
 /// which is what a busy radio does.

@@ -161,7 +161,7 @@ flowchart LR
 Recommended source layout:
 
 ```text
-PhoneRemote/
+NewMotion/
 ├── project.yml
 ├── Config/
 ├── Shared/

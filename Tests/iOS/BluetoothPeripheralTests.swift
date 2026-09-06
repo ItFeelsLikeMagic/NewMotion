@@ -1,8 +1,8 @@
 import CoreBluetooth
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 final class BluetoothPeripheralTests: XCTestCase {
     func testPeripheralWaitsForForegroundAndPoweredOnBeforeAdvertising() {
@@ -17,24 +17,24 @@ final class BluetoothPeripheralTests: XCTestCase {
         adapter.state = .poweredOn
         adapter.onStateChange?(.poweredOn)
         XCTAssertEqual(transport.state, .publishing)
-        XCTAssertEqual(adapter.published.map(\.uuid), [PhoneRemoteGATT.serviceUUID])
+        XCTAssertEqual(adapter.published.map(\.uuid), [NewMotionGATT.serviceUUID])
         XCTAssertNil(adapter.advertisedService)
 
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
-        XCTAssertEqual(adapter.advertisedService, PhoneRemoteGATT.serviceUUID)
+        XCTAssertEqual(adapter.advertisedService, NewMotionGATT.serviceUUID)
     }
 
     func testPeripheralRequiresBothDataSubscriptionsForReady() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
 
         let subscriber = "mac-test"
-        adapter.emitSubscribe(subscriber, characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe(subscriber, characteristic: NewMotionGATT.phoneToMacDataUUID)
         XCTAssertEqual(transport.state, .connected)
-        adapter.emitSubscribe(subscriber, characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitSubscribe(subscriber, characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
         XCTAssertEqual(transport.subscriberIDs, Set([subscriber]))
 
@@ -47,9 +47,9 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
         let published = adapter.published.count
         let advertised = adapter.startAdvertisingCount
@@ -69,13 +69,13 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         transport.setForeground(false)
 
-        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         transport.setForeground(true)
 
         XCTAssertEqual(transport.state, .advertising)
@@ -87,17 +87,17 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(adapter.startAdvertisingCount, 1)
 
         // The Mac is one subscriber; dropping either channel ends the link.
-        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
         XCTAssertEqual(transport.state, .advertising)
         XCTAssertEqual(adapter.startAdvertisingCount, 2)
 
-        adapter.emitUnsubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(adapter.startAdvertisingCount, 2)
     }
 
@@ -107,16 +107,16 @@ final class BluetoothPeripheralTests: XCTestCase {
         var states: [BLEPeripheralLifecycleState] = []
         transport.onStateChange = { states.append($0) }
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-old", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-old", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-old", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-old", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
         states.removeAll()
 
-        adapter.emitSubscribe("mac-new", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-new", characteristic: NewMotionGATT.phoneToMacDataUUID)
         XCTAssertEqual(states, [.advertising, .connected])
         XCTAssertEqual(transport.subscriberIDs, Set(["mac-new"]))
-        adapter.emitSubscribe("mac-new", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitSubscribe("mac-new", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
     }
 
@@ -126,9 +126,9 @@ final class BluetoothPeripheralTests: XCTestCase {
         var queueFull: [BLETransportChannel] = []
         transport.onQueueFull = { queueFull.append($0) }
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
 
         XCTAssertEqual(transport.send(Data([1]), on: .data), .queued)
@@ -145,9 +145,9 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
 
         XCTAssertEqual(transport.send(Data([1]), on: .data, enqueue: false), .queueFull)
         XCTAssertEqual(transport.queuedFrameCount, 0)
@@ -160,9 +160,9 @@ final class BluetoothPeripheralTests: XCTestCase {
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: 2)
         XCTAssertEqual(transport.queueCapacity(on: .data), 0)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.queueCapacity(on: .data), 2)
         XCTAssertEqual(transport.send(Data([1]), on: .data), .queued)
         XCTAssertEqual(transport.queueCapacity(on: .data), 1)
@@ -175,7 +175,7 @@ final class BluetoothPeripheralTests: XCTestCase {
         var errors = 0
         transport.onTransportError = { _ in errors += 1 }
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
 
         adapter.emitAdvertisingStarted(error: BLEFramingError.invalidFlags)
@@ -188,15 +188,15 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(adapter.startAdvertisingCount, 1)
 
         transport.pulseAdvertising()
         XCTAssertEqual(transport.state, .advertising)
         XCTAssertEqual(adapter.startAdvertisingCount, 1)
 
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
         transport.pulseAdvertising()
         XCTAssertEqual(adapter.startAdvertisingCount, 1)
@@ -207,12 +207,12 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         transport.stop()
         XCTAssertEqual(transport.state, .stopped)
 
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
         XCTAssertEqual(adapter.startAdvertisingCount, 2)
     }
@@ -234,9 +234,9 @@ final class BluetoothPeripheralTests: XCTestCase {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitSubscribe("mac-test", characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(transport.state, .ready)
         let advertised = adapter.startAdvertisingCount
 
@@ -252,11 +252,11 @@ final class BluetoothPeripheralTests: XCTestCase {
         var received: [(BLETransportChannel, Data)] = []
         transport.onFrameReceived = { received.append(($0, $1)) }
         transport.setForeground(true)
-        adapter.emitServicePublished(PhoneRemoteGATT.serviceUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
 
         adapter.emitWrite(
             BLEPeripheralWrite(
-                characteristic: PhoneRemoteGATT.macToPhoneControlUUID,
+                characteristic: NewMotionGATT.macToPhoneControlUUID,
                 data: Data([7, 8]),
                 subscriberID: "unknown-central"
             )
@@ -267,11 +267,11 @@ final class BluetoothPeripheralTests: XCTestCase {
 
     func testAdvertisementDictionaryUsesCBUUIDNotFoundationUUID() {
         let data = CoreBluetoothPeripheralManagerAdapter.advertisementData(
-            localName: "Phone Remote",
-            serviceUUID: PhoneRemoteGATT.serviceUUID
+            localName: "NewMotion",
+            serviceUUID: NewMotionGATT.serviceUUID
         )
         let uuids = data[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]
-        XCTAssertEqual(uuids, [CBUUID(nsuuid: PhoneRemoteGATT.serviceUUID)])
+        XCTAssertEqual(uuids, [CBUUID(nsuuid: NewMotionGATT.serviceUUID)])
         XCTAssertNil(data[CBAdvertisementDataServiceUUIDsKey] as? [UUID])
     }
 }

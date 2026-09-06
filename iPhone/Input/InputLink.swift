@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// One message on its way to the Mac.  Cursor travel rides the compact binary

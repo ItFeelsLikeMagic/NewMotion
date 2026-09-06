@@ -18,8 +18,8 @@ events under a user's Accessibility setting.
 Command:
 
 ```sh
-PHONE_REMOTE_RUN_IOS_TESTS=1 \
-PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemoteGateD \
+NEWMOTION_RUN_IOS_TESTS=1 \
+NEWMOTION_DERIVED_DATA=/tmp/NewMotionGateD \
 ./scripts/test.sh
 ```
 

@@ -267,7 +267,7 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     /// Accessibility messaging is its own IPC and does not need the main
     /// thread. Keeping the walk off it means a window that answers slowly, or
     /// not at all, costs the boost instead of stalling typing.
-    private let queue = DispatchQueue(label: "phoneremote.vocabulary")
+    private let queue = DispatchQueue(label: "newmotion.vocabulary")
     private let lock = NSLock()
     private var enabled: Bool
     private var walking = false

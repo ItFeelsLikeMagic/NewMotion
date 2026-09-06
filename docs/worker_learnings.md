@@ -15,9 +15,9 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
   runs race on `xcshareddata/xcschemes`.
 - Keep fallback file references repository-relative. A group with both a physical path
   and a repo-relative file path yields `Shared/Shared/...` duplicates.
-- Only the fallback generator honors `PHONE_REMOTE_BUNDLE_PREFIX`, and only for the
+- Only the fallback generator honors `NEWMOTION_BUNDLE_PREFIX`, and only for the
   shared framework and iOS app. The macOS target and test bundles stay
-  `com.example.phoneremote.*`. Why: XcodeGen reads `project.yml`, which hard-codes the
+  `com.example.newmotion.*`. Why: XcodeGen reads `project.yml`, which hard-codes the
   prefix.
 - Use `-scheme`, never a bare `-target`, whenever `-derivedDataPath` is passed. Why:
   Xcode 27 requirement.
@@ -37,23 +37,23 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 - Device and installed-Mac builds use `ENABLE_DEBUG_DYLIB=NO`. Why: the debug dylib is
   an extra unsigned binary; iOS kills the app and macOS never trusts it for
   Accessibility.
-- Generated module names are `PhoneRemote_iOS` and `PhoneRemote_macOS`. XCTest imports
+- Generated module names are `NewMotion_iOS` and `NewMotion_macOS`. XCTest imports
   must match exactly.
 
 ## Signing and install
 
 - Signing is opt-in. `install-phone.sh` and `install-mac.sh` need
-  `PHONE_REMOTE_SIGNING=1` plus `PHONE_REMOTE_DEVELOPMENT_TEAM` from the environment.
+  `NEWMOTION_SIGNING=1` plus `NEWMOTION_DEVELOPMENT_TEAM` from the environment.
   Never write those values into the repo.
 - Signed phone builds pass the phone as the explicit destination
   `platform=iOS,id=<udid>`. Why: a generic device build can pick a profile for a
   different phone and fail at install.
-- `install-phone.sh` removes any other `*.phoneremote.ios` build from the device after it
-  installs. Why: the bundle prefix comes from `PHONE_REMOTE_BUNDLE_PREFIX`, so one run without
+- `install-phone.sh` removes any other `*.newmotion.ios` build from the device after it
+  installs. Why: the bundle prefix comes from `NEWMOTION_BUNDLE_PREFIX`, so one run without
   it leaves a second app with the same name and icon, and testing the wrong one wastes a session.
-- Build device apps outside the repo (`PHONE_REMOTE_DERIVED_DATA=/tmp/...`). Why: the
+- Build device apps outside the repo (`NEWMOTION_DERIVED_DATA=/tmp/...`). Why: the
   repo is in iCloud Documents and codesign fails on Finder metadata there.
-- The Mac app you click must be `~/Applications/PhoneRemoteMac.app`, installed and
+- The Mac app you click must be `~/Applications/NewMotion.app`, installed and
   signed with a local Apple Development identity by `install-mac.sh`. Never `open` a
   `/tmp` or DerivedData copy. Why: macOS grants Accessibility to one exact path and
   signature; adhoc or throwaway copies report `AXIsProcessTrusted()` false or look
@@ -188,12 +188,12 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 - `IPhoneDebugLog.emit` drops any field whose key contains `qr`, `secret`, `token`,
   `key`, `udid`, or `payload`. Do not route around it.
 - The Mac debug HTTP server is loopback-only. Default port 18765, next ports on bind
-  failure. The bound port is written to `/tmp/phoneremote-mac-debug.json`;
-  `debug-mac.sh` reads it from there. `PHONE_REMOTE_DEBUG_SERVER=0` disables it.
+  failure. The bound port is written to `/tmp/newmotion-mac-debug.json`;
+  `debug-mac.sh` reads it from there. `NEWMOTION_DEBUG_SERVER=0` disables it.
 
 ## Testing and hardware evidence
 
-- `PhoneRemoteSharedTests` is the fastest deterministic check. It covers protocol,
+- `NewMotionSharedTests` is the fastest deterministic check. It covers protocol,
   framing, transport, observability, pairing, and encrypted envelope integration with no
   Apple hardware.
 - `scripts/fuzz-protocol.sh` runs the fixed 2,000-input decoder corpus with a fixed
@@ -201,7 +201,7 @@ text, transcripts, or audio bytes here. Pins and commands: `docs/development_env
 - Automated tests prove code paths, not radio, input, camera, or audio behavior on
   hardware.
 - macOS XCTest may print `com.apple.linkd.autoShortcut` warnings and still pass. Unified
-  log output includes CoreSpotlight and XPC noise. Filter by the Phone Remote process.
+  log output includes CoreSpotlight and XPC noise. Filter by the NewMotion process.
   Neither is a product failure.
 - `devicectl list devices` showing `available (paired)` and Developer Mode enabled do
   not prove DDI readiness. Check `device info ddiServices` with the phone unlocked

@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// What the phone has asked the Mac to hold down and not yet released.

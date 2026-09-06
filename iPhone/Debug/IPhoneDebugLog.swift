@@ -15,8 +15,8 @@ private func iPhoneDebugStamp() -> String {
 @MainActor
 final class IPhoneDebugLog: ObservableObject {
     static let shared = IPhoneDebugLog()
-    nonisolated static let fileName = "phoneremote-debug.jsonl"
-    nonisolated static let snapshotName = "phoneremote-debug-state.json"
+    nonisolated static let fileName = "newmotion-debug.jsonl"
+    nonisolated static let snapshotName = "newmotion-debug-state.json"
 
     @Published private(set) var lines: [String] = []
     private var snapshot: [String: String] = [:]
@@ -64,7 +64,7 @@ final class IPhoneDebugLog: ObservableObject {
     /// Two file writes per event are far too slow for the main thread, and the
     /// press path is timed through this log.  The serial queue keeps the file
     /// in event order.
-    private nonisolated static let io = DispatchQueue(label: "phoneremote.debuglog", qos: .utility)
+    private nonisolated static let io = DispatchQueue(label: "newmotion.debuglog", qos: .utility)
 
     private nonisolated static func write(line: String?, snapshot: [String: String]) {
         io.async {

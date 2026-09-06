@@ -19,8 +19,8 @@ The latest scripted run used the generated fallback Xcode project and signing
 disabled:
 
 ```sh
-PHONE_REMOTE_RUN_IOS_TESTS=1 \
-PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemoteTests \
+NEWMOTION_RUN_IOS_TESTS=1 \
+NEWMOTION_DERIVED_DATA=/tmp/NewMotionTests \
 ./scripts/test.sh
 ```
 

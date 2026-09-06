@@ -1,8 +1,8 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 public extension SlideStep {

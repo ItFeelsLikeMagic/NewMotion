@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// Every latency probe the phone keeps, in one place, so no stage on the

@@ -6,17 +6,17 @@ This note records the foundation verification performed on 2026-09-02 (Asia/Shan
 
 | Command | Result | Evidence |
 | --- | --- | --- |
-| `./scripts/generate.sh` | PASS (exit 0) | XcodeGen was absent; deterministic `scripts/generate_fallback.py` generated `PhoneRemote.xcodeproj`. |
-| `xcodebuild -project PhoneRemote.xcodeproj -list` | PASS (exit 0) | Six targets are listed: shared framework, two apps, and three unit-test bundles. |
-| `xcodebuild ... -scheme PhoneRemoteShared -sdk macosx ... build` | PASS (exit 0) | Shared framework compiled with the macOS 15.0 deployment target. |
-| `xcodebuild test ... -scheme PhoneRemoteSharedTests -destination 'platform=macOS' ...` | PASS (exit 0) | 23 shared protocol/transport/observability/BLE/pairing/integration/fuzz tests passed in the latest scripted run. |
-| `PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemoteFinalBuild3 ./scripts/build.sh` | PASS (exit 0) | Builds both app targets and all three test bundles; each reported `BUILD SUCCEEDED`. |
+| `./scripts/generate.sh` | PASS (exit 0) | XcodeGen was absent; deterministic `scripts/generate_fallback.py` generated `NewMotion.xcodeproj`. |
+| `xcodebuild -project NewMotion.xcodeproj -list` | PASS (exit 0) | Six targets are listed: shared framework, two apps, and three unit-test bundles. |
+| `xcodebuild ... -scheme NewMotionShared -sdk macosx ... build` | PASS (exit 0) | Shared framework compiled with the macOS 15.0 deployment target. |
+| `xcodebuild test ... -scheme NewMotionSharedTests -destination 'platform=macOS' ...` | PASS (exit 0) | 23 shared protocol/transport/observability/BLE/pairing/integration/fuzz tests passed in the latest scripted run. |
+| `NEWMOTION_DERIVED_DATA=/tmp/NewMotionFinalBuild3 ./scripts/build.sh` | PASS (exit 0) | Builds both app targets and all three test bundles; each reported `BUILD SUCCEEDED`. |
 | `./scripts/test.sh` | PASS (exit 0) with iOS enabled | Latest run passed shared 23/23, macOS 14/14, and iOS simulator 15/15; the script selects an available iPhone simulator dynamically. |
-| `PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemoteFinalBuildAfterRunpath ./scripts/build.sh` | PASS (exit 0) | Regression after the embedded-framework runpath fix; all five build targets reported `BUILD SUCCEEDED`. |
-| `PHONE_REMOTE_RUN_IOS_TESTS=1 PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemoteFinalTestsAfterRunpath ./scripts/test.sh` | PASS (exit 0) | Regression after the runpath fix: shared 23/23, macOS 14/14, and iOS simulator 15/15. |
-| `PHONE_REMOTE_RUN_IOS_TESTS=1 PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemotePairingStorageFixAllTests ./scripts/test.sh` | PASS (exit 0) | Latest regression after the macOS Keychain enumeration fix: shared 24/24, macOS 18/18, and iOS simulator 17/17. |
-| `PHONE_REMOTE_DERIVED_DATA=/tmp/PhoneRemotePairingStorageFixMacTests2 ./scripts/test.sh` | PASS (exit 0) | Latest focused regression after the empty-Keychain coordinator startup check: shared 24/24 and macOS 19/19; iOS execution was intentionally skipped. |
-| `open -n PhoneRemoteMac.app` plus `PHONE_REMOTE_LOG_WINDOW=1m ./scripts/logs-mac.sh` | PASS (exit 0) | Fresh macOS menu-bar app launched; the read-only unified-log probe returned process-scoped output. |
+| `NEWMOTION_DERIVED_DATA=/tmp/NewMotionFinalBuildAfterRunpath ./scripts/build.sh` | PASS (exit 0) | Regression after the embedded-framework runpath fix; all five build targets reported `BUILD SUCCEEDED`. |
+| `NEWMOTION_RUN_IOS_TESTS=1 NEWMOTION_DERIVED_DATA=/tmp/NewMotionFinalTestsAfterRunpath ./scripts/test.sh` | PASS (exit 0) | Regression after the runpath fix: shared 23/23, macOS 14/14, and iOS simulator 15/15. |
+| `NEWMOTION_RUN_IOS_TESTS=1 NEWMOTION_DERIVED_DATA=/tmp/NewMotionPairingStorageFixAllTests ./scripts/test.sh` | PASS (exit 0) | Latest regression after the macOS Keychain enumeration fix: shared 24/24, macOS 18/18, and iOS simulator 17/17. |
+| `NEWMOTION_DERIVED_DATA=/tmp/NewMotionPairingStorageFixMacTests2 ./scripts/test.sh` | PASS (exit 0) | Latest focused regression after the empty-Keychain coordinator startup check: shared 24/24 and macOS 19/19; iOS execution was intentionally skipped. |
+| `open -n NewMotion.app` plus `NEWMOTION_LOG_WINDOW=1m ./scripts/logs-mac.sh` | PASS (exit 0) | Fresh macOS menu-bar app launched; the read-only unified-log probe returned process-scoped output. |
 
 The generated project and local `DerivedData` remain ignored by Git. The fallback generator discovers new Swift files below the shared/app/test roots so later feature tickets do not need to edit generated project state.
 
@@ -35,7 +35,7 @@ phone and `devicectl device install app` both exited 0. The repeatable
 values remain local-only.
 
 `launch-phone.sh` exited 0, and a process query three seconds later found the
-Phone Remote app still running on the phone. A console launch produced no
+NewMotion app still running on the phone. A console launch produced no
 dynamic-loader error. Before the final pass, launch had exposed two packaging
 issues: the shared framework's install name was absolute, and the app lacked an
 `@executable_path/Frameworks` runpath. The project and fallback generator now
@@ -64,7 +64,7 @@ The current exact boundary is **BLOCKED — owner: project owner/toolchain maint
 - Mac model / macOS build: Apple-silicon MacBook Pro / macOS 27.0
 - `device info ddiServices`: PASS (`contentIsCompatible=true`, `isUsable=true` while unlocked)
 - Signed physical-SDK build: PASS (target-specific destination, local Apple Development identity)
-- `install-phone.sh`: PASS (exit 0; bundle ID `com.example.phoneremote.ios`)
+- `install-phone.sh`: PASS (exit 0; bundle ID `com.example.newmotion.ios`)
 - `launch-phone.sh`: PASS (exit 0; process remained present after 3 seconds)
 - `logs-phone.sh`: BLOCKED (exit 1; `CoreDeviceCLISupport.DiagnoseError error 0`; no archive)
 - Result: **BLOCKED for complete Gate A**; install/launch subchecks PASS

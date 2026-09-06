@@ -1,8 +1,8 @@
 import Foundation
 import Network
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// Loopback-only debug HTTP server. Bind failures try the next few ports
@@ -24,7 +24,7 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
     private let portFileURL: URL
-    private let queue = DispatchQueue(label: "com.example.phoneremote.macos.debug-server")
+    private let queue = DispatchQueue(label: "com.example.newmotion.macos.debug-server")
     private var listener: NWListener?
     private var startPort: UInt16 = 0
 
@@ -158,7 +158,7 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
 
     private func writePortFile(port: UInt16) {
         let payload: [String: Any] = [
-            "app": "PhoneRemoteMac",
+            "app": "NewMotion",
             "host": "127.0.0.1",
             "port": Int(port),
             "pid": ProcessInfo.processInfo.processIdentifier,

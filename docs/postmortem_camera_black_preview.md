@@ -1,7 +1,7 @@
 # Postmortem: Scan camera showed a black box
 
 Dates: 2026-09-02 to 2026-09-03. Resolved.
-Device: dliao's iPhone 15 Pro Max, iOS 27 beta. App: Phone Remote iOS.
+Device: dliao's iPhone 15 Pro Max, iOS 27 beta. App: NewMotion iOS.
 
 ## What happened
 

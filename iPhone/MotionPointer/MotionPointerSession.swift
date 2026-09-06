@@ -150,7 +150,7 @@ public final class CoreMotionDeviceProvider: DeviceMotionProviding {
     public init(manager: CMMotionManager = CMMotionManager()) {
         self.manager = manager
         self.queue = OperationQueue()
-        self.queue.name = "PhoneRemote.Motion"
+        self.queue.name = "NewMotion.Motion"
         self.queue.qualityOfService = .userInteractive
         self.queue.maxConcurrentOperationCount = 1
     }

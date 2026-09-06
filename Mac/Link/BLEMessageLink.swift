@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// Bluetooth's answer to `MessageLink`. Scanning, the GATT dance, the packet
@@ -34,7 +34,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         return name?.isEmpty == false ? name : nil
     }
 
-    private let serviceUUID = PhoneRemoteGATT.serviceUUID
+    private let serviceUUID = NewMotionGATT.serviceUUID
     private let adapter: MacCentralManagerAdapter
     private let connectionTimeout: TimeInterval
     private let writeQueueLimit: Int
@@ -248,14 +248,14 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     private func handleServices(_ peripheralID: UUID, services: Set<UUID>, error: Error?) {
         guard lifecycle == .discovering, pendingPeripheral?.identifier == peripheralID else { return }
         guard error == nil, services.contains(serviceUUID) else {
-            failLink(error: .setupFailed("the phone is not offering Phone Remote"))
+            failLink(error: .setupFailed("the phone is not offering NewMotion"))
             return
         }
         transition(to: .subscribing)
         adapter.discoverCharacteristics(
             peripheralID: peripheralID,
             serviceUUID: serviceUUID,
-            characteristicUUIDs: Array(PhoneRemoteGATT.allCharacteristicUUIDs)
+            characteristicUUIDs: Array(NewMotionGATT.allCharacteristicUUIDs)
         )
     }
 
@@ -281,12 +281,12 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
 
     private func handleCharacteristics(_ peripheralID: UUID, serviceUUID: UUID, characteristics: Set<UUID>, error: Error?) {
         guard lifecycle == .subscribing, pendingPeripheral?.identifier == peripheralID, serviceUUID == self.serviceUUID else { return }
-        guard error == nil, characteristics.isSuperset(of: PhoneRemoteGATT.allCharacteristicUUIDs) else {
-            failLink(error: .setupFailed("the phone's Phone Remote service is incomplete"))
+        guard error == nil, characteristics.isSuperset(of: NewMotionGATT.allCharacteristicUUIDs) else {
+            failLink(error: .setupFailed("the phone's NewMotion service is incomplete"))
             return
         }
         connectedPeripheral = pendingPeripheral
-        pendingSubscriptions = [PhoneRemoteGATT.phoneToMacDataUUID, PhoneRemoteGATT.phoneToMacControlUUID]
+        pendingSubscriptions = [NewMotionGATT.phoneToMacDataUUID, NewMotionGATT.phoneToMacControlUUID]
         subscribed.removeAll()
         for characteristic in pendingSubscriptions {
             adapter.subscribe(peripheralID: peripheralID, characteristicUUID: characteristic)
@@ -306,7 +306,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         pendingDeadline = nil
         maximumValueLength = max(
             BLEFramingLimits.minimumValueLength,
-            adapter.maximumWriteValueLength(peripheralID: peripheralID, characteristicUUID: PhoneRemoteGATT.macToPhoneDataUUID)
+            adapter.maximumWriteValueLength(peripheralID: peripheralID, characteristicUUID: NewMotionGATT.macToPhoneDataUUID)
         )
         transition(to: .ready)
         flushWrites()
@@ -436,15 +436,15 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
 
     private static func characteristic(for channel: LinkChannel) -> UUID {
         switch channel {
-        case .data: return PhoneRemoteGATT.macToPhoneDataUUID
-        case .control: return PhoneRemoteGATT.macToPhoneControlUUID
+        case .data: return NewMotionGATT.macToPhoneDataUUID
+        case .control: return NewMotionGATT.macToPhoneControlUUID
         }
     }
 
     private static func channel(for characteristicUUID: UUID) -> LinkChannel? {
         switch characteristicUUID {
-        case PhoneRemoteGATT.phoneToMacDataUUID: return .data
-        case PhoneRemoteGATT.phoneToMacControlUUID: return .control
+        case NewMotionGATT.phoneToMacDataUUID: return .data
+        case NewMotionGATT.phoneToMacControlUUID: return .control
         default: return nil
         }
     }

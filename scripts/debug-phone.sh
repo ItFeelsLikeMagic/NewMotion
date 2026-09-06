@@ -3,12 +3,12 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-DEVICE="${PHONE_REMOTE_DEVICE_NAME:-}"
+DEVICE="${NEWMOTION_DEVICE_NAME:-}"
 if [ -z "$DEVICE" ]; then
     DEVICE="dliao's iPhone"
 fi
-DEST="${PHONE_REMOTE_PHONE_DEBUG:-/tmp/phoneremote-phone-debug}"
-BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.davidliao.phoneremote.ios}"
+DEST="${NEWMOTION_PHONE_DEBUG:-/tmp/newmotion-phone-debug}"
+BUNDLE_ID="${NEWMOTION_IOS_BUNDLE_ID:-com.davidliao.newmotion.ios}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
@@ -30,15 +30,15 @@ copy_one() {
     return 0
 }
 
-if copy_one "Documents/phoneremote-debug-state.json" "$DEST/phoneremote-debug-state.json"; then
+if copy_one "Documents/newmotion-debug-state.json" "$DEST/newmotion-debug-state.json"; then
     echo "STATE"
-    cat "$DEST/phoneremote-debug-state.json"
+    cat "$DEST/newmotion-debug-state.json"
 else
     echo "STATE_MISSING"
 fi
-if copy_one "Documents/phoneremote-debug.jsonl" "$DEST/phoneremote-debug.jsonl"; then
+if copy_one "Documents/newmotion-debug.jsonl" "$DEST/newmotion-debug.jsonl"; then
     echo "EVENTS"
-    tail -40 "$DEST/phoneremote-debug.jsonl"
+    tail -40 "$DEST/newmotion-debug.jsonl"
 else
     echo "EVENTS_MISSING"
 fi

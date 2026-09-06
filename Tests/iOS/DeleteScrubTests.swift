@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 /// The phone half of the held delete key: turning sideways travel into whole
 /// notches, and telling a tap apart from a slide.

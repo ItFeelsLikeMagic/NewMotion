@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import XCTest
-@testable import PhoneRemoteShared
+@testable import NewMotionShared
 
 /// The session accepts a frame that lost a race to a later one, but never the
 /// same frame twice and never one older than the window.

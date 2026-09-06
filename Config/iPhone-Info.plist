@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Phone Remote</string>
+	<string>NewMotion</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleName</key>
@@ -26,14 +26,14 @@
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>NSCameraUsageDescription</key>
-	<string>Phone Remote uses the camera only to scan a one-time pairing QR code.</string>
+	<string>NewMotion uses the camera only to scan a one-time pairing QR code.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Phone Remote uses Bluetooth to connect to your Mac.</string>
+	<string>NewMotion uses Bluetooth to connect to your Mac.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>Phone Remote uses motion sensors only while you hold Air Mouse.</string>
+	<string>NewMotion uses motion sensors only while you hold Air Mouse.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Phone Remote uses the microphone only while you hold Push to Talk.</string>
+	<string>NewMotion uses the microphone only while you hold Push to Talk.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Phone Remote turns what you say into text on this iPhone, so your voice never leaves your own devices.</string>
+	<string>NewMotion turns what you say into text on this iPhone, so your voice never leaves your own devices.</string>
 </dict>
 </plist>

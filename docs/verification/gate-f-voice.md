@@ -12,7 +12,7 @@ first buffer.
 
 ## Automated evidence
 
-`PHONE_REMOTE_RUN_IOS_TESTS=1 ./scripts/test.sh` covers local-press-only
+`NEWMOTION_RUN_IOS_TESTS=1 ./scripts/test.sh` covers local-press-only
 capture, stop on release, cancel dropping the utterance, boost-list parsing and
 merging, splitting a long sentence at 1 KB without breaking a grapheme cluster,
 the `vocabulary` and `spokenText` payload bounds, and the word cache's leases.

@@ -4,14 +4,14 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 UDID="${IPHONE_UDID:-}"
-OUTPUT="${PHONE_REMOTE_PHONE_LOG_OUTPUT:-$ROOT_DIR/phone-logs/sysdiagnose-$(date +%Y%m%d-%H%M%S)}"
+OUTPUT="${NEWMOTION_PHONE_LOG_OUTPUT:-$ROOT_DIR/phone-logs/sysdiagnose-$(date +%Y%m%d-%H%M%S)}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
 Usage: IPHONE_UDID=<device-identifier> ./scripts/logs-phone.sh [--udid ID]
 
 Collect a local iPhone sysdiagnose archive with devicectl. Set
-PHONE_REMOTE_PHONE_LOG_OUTPUT to choose the destination directory. Collection
+NEWMOTION_PHONE_LOG_OUTPUT to choose the destination directory. Collection
 may take several minutes and requires a paired/trusted device.
 HELP
     exit 0

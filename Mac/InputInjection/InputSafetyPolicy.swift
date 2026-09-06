@@ -1,8 +1,8 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
-public typealias MacMouseButton = PhoneRemoteShared.MouseButton
+#if canImport(NewMotionShared)
+import NewMotionShared
+public typealias MacMouseButton = NewMotionShared.MouseButton
 #else
 public enum MacMouseButton: String, CaseIterable, Hashable, Equatable, Sendable {
     case left
@@ -108,7 +108,7 @@ public enum MacModifierKey: String, CaseIterable, Hashable, Equatable, Sendable 
 }
 
 /// The policy's local spelling of the protocol hotkey allowlist.  A focused
-/// adapter maps these values to PhoneRemoteShared.HotkeyAction when the shared
+/// adapter maps these values to NewMotionShared.HotkeyAction when the shared
 /// module is available.
 public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendable {
     case copy

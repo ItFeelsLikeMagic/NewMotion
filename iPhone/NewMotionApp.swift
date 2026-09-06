@@ -1,7 +1,7 @@
 import SwiftUI
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 #if os(iOS)
@@ -24,8 +24,8 @@ private extension RemoteLinkState {
 /// path: feature adapters continue to emit the shared protocol payloads the
 /// link carries.
 @MainActor
-final class PhoneRemoteFeatureModel: ObservableObject {
-    private static let trustedDeviceService = "com.example.phoneremote.ios.trusted-devices"
+final class NewMotionFeatureModel: ObservableObject {
+    private static let trustedDeviceService = "com.example.newmotion.ios.trusted-devices"
 
     @Published var latestAction = "Not paired"
     @Published var isPaired = false
@@ -743,7 +743,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 
     private func repeatingTimer(
         every interval: TimeInterval,
-        tick: @escaping @Sendable @MainActor (PhoneRemoteFeatureModel) -> Void
+        tick: @escaping @Sendable @MainActor (NewMotionFeatureModel) -> Void
     ) -> Timer {
         Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
             let stillOwned = MainActor.assumeIsolated { () -> Bool in
@@ -1322,8 +1322,8 @@ struct TabWalkButton: View {
     }
 }
 
-struct PhoneRemoteControlView: View {
-    @StateObject private var model = PhoneRemoteFeatureModel()
+struct NewMotionControlView: View {
+    @StateObject private var model = NewMotionFeatureModel()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -1351,7 +1351,7 @@ struct PhoneRemoteControlView: View {
 }
 
 private struct RemoteControlScreen: View {
-    @ObservedObject var model: PhoneRemoteFeatureModel
+    @ObservedObject var model: NewMotionFeatureModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var isKeyboardShowing = false
     @State private var isSettingsShowing = false
@@ -1527,7 +1527,7 @@ private struct KeyboardToggleButton: View {
 }
 
 private struct RemoteSettingsSheet: View {
-    @ObservedObject var model: PhoneRemoteFeatureModel
+    @ObservedObject var model: NewMotionFeatureModel
 #if DEBUG
     @ObservedObject private var debugLog = IPhoneDebugLog.shared
 #endif
@@ -1799,21 +1799,21 @@ private struct RemoteSettingsSheet: View {
 }
 
 @main
-struct PhoneRemoteApp: App {
+struct NewMotionApp: App {
     /// The delegate reports the orientation the layout mode asks for.
-    @UIApplicationDelegateAdaptor(PhoneRemoteAppDelegate.self) private var appDelegate
+    @UIApplicationDelegateAdaptor(NewMotionAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
-            PhoneRemoteControlView()
+            NewMotionControlView()
         }
     }
 }
 #else
 @main
-struct PhoneRemoteApp: App {
+struct NewMotionApp: App {
     var body: some Scene {
-        WindowGroup { Text("Phone Remote requires iOS") }
+        WindowGroup { Text("NewMotion requires iOS") }
     }
 }
 #endif

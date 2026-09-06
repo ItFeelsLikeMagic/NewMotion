@@ -1,6 +1,6 @@
 import UIKit
 import XCTest
-@testable import PhoneRemote_iOS
+@testable import NewMotion_iOS
 
 /// Sideways, the phone tilts about a different body axis than upright, so the
 /// filter has to read the tilt from the axis the screen says is horizontal.

@@ -1,14 +1,14 @@
 import Foundation
 import CryptoKit
 import XCTest
-@testable import PhoneRemoteShared
+@testable import NewMotionShared
 
 final class TransportPairingTests: XCTestCase {
     func testGattContractHasOneServiceAndFourDirectionalCharacteristics() {
-        XCTAssertEqual(PhoneRemoteGATT.characteristics.count, 4)
-        XCTAssertEqual(PhoneRemoteGATT.allCharacteristicUUIDs.count, 4)
-        XCTAssertEqual(PhoneRemoteGATT.characteristics.filter { $0.direction == .phoneToMac }.count, 2)
-        XCTAssertEqual(PhoneRemoteGATT.characteristics.filter { $0.direction == .macToPhone }.count, 2)
+        XCTAssertEqual(NewMotionGATT.characteristics.count, 4)
+        XCTAssertEqual(NewMotionGATT.allCharacteristicUUIDs.count, 4)
+        XCTAssertEqual(NewMotionGATT.characteristics.filter { $0.direction == .phoneToMac }.count, 2)
+        XCTAssertEqual(NewMotionGATT.characteristics.filter { $0.direction == .macToPhone }.count, 2)
     }
 
     func testFragmentationAtMinimumAndNegotiatedSizesRoundTrips() throws {

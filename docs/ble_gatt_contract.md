@@ -19,7 +19,7 @@ The iPhone advertises exactly one custom primary service:
 
 | Name | UUID | iPhone role | Properties |
 | --- | --- | --- | --- |
-| Phone Remote service | `A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1000` | Advertised primary service | — |
+| NewMotion service | `A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1000` | Advertised primary service | — |
 | Phone-to-Mac data | `A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1010` | Notify/read | `.notify`, `.read` |
 | Mac-to-Phone data | `A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1011` | Receives writes | `.write`, `.writeWithoutResponse` |
 | Phone-to-Mac control | `A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1020` | Notify/read | `.notify`, `.read` |

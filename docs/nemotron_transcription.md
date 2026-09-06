@@ -64,15 +64,15 @@ Audio left the phone as its own binary frame, not as a protocol envelope.
 
 ### The Mac side
 
-- `Mac/PhoneRemoteMacApp.swift` sniffed the `PRA1` magic before protocol
+- `Mac/NewMotionMacApp.swift` sniffed the `PRA1` magic before protocol
   decoding and handed the frame to `VoicePTTCoordinator`.
 - `Mac/Transcription/VoicePTTCoordinator.swift` owned one `Utterance` per
   stream: decode ADPCM, stream PCM as it arrived, commit on `.end` or after
   1.5 s of silence, hold an edit hint for 3 s, and type finals in start order.
 - `Mac/Transcription/NemotronRealtime.swift` health-checked `nemo-speech serve`
-  on `PHONE_REMOTE_NEMO_PORT` (default 18766) at launch, spawned
+  on `NEWMOTION_NEMO_PORT` (default 18766) at launch, spawned
   `~/.local/bin/nemo-speech` with the GGUF from the Hugging Face hub cache and
-  `--device metal`, logged to `/tmp/phoneremote-nemo-speech.log`, and stopped
+  `--device metal`, logged to `/tmp/newmotion-nemo-speech.log`, and stopped
   the child on quit. Each utterance was one `/v1/realtime` WebSocket.
 - `Mac/Transcription/S1MiniNormalizer.swift` posted the raw transcript to
   Ollama `/api/generate` with `raw: true`, 5 s timeout, and fell back to the
@@ -151,7 +151,7 @@ huggingface-cli download nvidia/nemotron-3.5-asr-streaming-0.6b \
 ```
 
 Restoring the stack also means restoring `MessageType.audioChunk` and the
-`PRA1` sniff in `Mac/PhoneRemoteMacApp.swift`, or the frames will decode as
+`PRA1` sniff in `Mac/NewMotionMacApp.swift`, or the frames will decode as
 ordinary envelopes and be refused. Restoring spoken edits additionally means
 bringing back the pencil zones on the phone and the `.intent`/`.edit` flags,
 which is most of `iPhone/Audio/PushToTalkDragZones.swift` as it stood then.

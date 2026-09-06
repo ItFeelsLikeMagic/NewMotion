@@ -1,8 +1,8 @@
 #if canImport(CoreBluetooth)
 import CoreBluetooth
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManagerAdapter {

@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 /// The two experimental ways to scroll with one finger: land in a side strip,
 /// or rest long enough to take the clutch.

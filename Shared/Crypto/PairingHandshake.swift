@@ -362,7 +362,7 @@ public final class PairingHandshakeClient {
         return PairingCrypto.deriveKey(
             material: material,
             salt: PairingBinary.uuidBytes(mode.pairingID),
-            info: Data("PhoneRemote/handshake-auth/v1/phone-to-mac".utf8)
+            info: Data("NewMotion/handshake-auth/v1/phone-to-mac".utf8)
         )
     }
 }
@@ -508,7 +508,7 @@ public final class PairingHandshakeServer {
         return PairingCrypto.deriveKey(
             material: material,
             salt: PairingBinary.uuidBytes(mode.pairingID),
-            info: Data("PhoneRemote/handshake-auth/v1/phone-to-mac".utf8)
+            info: Data("NewMotion/handshake-auth/v1/phone-to-mac".utf8)
         )
     }
 }
@@ -664,7 +664,7 @@ public final class PairingSession: @unchecked Sendable {
 }
 
 private func transcriptBytes(clientHello: PairingClientHello, serverHello: PairingServerHello) -> Data {
-    var output = Data("PhoneRemote/pairing-transcript/v1".utf8)
+    var output = Data("NewMotion/pairing-transcript/v1".utf8)
     output.append(PairingBinary.uuidBytes(clientHello.pairingID))
     output.append(clientHello.encode())
     output.append(serverHello.encodeUnsigned())
@@ -675,7 +675,7 @@ private func deriveSessionKey(authKey: SymmetricKey, clientHello: PairingClientH
     var salt = Data()
     salt.append(clientHello.clientNonce)
     salt.append(serverHello.serverNonce)
-    var info = Data("PhoneRemote/session-key/v1/phone-to-mac".utf8)
+    var info = Data("NewMotion/session-key/v1/phone-to-mac".utf8)
     info.append(PairingBinary.uuidBytes(clientHello.pairingID))
     return PairingCrypto.deriveKey(material: authKey.dataRepresentation, salt: salt, info: info)
 }

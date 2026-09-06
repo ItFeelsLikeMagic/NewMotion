@@ -1,6 +1,6 @@
 import XCTest
-@testable import PhoneRemote_macOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_macOS
+@testable import NewMotionShared
 
 final class TravelSmoothingTests: XCTestCase {
     private func scrolled(_ events: [InjectedInputEvent]) -> (x: Double, y: Double) {

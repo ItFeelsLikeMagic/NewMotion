@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// A framework-neutral representation of the events that the macOS adapter
@@ -223,7 +223,7 @@ public final class CGEventInputSink: InputEventSink {
 
     private let trust: AccessibilityTrustProviding
     private let source: CGEventSource?
-    private let queue = DispatchQueue(label: "phoneremote.input.hotkey")
+    private let queue = DispatchQueue(label: "newmotion.input.hotkey")
     private let postState = KeyPostState()
     /// The distribution behind `lastKeyBurstMilliseconds`, which only ever
     /// holds the newest burst.

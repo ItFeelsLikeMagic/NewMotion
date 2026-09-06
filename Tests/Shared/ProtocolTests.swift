@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import PhoneRemoteShared
+@testable import NewMotionShared
 
 final class ProtocolTests: XCTestCase {
     private let sessionID = try! SessionID(bytes: Array(repeating: 7, count: SessionID.byteCount))
@@ -156,7 +156,7 @@ final class ProtocolTests: XCTestCase {
 /// and a long monologue are the two ways a caller can overrun the envelope.
 final class VocabularyProtocolTests: XCTestCase {
     func testVocabularyRoundTrip() throws {
-        let payload = try VocabularyPayload(phrases: ["Testaflight", "PhoneRemote", "xcodebuild"])
+        let payload = try VocabularyPayload(phrases: ["Testaflight", "NewMotion", "xcodebuild"])
         let data = try JSONEncoder().encode(MessagePayload.vocabulary(payload))
         let decoded = try JSONDecoder().decode(MessagePayload.self, from: data)
         XCTAssertEqual(decoded, .vocabulary(payload))
