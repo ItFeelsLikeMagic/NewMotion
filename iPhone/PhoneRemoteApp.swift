@@ -249,7 +249,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         audioController.onUtteranceEndAsEdit = { uplink.endStreamAsEdit() }
         audioController.onEditIntent = { uplink.sendIntent(edit: $0) }
         onDeviceVoice.onText = { [weak self] text in
-            Task { @MainActor in self?.typeText(text) }
+            Task { @MainActor in self?.typeTranscribedText(text) }
         }
         onDeviceVoice.onPartialText = { [weak self] text in
             Task { @MainActor in self?.latestAction = text.isEmpty ? "Listening" : text }
@@ -980,6 +980,27 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         cursorMixer.handle(events)
     }
 
+    /// The on-device route's one delivery point.  A finished sentence crosses
+    /// four places it can be dropped without a word, so this one says which;
+    /// counts only, never the text.
+    private func typeTranscribedText(_ text: String) {
+        guard isControllable else {
+            IPhoneDebugLog.emit("ondevice_drop", ["why": "notReady", "link": linkState.label])
+            latestAction = "Pair before typing"
+            return
+        }
+        switch keyboard.type(text) {
+        case let .chunks(chunks):
+            IPhoneDebugLog.emit("ondevice_typed", [
+                "chars": "\(text.count)",
+                "chunks": "\(chunks.count)"
+            ])
+        case let .rejected(reason):
+            IPhoneDebugLog.emit("ondevice_drop", ["why": reason.rawValue, "chars": "\(text.count)"])
+            latestAction = "Voice text refused"
+        }
+    }
+
     /// Characters are forwarded as they are typed and never stored or logged.
     func typeText(_ text: String) {
         guard isControllable else {
@@ -1038,8 +1059,13 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     }
 
     private func sendKeyboardOutput(_ output: KeyboardOutput) {
-        guard let payload = try? SharedKeyboardProtocolAdapter.payload(for: output),
-              inputUplink.send(payload) else {
+        guard let payload = try? SharedKeyboardProtocolAdapter.payload(for: output) else {
+            IPhoneDebugLog.emit("key_send_failed", ["at": "encode"])
+            latestAction = "Keyboard send failed"
+            return
+        }
+        guard inputUplink.send(payload) else {
+            IPhoneDebugLog.emit("key_send_failed", ["at": "wire"])
             latestAction = "Keyboard send failed"
             return
         }
