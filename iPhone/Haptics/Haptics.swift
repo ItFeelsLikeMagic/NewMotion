@@ -16,8 +16,7 @@ public enum Haptics {
         /// The same control coming back up.  Softer, so a press and its release
         /// are not one event to the hand.
         case release
-        /// A gesture region took the finger: a side scroll strip, or the hold
-        /// clutch turning travel into scroll.
+        /// A gesture region took the finger: a side scroll strip.
         case gestureBegan
         /// That region let the finger go.
         case gestureEnded

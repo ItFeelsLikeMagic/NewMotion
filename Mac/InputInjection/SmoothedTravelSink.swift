@@ -71,47 +71,25 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
     private var pointer = Glide()
     private var scroll = Glide()
     private var timer: DispatchSourceTimer?
-    private var cursorFlag = true
     private var scrollFlag = false
-    private var minimumFlag = SmoothedTravelSink.defaultMinimumSmoothed
+    /// Fixed for the life of the sink, so it needs no lock.
+    private let minimumSmoothed: Double
 
     /// A packet smaller than this is posted whole instead of glided.  Slow
     /// aiming sends a few points per packet, where one step is already too
     /// small to see stepping in, so smoothing there buys nothing and costs the
-    /// glide's lag exactly where the hand is being careful.
-    public static let defaultMinimumSmoothed = 8.0
+    /// glide's lag exactly where the hand is being careful.  Zero smooths every
+    /// move, however small.
+    public static let defaultMinimumSmoothed = 3.0
 
     public init(
         wrapping sink: InputEventSink,
-        cursor: Bool = true,
         scroll: Bool = false,
         minimumSmoothed: Double = SmoothedTravelSink.defaultMinimumSmoothed
     ) {
         self.wrapped = sink
-        self.cursorFlag = cursor
         self.scrollFlag = scroll
-        self.minimumFlag = max(0, minimumSmoothed)
-    }
-
-    /// Zero smooths every move, however small.
-    public var minimumSmoothedDelta: Double {
-        get { lock.withLock { minimumFlag } }
-        set {
-            lock.lock()
-            minimumFlag = max(0, newValue)
-            lock.unlock()
-        }
-    }
-
-    public var smoothsCursor: Bool {
-        get { lock.withLock { cursorFlag } }
-        set {
-            lock.lock()
-            cursorFlag = newValue
-            lock.unlock()
-            // Turning it off must not strand travel mid-glide.
-            if !newValue { flush() }
-        }
+        self.minimumSmoothed = max(0, minimumSmoothed)
     }
 
     /// Off by default.  Splitting one scroll into several smaller ones makes
@@ -131,12 +109,8 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
     public func send(_ event: InjectedInputEvent) throws {
         switch event {
         case let .pointer(delta):
-            guard smoothsCursor else {
-                try wrapped.send(event)
-                return
-            }
             let magnitude = (delta.x * delta.x + delta.y * delta.y).squareRoot()
-            guard magnitude >= minimumSmoothedDelta else {
+            guard magnitude >= minimumSmoothed else {
                 // Straight through, but never past travel already gliding, or
                 // the cursor would jump backwards over its own path.
                 flushPointer()

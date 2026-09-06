@@ -133,18 +133,15 @@ final class ScreenVocabularyTests: XCTestCase {
         XCTAssertTrue(ScreenVocabulary.isCandidate("Xcode", dictionary: dictionary))
     }
 
-    func testScreenVocabularyReaderStaysQuietWhenOffOrSecure() {
-        let off = AXScreenVocabularyReader(isEnabled: false, isSecureInputActive: { false })
-        let secure = AXScreenVocabularyReader(isEnabled: true, isSecureInputActive: { true })
-        XCTAssertEqual(off.lastWalk, ScreenVocabularyWalk())
-        for reader in [off, secure] {
-            let done = expectation(description: "speech context")
-            reader.speechContext { phrases in
-                XCTAssertTrue(phrases.isEmpty)
-                done.fulfill()
-            }
-            wait(for: [done], timeout: 1)
+    func testScreenVocabularyReaderStaysQuietWhileSecureInputIsActive() {
+        let secure = AXScreenVocabularyReader(isSecureInputActive: { true })
+        let done = expectation(description: "speech context")
+        secure.speechContext { phrases in
+            XCTAssertTrue(phrases.isEmpty)
+            done.fulfill()
         }
+        wait(for: [done], timeout: 1)
+        XCTAssertEqual(secure.lastWalk, ScreenVocabularyWalk())
     }
 
     /// Reading our own process re-enters AppKit's accessibility path on the

@@ -5,7 +5,7 @@ import UIKit
 /// Drives `ScrollMomentum` one display frame at a time.  The decay curve stays
 /// a pure struct so it can be tested without a clock; this owns the clock and
 /// nothing else, which is what lets a finger flick and a released air-mouse
-/// clutch coast on exactly the same curve.
+/// scroll coast on exactly the same curve.
 public final class ScrollMomentumDriver {
     /// A flick whose last scroll landed longer ago than this was a hand that
     /// had already stopped, so it should not coast.

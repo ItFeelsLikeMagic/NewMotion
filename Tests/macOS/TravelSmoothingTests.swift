@@ -85,16 +85,16 @@ final class TravelSmoothingTests: XCTestCase {
 
     func testASmallMoveSkipsTheGlideEntirely() {
         let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 8)
+        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 3)
 
         // Slow aiming: posted whole, immediately, no glide lag.
-        try? smoothing.send(.pointer(delta: MacPointerDelta(x: 3, y: 0)))
-        XCTAssertEqual(sink.events, [.pointer(delta: MacPointerDelta(x: 3, y: 0))])
+        try? smoothing.send(.pointer(delta: MacPointerDelta(x: 2, y: 0)))
+        XCTAssertEqual(sink.events, [.pointer(delta: MacPointerDelta(x: 2, y: 0))])
     }
 
     func testASmallMoveCannotOvertakeTravelStillGliding() {
         let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 8)
+        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 3)
 
         try? smoothing.send(.pointer(delta: MacPointerDelta(x: 40, y: 0)))
         try? smoothing.send(.pointer(delta: MacPointerDelta(x: 2, y: 0)))
@@ -121,20 +121,5 @@ final class TravelSmoothingTests: XCTestCase {
         // scroll further than several small ones.
         try? smoothing.send(.scroll(delta: MacScrollDelta(x: 0, y: 24)))
         XCTAssertEqual(sink.events, [.scroll(delta: MacScrollDelta(x: 0, y: 24))])
-    }
-
-    func testTurningItOffPostsDirectlyAndStrandsNothing() {
-        let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 0)
-
-        try? smoothing.send(.pointer(delta: MacPointerDelta(x: 12, y: 0)))
-        smoothing.smoothsCursor = false
-        // Whatever was mid-glide goes out at once.
-        XCTAssertEqual(travel(sink.events).x, 12)
-
-        try? smoothing.send(.pointer(delta: MacPointerDelta(x: 5, y: 0)))
-        // Off means straight through, one event in one out.
-        XCTAssertEqual(sink.events.last, .pointer(delta: MacPointerDelta(x: 5, y: 0)))
-        XCTAssertEqual(travel(sink.events).x, 17)
     }
 }

@@ -269,7 +269,6 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     /// not at all, costs the boost instead of stalling typing.
     private let queue = DispatchQueue(label: "newmotion.vocabulary")
     private let lock = NSLock()
-    private var enabled: Bool
     private var walking = false
     private var walk = ScreenVocabularyWalk()
     private let cache: VocabularyCache
@@ -277,20 +276,13 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     private let isSecureInputActive: @Sendable () -> Bool
 
     public init(
-        isEnabled: Bool = true,
         cache: VocabularyCache = VocabularyCache(),
         dictionary: WordDictionary = SystemWordDictionary(),
         isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
     ) {
-        self.enabled = isEnabled
         self.cache = cache
         self.dictionary = dictionary
         self.isSecureInputActive = isSecureInputActive
-    }
-
-    public var isEnabled: Bool {
-        get { lock.withLock { enabled } }
-        set { lock.withLock { enabled = newValue } }
     }
 
     /// The cost of the most recent walk, for the debug snapshot.
@@ -300,7 +292,7 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     /// for next time. The utterance never waits: an empty cache costs this
     /// press its boost and pays it back on the following one.
     public func speechContext(completion: @escaping @Sendable ([String]) -> Void) {
-        guard isEnabled, !isSecureInputActive() else {
+        guard !isSecureInputActive() else {
             completion([])
             return
         }
@@ -317,7 +309,7 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     /// One walk at a time. A window still answering from the last press is
     /// left to finish rather than queueing another walk behind it.
     private func refresh() {
-        guard isEnabled, !isSecureInputActive() else { return }
+        guard !isSecureInputActive() else { return }
         let started: Bool = lock.withLock {
             if walking { return false }
             walking = true
@@ -347,8 +339,7 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
             "words": String(phrases.count),
             "cached": String(stats.entries),
             "cacheHits": String(stats.hits),
-            "cacheAdded": String(stats.added),
-            "enabled": isEnabled ? "yes" : "no"
+            "cacheAdded": String(stats.added)
         ]
     }
 

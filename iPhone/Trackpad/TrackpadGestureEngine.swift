@@ -105,12 +105,9 @@ public struct TrackpadConfiguration: Equatable, Sendable {
     /// How far three fingers must travel up before the swipe counts.
     public var threeFingerSwipeTravel: Double
     /// Points in from each side where one finger scrolls instead of moving the
-    /// cursor.  Zero turns the strips off.
+    /// cursor.  A thumb's width, so the strips are findable without looking and
+    /// still leave most of the glass for the cursor.  Zero turns them off.
     public var edgeScrollWidth: Double
-    /// How long one finger must rest before its travel becomes scroll.  Zero
-    /// turns the clutch off.  It has to outlast `tapMaximumDuration`, or a
-    /// press long enough to clutch would also still read as a tap.
-    public var holdScrollDelay: TimeInterval
 
     public init(
         pointerSensitivityX: Double = 1.0,
@@ -121,8 +118,7 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         doubleTapInterval: TimeInterval = 0.35,
         dragLiftGrace: TimeInterval = 0.25,
         threeFingerSwipeTravel: Double = 45,
-        edgeScrollWidth: Double = 0,
-        holdScrollDelay: TimeInterval = 0
+        edgeScrollWidth: Double = 44
     ) {
         self.pointerSensitivityX = min(max(pointerSensitivityX, 0.05), 10)
         self.pointerSensitivityY = min(max(pointerSensitivityY, 0.05), 10)
@@ -133,7 +129,6 @@ public struct TrackpadConfiguration: Equatable, Sendable {
         self.dragLiftGrace = min(max(dragLiftGrace, 0), 1)
         self.threeFingerSwipeTravel = min(max(threeFingerSwipeTravel, 10), 400)
         self.edgeScrollWidth = min(max(edgeScrollWidth, 0), 200)
-        self.holdScrollDelay = holdScrollDelay <= 0 ? 0 : min(max(holdScrollDelay, self.tapMaximumDuration), 2)
     }
 }
 
@@ -150,7 +145,7 @@ public struct TrackpadGestureEngine: Sendable {
         case idle
         case oneFinger
         /// One finger scrolling: it either landed in an edge strip or rested
-        /// long enough to take the clutch.
+        /// One finger that started inside an edge strip.
         case oneFingerScroll
         case twoFinger
         case threeFinger
@@ -205,7 +200,7 @@ public struct TrackpadGestureEngine: Sendable {
     /// True while one finger is scrolling.  Other sensors feeding the same
     /// cursor read this to send their travel as scroll too, which is what lets
     /// a held finger turn the air mouse into a scroll wheel.
-    public var isScrollClutchEngaged: Bool { mode == .oneFingerScroll }
+    public var isOneFingerScrolling: Bool { mode == .oneFingerScroll }
 
     /// True while a drag is holding the button down with no finger on the
     /// glass.  The caller drives `flushSuspendedDrag(at:)` on a timer for as
@@ -225,19 +220,6 @@ public struct TrackpadGestureEngine: Sendable {
         }
         if let scroll {
             configuration.scrollSensitivity = min(max(scroll, 0.05), 10)
-        }
-    }
-
-    /// Both experiments are off at zero, which is what the settings toggles
-    /// send when they are switched back off mid-gesture.
-    public mutating func setScrollGestures(edgeScrollWidth: Double, holdScrollDelay: TimeInterval) {
-        configuration.edgeScrollWidth = min(max(edgeScrollWidth, 0), 200)
-        configuration.holdScrollDelay = holdScrollDelay <= 0
-            ? 0
-            : min(max(holdScrollDelay, configuration.tapMaximumDuration), 2)
-        if configuration.edgeScrollWidth == 0, configuration.holdScrollDelay == 0,
-           mode == .oneFingerScroll {
-            mode = .oneFinger
         }
     }
 
@@ -348,15 +330,6 @@ public struct TrackpadGestureEngine: Sendable {
             let newCentroid = centroid(of: active)
             let delta = newCentroid - oldCentroid
             previousCentroid = newCentroid
-            // Checked before `gestureMoved` is updated: the clutch is claimed
-            // by the first movement after the rest, not by a later one.
-            if mode == .oneFinger, active.count == 1, !gestureMoved,
-               configuration.holdScrollDelay > 0,
-               let restedSince = active.values.first?.beganAt,
-               timestamp - restedSince >= configuration.holdScrollDelay {
-                mode = .oneFingerScroll
-                pendingPointer = .zero
-            }
             if delta.magnitude > configuration.tapMaximumTravel {
                 gestureMoved = true
             }
