@@ -52,7 +52,7 @@ public final class LocalPushToTalkAudioController: @unchecked Sendable {
     /// because people let go while the last syllable is still sounding.
     public init(
         microphone: MicrophoneInputProviding,
-        queue: DispatchQueue = DispatchQueue(label: "phoneremote.voice"),
+        queue: DispatchQueue = DispatchQueue(label: "newmotion.voice"),
         chunker: PCM16Chunker = PCM16Chunker(),
         permissionGranted: Bool = false,
         releaseGrace: TimeInterval = 0.15

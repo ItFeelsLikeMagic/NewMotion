@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 public enum BLEPeripheralSendResult: Equatable {
@@ -45,7 +45,7 @@ public protocol IPhonePeripheralManagerAdapter: AnyObject {
 /// State and queue logic is isolated from Core Bluetooth so all lifecycle and
 /// backpressure behavior can be tested with a deterministic fake adapter.
 public final class IPhoneBLEPeripheralTransport {
-    public let serviceUUID = PhoneRemoteGATT.serviceUUID
+    public let serviceUUID = NewMotionGATT.serviceUUID
     public private(set) var state: BLEPeripheralLifecycleState = .idle
     public private(set) var isForeground = false
     public private(set) var subscribedCharacteristicUUIDs: Set<UUID> = []
@@ -74,7 +74,7 @@ public final class IPhoneBLEPeripheralTransport {
 
     public init(
         adapter: IPhonePeripheralManagerAdapter,
-        localName: String = "Phone Remote",
+        localName: String = "NewMotion",
         queueLimit: Int = BLEFramingLimits.maximumQueuedFrames
     ) {
         self.adapter = adapter
@@ -129,7 +129,7 @@ public final class IPhoneBLEPeripheralTransport {
         }
         guard hasPublishedService else {
             transition(to: .publishing)
-            adapter.publish(serviceUUID: serviceUUID, characteristics: PhoneRemoteGATT.characteristics)
+            adapter.publish(serviceUUID: serviceUUID, characteristics: NewMotionGATT.characteristics)
             return
         }
         // A link that outlived the background trip resumes where it left off.
@@ -171,8 +171,8 @@ public final class IPhoneBLEPeripheralTransport {
     public func send(_ data: Data, on channel: BLETransportChannel, enqueue: Bool = true) -> BLEPeripheralSendResult {
         let characteristic: UUID
         switch channel {
-        case .data: characteristic = PhoneRemoteGATT.phoneToMacDataUUID
-        case .control: characteristic = PhoneRemoteGATT.phoneToMacControlUUID
+        case .data: characteristic = NewMotionGATT.phoneToMacDataUUID
+        case .control: characteristic = NewMotionGATT.phoneToMacControlUUID
         }
         guard !data.isEmpty else { return .notReady }
         guard state == .ready || state == .connected else { return .notReady }
@@ -228,7 +228,7 @@ public final class IPhoneBLEPeripheralTransport {
     }
 
     private func handleSubscribe(subscriber: String, uuid: UUID) {
-        guard PhoneRemoteGATT.allCharacteristicUUIDs.contains(uuid) else { return }
+        guard NewMotionGATT.allCharacteristicUUIDs.contains(uuid) else { return }
         // Only one Mac is ever subscribed, so a different central means the
         // old link is gone whether or not iOS delivered its unsubscribe. The
         // trip through `.advertising` is what tells the app to handshake again.
@@ -271,16 +271,16 @@ public final class IPhoneBLEPeripheralTransport {
     /// half-built link, both are a usable one.
     private var subscriptionState: BLEPeripheralLifecycleState {
         subscribedCharacteristicUUIDs.isSuperset(of: [
-            PhoneRemoteGATT.phoneToMacDataUUID,
-            PhoneRemoteGATT.phoneToMacControlUUID
+            NewMotionGATT.phoneToMacDataUUID,
+            NewMotionGATT.phoneToMacControlUUID
         ]) ? .ready : .connected
     }
 
     private func handleWrite(_ write: BLEPeripheralWrite) {
         switch write.characteristic {
-        case PhoneRemoteGATT.macToPhoneDataUUID:
+        case NewMotionGATT.macToPhoneDataUUID:
             onFrameReceived?(.data, write.data)
-        case PhoneRemoteGATT.macToPhoneControlUUID:
+        case NewMotionGATT.macToPhoneControlUUID:
             onFrameReceived?(.control, write.data)
         default:
             return
@@ -288,8 +288,8 @@ public final class IPhoneBLEPeripheralTransport {
     }
 
     private func flushAll() {
-        flush(channel: .data, characteristic: PhoneRemoteGATT.phoneToMacDataUUID)
-        flush(channel: .control, characteristic: PhoneRemoteGATT.phoneToMacControlUUID)
+        flush(channel: .data, characteristic: NewMotionGATT.phoneToMacDataUUID)
+        flush(channel: .control, characteristic: NewMotionGATT.phoneToMacControlUUID)
         guard queuedFrameCount == 0, state == .ready else { return }
         onReadyToSend?()
     }

@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// Mac integration boundary for QR pairing and trusted reconnect. UI and BLE

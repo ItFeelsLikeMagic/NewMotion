@@ -3,8 +3,8 @@ import CryptoKit
 import Foundation
 import UIKit
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 final class PairingScannerTests: XCTestCase {
     func testScannerHandsOnAValidTokenOnceAndStopsCameraOnAllOutcomes() throws {

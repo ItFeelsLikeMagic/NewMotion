@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
 import XCTest
-@testable import PhoneRemote_macOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_macOS
+@testable import NewMotionShared
 
 final class BluetoothPairingTests: XCTestCase {
     func testLinkConnectsByServiceAndOnlyReportsConnectedAfterSubscriptions() {
@@ -16,15 +16,15 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(link.peerName, "Phone")
         adapter.emitConnected(peripheral.identifier)
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
+        adapter.emitServices(peripheral.identifier, services: [NewMotionGATT.serviceUUID])
+        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: NewMotionGATT.serviceUUID, characteristics: NewMotionGATT.allCharacteristicUUIDs)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacDataUUID)
         XCTAssertEqual(link.state, .connecting)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(link.state, .connected)
         XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .sent)
         XCTAssertEqual(adapter.writes.count, 1)
-        XCTAssertEqual(adapter.writes.first?.1, PhoneRemoteGATT.macToPhoneDataUUID)
+        XCTAssertEqual(adapter.writes.first?.1, NewMotionGATT.macToPhoneDataUUID)
     }
 
     func testLinkCutsAMessageUpAndPutsOneBackTogether() {
@@ -41,7 +41,7 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.writes.count, 8)
 
         for frame in adapter.writes.map(\.0) {
-            adapter.emitValue(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID, data: frame)
+            adapter.emitValue(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacDataUUID, data: frame)
         }
         XCTAssertEqual(received.count, 1)
         XCTAssertEqual(received.first?.0, .data)
@@ -66,17 +66,17 @@ final class BluetoothPairingTests: XCTestCase {
         let peripheral = bringLinkToConnected(link, adapter: adapter)
         let discoveries = adapter.discoverServicesCount
 
-        adapter.emitServicesInvalidated(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
+        adapter.emitServicesInvalidated(peripheral.identifier, services: [NewMotionGATT.serviceUUID])
 
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(adapter.discoverServicesCount, discoveries + 1)
         XCTAssertTrue(adapter.cancelledConnections.isEmpty)
         XCTAssertEqual(link.peerName, "Phone")
 
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServices(peripheral.identifier, services: [NewMotionGATT.serviceUUID])
+        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: NewMotionGATT.serviceUUID, characteristics: NewMotionGATT.allCharacteristicUUIDs)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(link.state, .connected)
     }
 
@@ -120,10 +120,10 @@ final class BluetoothPairingTests: XCTestCase {
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
         adapter.emitConnected(peripheral.identifier)
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
-        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: PhoneRemoteGATT.serviceUUID, characteristics: PhoneRemoteGATT.allCharacteristicUUIDs)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacDataUUID)
-        adapter.emitNotification(peripheral.identifier, characteristicUUID: PhoneRemoteGATT.phoneToMacControlUUID)
+        adapter.emitServices(peripheral.identifier, services: [NewMotionGATT.serviceUUID])
+        adapter.emitCharacteristics(peripheral.identifier, serviceUUID: NewMotionGATT.serviceUUID, characteristics: NewMotionGATT.allCharacteristicUUIDs)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitNotification(peripheral.identifier, characteristicUUID: NewMotionGATT.phoneToMacControlUUID)
         XCTAssertEqual(link.state, .connected)
         return peripheral
     }
@@ -139,7 +139,7 @@ final class BluetoothPairingTests: XCTestCase {
         adapter.emitConnected(peripheralID)
         adapter.emitServices(peripheralID, services: [UUID()])
         XCTAssertEqual(link.state, .searching)
-        XCTAssertEqual(failures, [.setupFailed("the phone is not offering Phone Remote")])
+        XCTAssertEqual(failures, [.setupFailed("the phone is not offering NewMotion")])
         XCTAssertNil(link.peerName)
         XCTAssertEqual(adapter.scanCount, 2)
     }
@@ -260,7 +260,7 @@ final class BluetoothPairingTests: XCTestCase {
 
     func testKeychainStoreEnumeratesRecordsOnMacOS() throws {
         try skipUnlessKeychainTestsRequested()
-        let service = "com.example.phoneremote.tests.\(UUID().uuidString)"
+        let service = "com.example.newmotion.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
 
@@ -291,7 +291,7 @@ final class BluetoothPairingTests: XCTestCase {
 
     func testMacPairingCoordinatorStartsWithEmptyKeychain() throws {
         try skipUnlessKeychainTestsRequested()
-        let service = "com.example.phoneremote.tests.\(UUID().uuidString)"
+        let service = "com.example.newmotion.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
 
@@ -342,15 +342,15 @@ final class BluetoothPairingTests: XCTestCase {
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.emitDiscover(peripheral)
         adapter.emitConnected(peripheral.identifier)
-        adapter.emitServices(peripheral.identifier, services: [PhoneRemoteGATT.serviceUUID])
+        adapter.emitServices(peripheral.identifier, services: [NewMotionGATT.serviceUUID])
         adapter.emitCharacteristics(
             peripheral.identifier,
-            serviceUUID: PhoneRemoteGATT.serviceUUID,
-            characteristics: PhoneRemoteGATT.allCharacteristicUUIDs
+            serviceUUID: NewMotionGATT.serviceUUID,
+            characteristics: NewMotionGATT.allCharacteristicUUIDs
         )
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(link.send(Data([9]), on: .control, delivery: .reliable), .sent)
-        XCTAssertEqual(adapter.writes.first?.1, PhoneRemoteGATT.macToPhoneControlUUID)
+        XCTAssertEqual(adapter.writes.first?.1, NewMotionGATT.macToPhoneControlUUID)
     }
 
     func testLinkConnectsAPeripheralTheSystemAlreadyHoldsOnStart() {
@@ -442,11 +442,11 @@ extension XCTestCase {
     func skipUnlessKeychainTestsRequested() throws {
         let environment = ProcessInfo.processInfo.environment
         // xcodebuild forwards TEST_RUNNER_-prefixed variables to the test host.
-        let requested = environment["PHONE_REMOTE_KEYCHAIN_TESTS"] == "1"
-            || environment["TEST_RUNNER_PHONE_REMOTE_KEYCHAIN_TESTS"] == "1"
+        let requested = environment["NEWMOTION_KEYCHAIN_TESTS"] == "1"
+            || environment["TEST_RUNNER_NEWMOTION_KEYCHAIN_TESTS"] == "1"
         try XCTSkipUnless(
             requested,
-            "Set PHONE_REMOTE_KEYCHAIN_TESTS=1 to run Keychain tests; they need manual approval."
+            "Set NEWMOTION_KEYCHAIN_TESTS=1 to run Keychain tests; they need manual approval."
         )
     }
 }

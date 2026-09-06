@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-DERIVED_DATA="${PHONE_REMOTE_DERIVED_DATA:-$ROOT_DIR/DerivedData}"
+DERIVED_DATA="${NEWMOTION_DERIVED_DATA:-$ROOT_DIR/DerivedData}"
 UDID="${IPHONE_UDID:-}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -15,8 +15,8 @@ The identifier may be supplied via --udid or IPHONE_UDID. Signing/team setup,
 Trust This Computer, and Developer Mode remain deliberate GUI prerequisites.
 
 By default signing is disabled for a safe build-only probe. For a real device,
-set PHONE_REMOTE_SIGNING=1 and PHONE_REMOTE_DEVELOPMENT_TEAM locally (optionally
-PHONE_REMOTE_CODE_SIGN_IDENTITY; defaults to "Apple Development"). Signed mode
+set NEWMOTION_SIGNING=1 and NEWMOTION_DEVELOPMENT_TEAM locally (optionally
+NEWMOTION_CODE_SIGN_IDENTITY; defaults to "Apple Development"). Signed mode
 selects the supplied device as the build destination and allows Xcode to update
 or register the local development profile. These values are read only from the
 environment and are never written to the repository.
@@ -34,23 +34,23 @@ fi
 command -v xcrun >/dev/null 2>&1 || { echo "error: xcrun is required" >&2; exit 1; }
 
 "$SCRIPT_DIR/generate.sh"
-if [ "${PHONE_REMOTE_SIGNING:-0}" = "1" ]; then
-    SIGNING_TEAM="${PHONE_REMOTE_DEVELOPMENT_TEAM:-}"
+if [ "${NEWMOTION_SIGNING:-0}" = "1" ]; then
+    SIGNING_TEAM="${NEWMOTION_DEVELOPMENT_TEAM:-}"
     [ -n "$SIGNING_TEAM" ] || {
-        echo "error: PHONE_REMOTE_DEVELOPMENT_TEAM is required when PHONE_REMOTE_SIGNING=1" >&2
+        echo "error: NEWMOTION_DEVELOPMENT_TEAM is required when NEWMOTION_SIGNING=1" >&2
         exit 2
     }
-    SIGNING_IDENTITY="${PHONE_REMOTE_CODE_SIGN_IDENTITY:-Apple Development}"
-    xcodebuild -project "$ROOT_DIR/PhoneRemote.xcodeproj" -configuration Debug -derivedDataPath "$DERIVED_DATA" -scheme PhoneRemote-iOS -sdk iphoneos -destination "platform=iOS,id=$UDID" \
+    SIGNING_IDENTITY="${NEWMOTION_CODE_SIGN_IDENTITY:-Apple Development}"
+    xcodebuild -project "$ROOT_DIR/NewMotion.xcodeproj" -configuration Debug -derivedDataPath "$DERIVED_DATA" -scheme NewMotion-iOS -sdk iphoneos -destination "platform=iOS,id=$UDID" \
         -allowProvisioningUpdates -allowProvisioningDeviceRegistration build \
         CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$SIGNING_TEAM" CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
         CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES ENABLE_DEBUG_DYLIB=NO
 else
     # Debug dylibs are extra unsigned binaries. iOS kills the app on open if they
     # are not signed, so device builds keep a single signed executable.
-    xcodebuild -project "$ROOT_DIR/PhoneRemote.xcodeproj" -configuration Debug -derivedDataPath "$DERIVED_DATA" -scheme PhoneRemote-iOS -sdk iphoneos build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO
+    xcodebuild -project "$ROOT_DIR/NewMotion.xcodeproj" -configuration Debug -derivedDataPath "$DERIVED_DATA" -scheme NewMotion-iOS -sdk iphoneos build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO
 fi
-APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/PhoneRemote.app"
+APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/NewMotion.app"
 [ -d "$APP_PATH" ] || { echo "error: expected app not found at $APP_PATH" >&2; exit 1; }
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")"
 xcrun devicectl device install app --device "$UDID" "$APP_PATH"
@@ -59,7 +59,7 @@ xcrun devicectl device install app --device "$UDID" "$APP_PATH"
 # leaves a second app behind that looks identical on the home screen. Only
 # builds of this app are matched, and only the one just installed survives.
 xcrun devicectl device info apps --device "$UDID" |
-    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.phoneremote\.ios$/) print $i }' |
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.newmotion\.ios$/) print $i }' |
     while read -r stale; do
         if [ "$stale" != "$BUNDLE_ID" ]; then
             echo "Removing older install: $stale"

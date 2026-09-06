@@ -66,7 +66,7 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
     }
 
     private let wrapped: InputEventSink
-    private let queue = DispatchQueue(label: "phoneremote.input.smoothing")
+    private let queue = DispatchQueue(label: "newmotion.input.smoothing")
     private let lock = NSLock()
     private var pointer = Glide()
     private var scroll = Glide()

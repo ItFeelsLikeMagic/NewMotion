@@ -32,7 +32,7 @@ enum InterfaceOrientationLock {
     }
 }
 
-final class PhoneRemoteAppDelegate: NSObject, UIApplicationDelegate {
+final class NewMotionAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?

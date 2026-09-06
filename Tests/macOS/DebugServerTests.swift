@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_macOS
+@testable import NewMotion_macOS
 
 final class DebugServerTests: XCTestCase {
     func testStateResponseIncludesPairingKindAndOmitsSecretFields() throws {
@@ -79,7 +79,7 @@ final class DebugServerTests: XCTestCase {
                 hasPairingQR: false
             )
         )
-        let server = MacDebugHTTPServer(box: box, preferredPort: 18775, portFileURL: FileManager.default.temporaryDirectory.appendingPathComponent("phoneremote-debug-test.json"))
+        let server = MacDebugHTTPServer(box: box, preferredPort: 18775, portFileURL: FileManager.default.temporaryDirectory.appendingPathComponent("newmotion-debug-test.json"))
         defer { server.stop() }
         server.start()
 

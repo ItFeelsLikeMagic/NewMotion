@@ -2,13 +2,13 @@
 set -eu
 
 UDID="${IPHONE_UDID:-}"
-BUNDLE_ID="${PHONE_REMOTE_IOS_BUNDLE_ID:-com.davidliao.phoneremote.ios}"
+BUNDLE_ID="${NEWMOTION_IOS_BUNDLE_ID:-com.davidliao.newmotion.ios}"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
 Usage: IPHONE_UDID=<device-identifier> ./scripts/launch-phone.sh [--udid ID]
 
-Launch the installed Phone Remote iPhone app using devicectl.
+Launch the installed NewMotion iPhone app using devicectl.
 HELP
     exit 0
 fi

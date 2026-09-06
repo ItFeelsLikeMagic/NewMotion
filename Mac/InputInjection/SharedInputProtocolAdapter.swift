@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 
 /// Converts the framework-neutral Mac safety commands to the stable shared
 /// protocol types.  The feature/policy module stays testable without the

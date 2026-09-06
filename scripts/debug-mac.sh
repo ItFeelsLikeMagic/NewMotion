@@ -17,8 +17,8 @@ case "$PATH_NAME" in
     *) PATH_NAME="/$PATH_NAME" ;;
 esac
 
-FILE="${PHONE_REMOTE_DEBUG_FILE:-/tmp/phoneremote-mac-debug.json}"
-[ -f "$FILE" ] || { echo "error: debug server file not found at $FILE; is PhoneRemoteMac running?" >&2; exit 1; }
+FILE="${NEWMOTION_DEBUG_FILE:-/tmp/newmotion-mac-debug.json}"
+[ -f "$FILE" ] || { echo "error: debug server file not found at $FILE; is NewMotion running?" >&2; exit 1; }
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$FILE")
 curl -fsS "http://127.0.0.1:${PORT}${PATH_NAME}"
 echo

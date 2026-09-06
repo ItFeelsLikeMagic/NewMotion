@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_macOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_macOS
+@testable import NewMotionShared
 
 final class IntegrationTests: XCTestCase {
     func testFramedProtocolInputReachesSafetySinkAndDisconnectReleasesIt() throws {

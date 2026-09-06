@@ -1,8 +1,8 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// A delete key that is also a dial.  A tap sends the key it always sent.

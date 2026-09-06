@@ -1,5 +1,5 @@
 import XCTest
-@testable import PhoneRemoteShared
+@testable import NewMotionShared
 
 final class ObservabilityTests: XCTestCase {
     func testPercentilesAndWorstUseNearestRank() {

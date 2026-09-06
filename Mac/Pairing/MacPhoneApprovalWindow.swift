@@ -19,7 +19,7 @@ final class MacPhoneApprovalWindow {
             backing: .buffered,
             defer: false
         )
-        window.title = "Phone Remote"
+        window.title = "NewMotion"
         window.contentView = NSHostingView(rootView: content)
         window.isReleasedWhenClosed = false
         window.level = .floating

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_macOS
+@testable import NewMotion_macOS
 
 /// Carries a callback's answer back out of a `@Sendable` closure.
 private final class Captured: @unchecked Sendable {

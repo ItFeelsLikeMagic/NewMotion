@@ -14,10 +14,10 @@ import shutil
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PROJECT_DIR = ROOT / "PhoneRemote.xcodeproj"
+PROJECT_DIR = ROOT / "NewMotion.xcodeproj"
 
-# Override with PHONE_REMOTE_BUNDLE_PREFIX for a different signing account.
-DEFAULT_BUNDLE_PREFIX = "com.davidliao.phoneremote"
+# Override with NEWMOTION_BUNDLE_PREFIX for a different signing account.
+DEFAULT_BUNDLE_PREFIX = "com.davidliao.newmotion"
 
 
 def oid(key: str) -> str:
@@ -54,7 +54,13 @@ class Builder:
         self.order.append(object_id)
         return object_id
 
-    def file(self, path: str, file_type: str = "sourcecode.swift", product: bool = False) -> str:
+    def file(
+        self,
+        path: str,
+        file_type: str = "sourcecode.swift",
+        product: bool = False,
+        tag: str | None = None,
+    ) -> str:
         if product:
             body = f"""{{
             isa = PBXFileReference;
@@ -70,7 +76,9 @@ class Builder:
             path = {quote(path)};
             sourceTree = \"<group>\";
         }}"""
-        return self.add(f"file:{path}:{product}", body)
+        # The iOS and macOS apps build the same NewMotion.app name on two
+        # platforms, so the path alone does not identify the reference.
+        return self.add(f"file:{path}:{product}:{tag or ''}", body)
 
     def group(self, name: str, children: list[str], path: str | None = None) -> str:
         child_text = "\n".join(f"                {child}," for child in children)
@@ -224,16 +232,16 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
         "SWIFT_STRICT_CONCURRENCY": "complete",
         "SWIFT_VERSION": "6.0",
     }
-    bundle_prefix = os.environ.get("PHONE_REMOTE_BUNDLE_PREFIX", DEFAULT_BUNDLE_PREFIX)
+    bundle_prefix = os.environ.get("NEWMOTION_BUNDLE_PREFIX", DEFAULT_BUNDLE_PREFIX)
     if kind == "shared":
         settings.update({
             "DEFINES_MODULE": "YES",
             "GENERATE_INFOPLIST_FILE": "YES",
             "IPHONEOS_DEPLOYMENT_TARGET": "18.0",
-            "LD_DYLIB_INSTALL_NAME": "@rpath/PhoneRemoteShared.framework/PhoneRemoteShared",
+            "LD_DYLIB_INSTALL_NAME": "@rpath/NewMotionShared.framework/NewMotionShared",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.shared",
-            "PRODUCT_NAME": "PhoneRemoteShared",
+            "PRODUCT_NAME": "NewMotionShared",
             "SKIP_INSTALL": "YES",
             "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator macosx",
         })
@@ -246,8 +254,8 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "IPHONEOS_DEPLOYMENT_TARGET": "18.0",
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @executable_path/Frameworks",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.ios",
-            "PRODUCT_MODULE_NAME": "PhoneRemote_iOS",
-            "PRODUCT_NAME": "PhoneRemote",
+            "PRODUCT_MODULE_NAME": "NewMotion_iOS",
+            "PRODUCT_NAME": "NewMotion",
             "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
             "SUPPORTS_MACCATALYST": "NO",
             "TARGETED_DEVICE_FAMILY": "1",
@@ -264,8 +272,8 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @executable_path/../Frameworks @executable_path/Frameworks",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.macos",
-            "PRODUCT_MODULE_NAME": "PhoneRemote_macOS",
-            "PRODUCT_NAME": "PhoneRemoteMac",
+            "PRODUCT_MODULE_NAME": "NewMotion_macOS",
+            "PRODUCT_NAME": "NewMotion",
             "SUPPORTED_PLATFORMS": "macosx",
         })
     elif kind == "ios-test":
@@ -274,9 +282,9 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "GENERATE_INFOPLIST_FILE": "YES",
             "IPHONEOS_DEPLOYMENT_TARGET": "18.0",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.ios-tests",
-            "PRODUCT_NAME": "PhoneRemoteiOSTests",
+            "PRODUCT_NAME": "NewMotioniOSTests",
             "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
-            "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/PhoneRemote.app/PhoneRemote",
+            "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/NewMotion.app/NewMotion",
         })
     elif kind == "mac-test":
         settings.update({
@@ -284,9 +292,9 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "GENERATE_INFOPLIST_FILE": "YES",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.macos-tests",
-            "PRODUCT_NAME": "PhoneRemoteMacTests",
+            "PRODUCT_NAME": "NewMotionMacTests",
             "SUPPORTED_PLATFORMS": "macosx",
-            "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/PhoneRemoteMac.app/Contents/MacOS/PhoneRemoteMac",
+            "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/NewMotion.app/Contents/MacOS/NewMotion",
         })
     elif kind == "shared-test":
         settings.update({
@@ -296,7 +304,7 @@ def base_settings(kind: str, release: bool = False) -> dict[str, str]:
             "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @loader_path/../../..",
             "MACOSX_DEPLOYMENT_TARGET": "15.0",
             "PRODUCT_BUNDLE_IDENTIFIER": f"{bundle_prefix}.shared-tests",
-            "PRODUCT_NAME": "PhoneRemoteSharedTests",
+            "PRODUCT_NAME": "NewMotionSharedTests",
             "SUPPORTED_PLATFORMS": "macosx",
         })
     else:
@@ -317,14 +325,14 @@ def scheme(name: str, target_id: str) -> str:
     <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
         <BuildActionEntries>
             <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
-                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target_id}" BuildableName="{name}" BlueprintName="{name}" ReferencedContainer="container:PhoneRemote.xcodeproj"/>
+                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target_id}" BuildableName="{name}" BlueprintName="{name}" ReferencedContainer="container:NewMotion.xcodeproj"/>
             </BuildActionEntry>
         </BuildActionEntries>
     </BuildAction>
     <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
         <Testables>
             <TestableReference skipped="NO">
-                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target_id}" BuildableName="{name}.xctest" BlueprintName="{name}" ReferencedContainer="container:PhoneRemote.xcodeproj"/>
+                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target_id}" BuildableName="{name}.xctest" BlueprintName="{name}" ReferencedContainer="container:NewMotion.xcodeproj"/>
             </TestableReference>
         </Testables>
     </TestAction>
@@ -342,7 +350,7 @@ def generate() -> None:
     PROJECT_DIR.mkdir(parents=True)
     b = Builder()
 
-    project_id = oid("project:PhoneRemote")
+    project_id = oid("project:NewMotion")
     root_files = [
         b.file("project.yml", "text.yaml"),
         b.file("README.md", "net.daringfireball.markdown"),
@@ -389,15 +397,15 @@ def generate() -> None:
     groups["tests"] = b.group("Tests", [groups["shared-tests"], groups["ios-test"], groups["mac-test"]])
     groups["config"] = b.group("Config", config_files)
     products_group = b.group("Products", [])
-    groups["root"] = b.group("PhoneRemote", root_files + [groups["config"], groups["shared"], groups["ios"], groups["mac"], groups["tests"], products_group])
+    groups["root"] = b.group("NewMotion", root_files + [groups["config"], groups["shared"], groups["ios"], groups["mac"], groups["tests"], products_group])
 
     products = {
-        "shared": b.file("PhoneRemoteShared.framework", "wrapper.framework", True),
-        "ios": b.file("PhoneRemote.app", "wrapper.application", True),
-        "mac": b.file("PhoneRemoteMac.app", "wrapper.application", True),
-        "shared-tests": b.file("PhoneRemoteSharedTests.xctest", "wrapper.cfbundle", True),
-        "ios-test": b.file("PhoneRemoteiOSTests.xctest", "wrapper.cfbundle", True),
-        "mac-test": b.file("PhoneRemoteMacTests.xctest", "wrapper.cfbundle", True),
+        "shared": b.file("NewMotionShared.framework", "wrapper.framework", True),
+        "ios": b.file("NewMotion.app", "wrapper.application", True, tag="ios"),
+        "mac": b.file("NewMotion.app", "wrapper.application", True, tag="mac"),
+        "shared-tests": b.file("NewMotionSharedTests.xctest", "wrapper.cfbundle", True),
+        "ios-test": b.file("NewMotioniOSTests.xctest", "wrapper.cfbundle", True),
+        "mac-test": b.file("NewMotionMacTests.xctest", "wrapper.cfbundle", True),
     }
     # Products are referenced by the build graph but also shown in the root
     # group, matching an Xcode-generated project.
@@ -412,7 +420,7 @@ def generate() -> None:
         release = b.configuration("Release", base_settings(kind, release=True))
         config_lists[key] = b.config_list(f"{key}:configs", [debug, release])
 
-    names = {"shared": "PhoneRemoteShared", "ios": "PhoneRemote-iOS", "mac": "PhoneRemote-macOS", "shared-tests": "PhoneRemoteSharedTests", "ios-test": "PhoneRemote-iOSTests", "mac-test": "PhoneRemote-macOSTests"}
+    names = {"shared": "NewMotionShared", "ios": "NewMotion-iOS", "mac": "NewMotion-macOS", "shared-tests": "NewMotionSharedTests", "ios-test": "NewMotion-iOSTests", "mac-test": "NewMotion-macOSTests"}
     target_ids = {key: oid(f"target:{name}") for key, name in names.items()}
     dependency_specs = {"ios": ["shared"], "mac": ["shared"], "shared-tests": ["shared"], "ios-test": ["ios", "shared"], "mac-test": ["mac", "shared"]}
     dependencies = {
@@ -453,7 +461,7 @@ def generate() -> None:
             attributes = {{
                 LastSwiftUpdateCheck = 2700;
                 LastUpgradeCheck = 2700;
-                ORGANIZATIONNAME = PhoneRemote;
+                ORGANIZATIONNAME = NewMotion;
                 TargetAttributes = {{
                 }};
             }};

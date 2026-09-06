@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// One notch of a held delete key's sideways travel.
@@ -42,7 +42,7 @@ public struct DeleteScrubTracker: Equatable, Sendable {
     }
 }
 
-#if canImport(PhoneRemoteShared)
+#if canImport(NewMotionShared)
 public extension DeleteScrubStep {
     var phase: DeleteScrubPhase {
         switch self {

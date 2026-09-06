@@ -1,7 +1,7 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 /// Privacy-safe live state for local debugging. It never carries QR text,
@@ -53,7 +53,7 @@ public struct MacDebugSnapshot: Equatable, Sendable, Codable {
     public var pairedDevices: [MacDebugPairedDevice]
 
     public init(
-        app: String = "PhoneRemoteMac",
+        app: String = "NewMotion",
         status: String,
         paused: Bool,
         accessibility: String,

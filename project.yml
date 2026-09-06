@@ -1,4 +1,4 @@
-name: PhoneRemote
+name: NewMotion
 
 options:
   minimumXcodeGenVersion: 2.38.0
@@ -28,37 +28,37 @@ configs:
   Release: release
 
 targets:
-  PhoneRemoteShared:
+  NewMotionShared:
     type: framework
     platform: [iOS, macOS]
     sources:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.shared
-        PRODUCT_NAME: PhoneRemoteShared
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.shared
+        PRODUCT_NAME: NewMotionShared
         DEFINES_MODULE: YES
         ENABLE_TESTABILITY: YES
         GENERATE_INFOPLIST_FILE: YES
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
-        LD_DYLIB_INSTALL_NAME: "@rpath/PhoneRemoteShared.framework/PhoneRemoteShared"
+        LD_DYLIB_INSTALL_NAME: "@rpath/NewMotionShared.framework/NewMotionShared"
         SKIP_INSTALL: YES
         BUILD_LIBRARY_FOR_DISTRIBUTION: NO
 
-  PhoneRemote-iOS:
+  NewMotion-iOS:
     type: application
     platform: iOS
     sources:
       - path: iPhone
     dependencies:
-      - target: PhoneRemoteShared
+      - target: NewMotionShared
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.ios
-        PRODUCT_MODULE_NAME: PhoneRemote_iOS
-        PRODUCT_NAME: PhoneRemote
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.ios
+        PRODUCT_MODULE_NAME: NewMotion_iOS
+        PRODUCT_NAME: NewMotion
         INFOPLIST_FILE: Config/iPhone-Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         TARGETED_DEVICE_FAMILY: "1"
@@ -66,19 +66,19 @@ targets:
         CODE_SIGN_IDENTITY: ""
         ENABLE_TESTABILITY: YES
 
-  PhoneRemote-macOS:
+  NewMotion-macOS:
     type: application
     platform: macOS
     sources:
       - path: Mac
     dependencies:
-      - target: PhoneRemoteShared
+      - target: NewMotionShared
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.macos
-        PRODUCT_MODULE_NAME: PhoneRemote_macOS
-        PRODUCT_NAME: PhoneRemoteMac
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.macos
+        PRODUCT_MODULE_NAME: NewMotion_macOS
+        PRODUCT_NAME: NewMotion
         INFOPLIST_FILE: Config/Mac-Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/Frameworks"
         CODE_SIGN_IDENTITY: ""
@@ -89,51 +89,51 @@ targets:
         ENABLE_DEBUG_DYLIB: NO
         ENABLE_TESTABILITY: YES
 
-  PhoneRemoteSharedTests:
+  NewMotionSharedTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: Tests/Shared
     dependencies:
-      - target: PhoneRemoteShared
+      - target: NewMotionShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.shared-tests
-        PRODUCT_NAME: PhoneRemoteSharedTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.shared-tests
+        PRODUCT_NAME: NewMotionSharedTests
         TEST_HOST: ""
         GENERATE_INFOPLIST_FILE: YES
         # No test host to embed the framework, so the bundle loads it from the
         # build products directory three levels above the executable.
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/../../.."
 
-  PhoneRemote-iOSTests:
+  NewMotion-iOSTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: Tests/iOS
     dependencies:
-      - target: PhoneRemote-iOS
-      - target: PhoneRemoteShared
+      - target: NewMotion-iOS
+      - target: NewMotionShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.ios-tests
-        PRODUCT_NAME: PhoneRemoteiOSTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.ios-tests
+        PRODUCT_NAME: NewMotioniOSTests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PhoneRemote.app/PhoneRemote"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NewMotion.app/NewMotion"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
-  PhoneRemote-macOSTests:
+  NewMotion-macOSTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: Tests/macOS
     dependencies:
-      - target: PhoneRemote-macOS
-      - target: PhoneRemoteShared
+      - target: NewMotion-macOS
+      - target: NewMotionShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.phoneremote.macos-tests
-        PRODUCT_NAME: PhoneRemoteMacTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidliao.newmotion.macos-tests
+        PRODUCT_NAME: NewMotionMacTests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PhoneRemoteMac.app/Contents/MacOS/PhoneRemoteMac"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NewMotion.app/Contents/MacOS/NewMotion"
         BUNDLE_LOADER: "$(TEST_HOST)"

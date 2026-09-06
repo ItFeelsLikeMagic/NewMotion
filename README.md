@@ -1,40 +1,90 @@
-# iPhone BLE Remote prototype
+# NewMotion
 
-Native iPhone and macOS prototype: the phone acts as a trackpad, air mouse, keyboard, and push-to-talk mic for the Mac over Bluetooth LE, after a one-time QR pairing. The scope is in [`docs/iphone_ble_remote_mvp_scope.md`](docs/iphone_ble_remote_mvp_scope.md).
+Your iPhone as a trackpad, air mouse, keyboard, and dictation mic for your Mac,
+over Bluetooth LE. Pair once with a QR code and the phone drives the Mac.
 
-The project file is text-defined in [`project.yml`](project.yml). The generated Xcode project is local-only and ignored by Git.
+Two apps: the iPhone app you hold, and a small Mac companion that lives in the
+menu bar and does the clicking and typing. Nothing goes over the network and
+nothing goes to a server. Speech is turned into text on the iPhone itself.
 
-## Start here
+This is a working prototype, not a finished product. It is proven on real
+hardware but has not been through its release checklist.
 
-Read these in order when picking the project up:
+## What it does
 
-1. [`docs/status.md`](docs/status.md): what is built, what is proven on real hardware, the ticket backlog, and the traps that cost time before.
-2. [`docs/worker_learnings.md`](docs/worker_learnings.md): the rules and invariants. Do not change project, transport, pairing, or safety behavior without reading it.
-3. [`docs/development_environment.md`](docs/development_environment.md): pinned toolchain, device, env vars, and the exact commands for tests, device install, launch, and log pull.
+- **Trackpad.** Move, tap, two-finger scroll, drag.
+- **Air mouse.** Point the phone and the cursor follows.
+- **Keyboard.** Type on the phone, the text lands on the Mac.
+- **Dictation.** Hold to talk. Apple's on-device speech turns it into text.
+- **Word boosting.** The Mac reads the names and jargon visible in your front
+  window and nudges dictation toward them, so it spells your project's own
+  words right. Skipped while a password field is focused.
 
-Contracts that code must match:
+## Install
 
-- [`docs/protocol_v1.md`](docs/protocol_v1.md): shared wire protocol.
-- [`docs/ble_gatt_contract.md`](docs/ble_gatt_contract.md): GATT service and byte framing.
+**Mac companion.** Download `NewMotion.zip` from
+[Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), unzip it,
+and drag `NewMotion.app` to `~/Applications`. It is signed and notarized by
+Apple, so it opens without a warning. Grant it Accessibility access when asked;
+that is what lets it move your cursor and type.
 
-Postmortems:
+**iPhone app.** Not on the App Store yet. Build and install it yourself with
+`./scripts/install-phone.sh` (needs Xcode, a paired iPhone with Developer Mode
+on, and your own Apple signing team).
 
-- [`docs/postmortem_camera_black_preview.md`](docs/postmortem_camera_black_preview.md): a day lost to a black QR camera that was the phone, not the app. Read it before touching the scanner.
+## Privacy
 
-## Development loop
+- No network. Everything travels over Bluetooth LE between your two devices.
+- No accounts, no telemetry, no analytics.
+- Speech is transcribed on the iPhone by Apple's on-device speech engine. Audio
+  never leaves the phone.
+- Transcripts, typed text, and audio are never written to a log. Debug output
+  carries counts only.
+- The Mac refuses to type anything while macOS reports a secure input session,
+  so nothing is injected into a password field.
+
+## Requirements
+
+- macOS 15 or later, Apple silicon
+- iOS 18 or later. Dictation needs iOS 26 or later, where Apple's on-device
+  speech engine lives; everything else works on iOS 18.
+- Xcode 27 to build. Developed against 27.0 beta and Swift 6.4.
+
+## Build it
 
 ```sh
-./scripts/generate.sh
+./scripts/generate.sh   # writes NewMotion.xcodeproj from project.yml
 ./scripts/build.sh
 ./scripts/test.sh
-# Optional bounded decoder corpus
-./scripts/fuzz-protocol.sh
 ```
 
-The scripts select a simulator or macOS destination and pass `CODE_SIGNING_ALLOWED=NO` unless a physical-device workflow supplies local signing settings. Use `--help` on each script.
+The Xcode project is generated from [`project.yml`](project.yml) and is not
+checked in. Every script takes `--help`. Signing values come only from the
+environment and are never committed.
 
-Device install, launch, and log collection need a paired iPhone, Developer Mode, a local signing team, and `IPHONE_UDID`. Signing values come only from the environment and are never committed. The exact commands, including the bundle-id prefix the installed phone build uses, are in [`docs/development_environment.md`](docs/development_environment.md).
+The Mac companion you click must live at `~/Applications/NewMotion.app`.
+`./scripts/install-mac.sh` builds it, replaces that copy, and launches it. Do
+not `open` a build from `/tmp` or `DerivedData`, or the Accessibility grant
+will not follow the app.
 
-The Mac companion you click must live at `~/Applications/PhoneRemoteMac.app`. `./scripts/install-mac.sh` builds, replaces that copy, and launches it. Do not `open` a `/tmp` or DerivedData build, or Accessibility permission will not follow the app.
+To build a signed, notarized copy for other people, see
+[`scripts/package-mac.sh --help`](scripts/package-mac.sh).
 
-The only unavoidable GUI actions are Apple ID and team selection in Xcode, the iPhone trust prompt, Developer Mode, and signing or device-registration repair.
+## How it is put together
+
+- [`docs/status.md`](docs/status.md): what is built, what is proven on real
+  hardware, and the traps that cost time before.
+- [`docs/worker_learnings.md`](docs/worker_learnings.md): the rules and
+  invariants. Read it before changing project, transport, pairing, or safety
+  behavior.
+- [`docs/development_environment.md`](docs/development_environment.md): pinned
+  toolchain, device setup, environment variables, and exact commands.
+- [`docs/protocol_v1.md`](docs/protocol_v1.md) and
+  [`docs/ble_gatt_contract.md`](docs/ble_gatt_contract.md): the wire contracts
+  both apps must match.
+- [`docs/postmortem_camera_black_preview.md`](docs/postmortem_camera_black_preview.md):
+  a day lost to a black QR camera that turned out to be the phone, not the app.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

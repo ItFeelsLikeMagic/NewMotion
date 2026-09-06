@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_iOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_iOS
+@testable import NewMotionShared
 
 /// The boost list the Settings field feeds to Apple's recogniser. Whatever is
 /// typed there is a person's rough notes, so parsing has to survive stray
@@ -30,8 +30,8 @@ final class VoiceBoostWordsTests: XCTestCase {
 
     func testKeepsMultiWordPhrasesWhole() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("Phone Remote, air mouse"),
-            ["Phone Remote", "air mouse"]
+            VoiceBoostWords.parse("NewMotion, air mouse"),
+            ["NewMotion", "air mouse"]
         )
     }
 

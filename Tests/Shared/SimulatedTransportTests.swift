@@ -1,5 +1,5 @@
 import XCTest
-@testable import PhoneRemoteShared
+@testable import NewMotionShared
 
 final class SimulatedTransportTests: XCTestCase {
     func testConnectDelayOrderedDeliveryAndDisconnect() {

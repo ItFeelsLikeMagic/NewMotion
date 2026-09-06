@@ -1,4 +1,4 @@
-// Copyright © 2026 PhoneRemote contributors.
+// Copyright © 2026 NewMotion contributors.
 //
 // Transport-neutral protocol models. Foundation is used only for audio PCM
 // base64 on the wire; the models still contain no Core Bluetooth types.

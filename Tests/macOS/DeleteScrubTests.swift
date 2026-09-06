@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
-@testable import PhoneRemote_macOS
-@testable import PhoneRemoteShared
+@testable import NewMotion_macOS
+@testable import NewMotionShared
 
 /// The Mac half of the held delete key.  It reads the field once, then counts
 /// its own plain Delete presses, so what left is known without asking the app.

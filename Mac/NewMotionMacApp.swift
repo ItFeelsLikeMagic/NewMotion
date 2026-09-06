@@ -1,8 +1,8 @@
 import SwiftUI
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 #if os(macOS)
@@ -26,7 +26,7 @@ private extension RemoteLinkState {
 /// user for anything.
 enum MacHostRuntime {
     static let isInert: Bool = {
-        if ProcessInfo.processInfo.environment["PHONE_REMOTE_INERT_HOST"] == "1" { return true }
+        if ProcessInfo.processInfo.environment["NEWMOTION_INERT_HOST"] == "1" { return true }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return true }
         return NSClassFromString("XCTestCase") != nil
     }()
@@ -38,7 +38,7 @@ enum MacHostRuntime {
 /// path even before a phone is paired.
 @MainActor
 final class MacRemoteAppModel: ObservableObject {
-    private static let trustedDeviceService = "com.example.phoneremote.macos.trusted-devices"
+    private static let trustedDeviceService = "com.example.newmotion.macos.trusted-devices"
 
     /// One beat is 250 ms, so the watchdog tolerates three lost in a row.  A
     /// held button that outlives the phone is a nuisance for this long; a
@@ -787,7 +787,7 @@ final class MacRemoteAppModel: ObservableObject {
 
     private func startDebugServerIfNeeded() {
         if MacHostRuntime.isInert { return }
-        if ProcessInfo.processInfo.environment["PHONE_REMOTE_DEBUG_SERVER"] == "0" { return }
+        if ProcessInfo.processInfo.environment["NEWMOTION_DEBUG_SERVER"] == "0" { return }
         let server = MacDebugHTTPServer(box: debugSnapshotBox)
         let reader = focusedTextReader
         server.focusProbe = { reader.diagnostics() }
@@ -912,7 +912,7 @@ struct MacRemoteStatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Phone Remote", systemImage: "cursorarrow.rays")
+            Label("NewMotion", systemImage: "cursorarrow.rays")
                 .font(.headline)
 
             Text(model.status.title)
@@ -1044,7 +1044,7 @@ struct MacRemoteStatusView: View {
             Divider()
             // This app has no Dock icon and no menu bar of its own, so this is
             // the only way out of it that is not Activity Monitor.
-            Button("Quit Phone Remote") { NSApplication.shared.terminate(nil) }
+            Button("Quit NewMotion") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
         }
         .padding(12)
@@ -1057,11 +1057,11 @@ struct MacRemoteStatusView: View {
 
 @main
 @MainActor
-struct PhoneRemoteMacApp: App {
+struct NewMotionMacApp: App {
     @StateObject private var model = MacRemoteAppModel()
 
     var body: some Scene {
-        MenuBarExtra("Phone Remote", systemImage: "cursorarrow.rays") {
+        MenuBarExtra("NewMotion", systemImage: "cursorarrow.rays") {
             MacRemoteStatusView(model: model)
         }
         .menuBarExtraStyle(.window)

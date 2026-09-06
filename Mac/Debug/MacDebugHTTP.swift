@@ -1,12 +1,12 @@
 import Foundation
 
-#if canImport(PhoneRemoteShared)
-import PhoneRemoteShared
+#if canImport(NewMotionShared)
+import NewMotionShared
 #endif
 
 public enum MacDebugHTTP {
     public static let defaultPort: UInt16 = 18765
-    public static let portFileURL = URL(fileURLWithPath: "/tmp/phoneremote-mac-debug.json")
+    public static let portFileURL = URL(fileURLWithPath: "/tmp/newmotion-mac-debug.json")
 
     public struct Response: Equatable {
         public var status: Int
@@ -69,7 +69,7 @@ public enum MacDebugHTTP {
             live.latency = latency()
             return encode(live)
         case "/health":
-            return json(status: 200, object: ["ok": true, "app": "PhoneRemoteMac"])
+            return json(status: 200, object: ["ok": true, "app": "NewMotion"])
         // What Accessibility can see in the focused field right now.  Labels
         // and error codes only; the field's text never leaves the app.
         case "/focus":

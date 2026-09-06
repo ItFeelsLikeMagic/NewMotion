@@ -26,7 +26,7 @@ public struct BLECharacteristicDefinition: Equatable, Sendable {
     }
 }
 
-public enum PhoneRemoteGATT {
+public enum NewMotionGATT {
     public static let serviceUUID = UUID(uuidString: "A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1000")!
     public static let phoneToMacDataUUID = UUID(uuidString: "A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1010")!
     public static let macToPhoneDataUUID = UUID(uuidString: "A6E3C5D4-1F4A-4F9D-8F35-4D5B8D3C1011")!

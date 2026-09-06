@@ -9,7 +9,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
 Usage: ./scripts/generate.sh
 
-Generate PhoneRemote.xcodeproj from project.yml. XcodeGen is preferred; when
+Generate NewMotion.xcodeproj from project.yml. XcodeGen is preferred; when
 it is not installed, the checked-in deterministic Python fallback is used.
 The generated project is ignored by Git.
 HELP
@@ -18,13 +18,13 @@ fi
 
 if command -v xcodegen >/dev/null 2>&1; then
     xcodegen generate --spec "$ROOT_DIR/project.yml"
-    echo "Generated PhoneRemote.xcodeproj with XcodeGen"
+    echo "Generated NewMotion.xcodeproj with XcodeGen"
 else
     command -v python3 >/dev/null 2>&1 || {
         echo "error: xcodegen is unavailable and python3 is required by the fallback generator" >&2
         exit 1
     }
     python3 "$SCRIPT_DIR/generate_fallback.py"
-    echo "Generated PhoneRemote.xcodeproj with the checked-in fallback (XcodeGen not installed)"
+    echo "Generated NewMotion.xcodeproj with the checked-in fallback (XcodeGen not installed)"
 fi
 
