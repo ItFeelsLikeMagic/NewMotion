@@ -106,7 +106,13 @@ deliver() {
     rm -rf "$DIST_DIR"
     mkdir -p "$DIST_DIR"
     ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
-    [ -f "$DMG" ] && ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
+    # An if rather than a test-and-command: this is the last line of the
+    # function, so under set -e a false test would be the function's exit
+    # status and would end the script without a word. --skip-notarize makes no
+    # disk image, which is exactly when that happened.
+    if [ -f "$DMG" ]; then
+        ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
+    fi
 }
 
 # The app goes in beside a link to /Applications, which is the drag-to-install
