@@ -37,6 +37,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
     @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
     @Published var spokenEditEnabled = UserDefaults.standard.bool(forKey: "spokenEditEnabled")
+    @Published var onDeviceVoiceEnabled = UserDefaults.standard.bool(forKey: "onDeviceVoiceEnabled")
+    @Published var voiceBoostWords = UserDefaults.standard.string(forKey: "voiceBoostWords") ?? ""
+    @Published var onDeviceVoiceStatus = "Off"
     @Published var layoutMode = RemoteLayoutMode(
         rawValue: UserDefaults.standard.string(forKey: "remoteLayoutMode") ?? ""
     ) ?? .vertical
@@ -124,6 +127,10 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     private var trustedPeer: TrustedDeviceSummary?
     private var reconnectFailures = 0
     private let voiceUplink: VoiceUplink
+    /// The other way an utterance can leave: transcribed here, then typed as
+    /// ordinary text.  Only one of the two handles any given press.
+    private let onDeviceVoice = OnDeviceVoice()
+    private let voiceRoute = VoiceRouteSettings()
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     init(link: MessageLink = BLEMessageLink(
@@ -222,12 +229,34 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             }
         }
         let uplink = voiceUplink
-        audioController.onUtteranceStart = { uplink.beginStream() }
-        audioController.onChunk = { uplink.send(samples: $0) }
-        audioController.onUtteranceEnd = { uplink.endStream() }
-        audioController.onUtteranceCancel = { uplink.cancelStream() }
+        let onDevice = onDeviceVoice
+        let route = voiceRoute
+        // One utterance goes one way or the other. The edit callbacks stay on
+        // the Mac route because only the Mac can read the field being edited,
+        // and `refreshVoiceRoute` keeps the pencil zones off the other way.
+        audioController.onUtteranceStart = {
+            if route.isOnDevice { onDevice.begin(boostWords: route.boostWords) } else { uplink.beginStream() }
+        }
+        audioController.onChunk = {
+            if route.isOnDevice { onDevice.append($0) } else { uplink.send(samples: $0) }
+        }
+        audioController.onUtteranceEnd = {
+            if route.isOnDevice { onDevice.end() } else { uplink.endStream() }
+        }
+        audioController.onUtteranceCancel = {
+            if route.isOnDevice { onDevice.cancel() } else { uplink.cancelStream() }
+        }
         audioController.onUtteranceEndAsEdit = { uplink.endStreamAsEdit() }
         audioController.onEditIntent = { uplink.sendIntent(edit: $0) }
+        onDeviceVoice.onText = { [weak self] text in
+            Task { @MainActor in self?.typeText(text) }
+        }
+        onDeviceVoice.onPartialText = { [weak self] text in
+            Task { @MainActor in self?.latestAction = text.isEmpty ? "Listening" : text }
+        }
+        onDeviceVoice.onReadiness = { [weak self] readiness in
+            Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
+        }
         uplink.deliver = { [weak self] message, flags in
             MainActor.assumeIsolated { self?.deliverVoiceMessage(message, flags: flags) }
         }
@@ -244,7 +273,7 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         ]
         motionSession.updateFilter(motionConfiguration)
         refreshAirMouse()
-        pushToTalk.setEditEnabled(spokenEditEnabled)
+        refreshVoiceRoute()
         IPhoneDebugLog.emit("app_init", [
             "auth": "\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)",
             "screenCaptured": UIScreen.main.isCaptured ? "yes" : "no"
@@ -465,7 +494,40 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     func setSpokenEditEnabled(_ enabled: Bool) {
         spokenEditEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "spokenEditEnabled")
-        pushToTalk.setEditEnabled(enabled)
+        refreshVoiceRoute()
+    }
+
+    func setOnDeviceVoiceEnabled(_ enabled: Bool) {
+        onDeviceVoiceEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "onDeviceVoiceEnabled")
+        refreshVoiceRoute()
+    }
+
+    func setVoiceBoostWords(_ raw: String) {
+        voiceBoostWords = raw
+        UserDefaults.standard.set(raw, forKey: "voiceBoostWords")
+        refreshVoiceRoute()
+    }
+
+    /// Publishes the route to the voice queue and keeps the pencil zones off
+    /// when the phone is transcribing, since a spoken edit needs the Mac to
+    /// read the field first.
+    private func refreshVoiceRoute() {
+        voiceRoute.update(
+            onDevice: onDeviceVoiceEnabled,
+            boostWords: VoiceBoostWords.parse(voiceBoostWords)
+        )
+        pushToTalk.setEditEnabled(spokenEditEnabled && !onDeviceVoiceEnabled)
+        guard onDeviceVoiceEnabled else {
+            onDeviceVoiceStatus = "Off"
+            return
+        }
+        guard onDeviceVoice.isSupported else {
+            onDeviceVoiceStatus = OnDeviceVoiceReadiness.unsupported.label
+            return
+        }
+        onDeviceVoiceStatus = "Preparing"
+        onDeviceVoice.prepare()
     }
 
     func setHoldScrollEnabled(_ enabled: Bool) {
@@ -1026,6 +1088,34 @@ final class PhoneRemoteFeatureModel: ObservableObject {
 /// Lets lifecycle reconnect hooks read pairing state without capturing `self` in `init`.
 private final class PairingConfirmFlag {
     var value = false
+}
+
+/// Which way an utterance leaves, and the words the phone-side recogniser
+/// should lean towards.  Written on the main actor and read on the voice
+/// queue, so both go through the lock.
+private final class VoiceRouteSettings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var onDevice = false
+    private var boost: [String] = []
+
+    var isOnDevice: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return onDevice
+    }
+
+    var boostWords: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return boost
+    }
+
+    func update(onDevice: Bool, boostWords: [String]) {
+        lock.lock()
+        self.onDevice = onDevice
+        boost = boostWords
+        lock.unlock()
+    }
 }
 
 private struct PairingCameraPreview: UIViewRepresentable {
@@ -1683,6 +1773,41 @@ private struct RemoteSettingsSheet: View {
                     Text("Extra features")
                 } footer: {
                     Text("Off until you turn them on. Change them whenever you like.")
+                }
+
+                Section {
+                    Toggle(
+                        "Turn speech into words on the iPhone",
+                        isOn: Binding(
+                            get: { model.onDeviceVoiceEnabled },
+                            set: { model.setOnDeviceVoiceEnabled($0) }
+                        )
+                    )
+                    Text("Apple's recogniser runs here instead of the Mac's, so the Mac needs no speech server. Off means the audio still goes to the Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LabeledContent("Status", value: model.onDeviceVoiceStatus)
+                        .font(.caption)
+                    if model.onDeviceVoiceEnabled {
+                        TextField(
+                            "Nemotron, Ollama, Xcode",
+                            text: Binding(
+                                get: { model.voiceBoostWords },
+                                set: { model.setVoiceBoostWords($0) }
+                            ),
+                            axis: .vertical
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .lineLimit(1...4)
+                        Text("Names to listen harder for, separated by commas. The spoken-edit pencils stay off while this is on, because only the Mac can read the field being edited.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Voice typing")
+                } footer: {
+                    Text("Either way, push to talk works the same and nothing you say leaves your own devices.")
                 }
 
 #if DEBUG

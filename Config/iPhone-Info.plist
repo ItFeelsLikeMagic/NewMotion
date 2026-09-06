@@ -33,5 +33,7 @@
 	<string>Phone Remote uses motion sensors only while you hold Air Mouse.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Phone Remote uses the microphone only while you hold Push to Talk.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Phone Remote turns what you say into text on this iPhone, so your voice never leaves your own devices.</string>
 </dict>
 </plist>
