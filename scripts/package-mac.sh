@@ -30,7 +30,12 @@ whatever the recipient unzips with, which is one more thing to go wrong.
 Environment:
   NEWMOTION_DEVELOPMENT_TEAM  required. Your ten-character team id.
   NEWMOTION_NOTARY_PROFILE    required unless --skip-notarize. The name of
-                                 a notarytool keychain profile. Create it once:
+                                 a notarytool keychain profile; on David's Mac
+                                 that is `phoneremote`. The security command
+                                 cannot see these, so an empty search there
+                                 proves nothing; ask notarytool itself with
+                                 `notarytool history --keychain-profile <name>`.
+                                 Create one on a new Mac:
 
     xcrun notarytool store-credentials <profile-name> \
         --apple-id <your Apple ID> \
