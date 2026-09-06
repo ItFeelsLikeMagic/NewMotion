@@ -120,6 +120,12 @@ final class MacRemoteAppModel: ObservableObject {
     private let voiceCoordinator: VoicePTTCoordinator
     private let speechServer: NemotronServer
     private let screenVocabularyReader: AXScreenVocabularyReader
+    /// The phone transcribes, so the cache has to reach it.  Held here as well
+    /// as inside the reader, because spoken words are credited to it directly.
+    private let vocabularyCache: VocabularyCache
+    private var lastSentVocabulary: [String] = []
+    private var vocabularyTimer: Timer?
+    private var frontAppObserver: NSObjectProtocol?
     private let normalizer = S1MiniNormalizer()
     /// Experimental: only ever reached when the phone marks an utterance as an
     /// instruction, which its own setting gates.
@@ -139,6 +145,7 @@ final class MacRemoteAppModel: ObservableObject {
             cache: vocabularyCache
         )
         self.screenVocabularyReader = screenVocabularyReader
+        self.vocabularyCache = vocabularyCache
         self.speechServer = NemotronServer(speechContext: screenVocabularyReader)
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust, keyPost: latency.keyPost)
@@ -271,6 +278,7 @@ final class MacRemoteAppModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [speechServer] _ in speechServer.stop() }
+        if !inert { startVocabularyPush() }
 
         _ = lifecycle.handle(.startup)
         refreshAccessibility(prompt: false)
@@ -528,6 +536,7 @@ final class MacRemoteAppModel: ObservableObject {
         )
         pairedDevices = pairingCoordinator.trustedDevices
         authenticatedSession = result.session
+        pushVocabulary(force: true)
         pairingServer = nil
         pairingError = nil
         lastPairingFailure = nil
@@ -688,6 +697,23 @@ final class MacRemoteAppModel: ObservableObject {
             lastApplicationMessage = applied
                 ? "tabWalk \(value.modifier) \(value.phase)"
                 : "tabWalk blocked"
+        case let .spokenText(value):
+            // Dictation carries the risk the old transcript path did: never
+            // type into a secure field. Words actually spoken are also what
+            // buy a phrase its three-hour lease, so the cache is credited
+            // here, which is the only place that now knows they were said.
+            guard let text = value.text else {
+                lastApplicationMessage = "Spoken text refused"
+                return
+            }
+            guard !SecureInput.isActive() else {
+                lastApplicationMessage = "Spoken text held back"
+                return
+            }
+            vocabularyCache.heard(text)
+            lastApplicationMessage = injector.submit(.text(text)) == .applied
+                ? "Typed spoken text"
+                : "Spoken text blocked"
         case let .deleteScrub(value):
             // Several messages make up one press, so this needs the memory the
             // coordinator holds; every event it posts still goes through the
@@ -738,6 +764,47 @@ final class MacRemoteAppModel: ObservableObject {
         guard reliableInput.poll().contains(.watchdogExpired) else { return }
         lastApplicationMessage = "held input released: no heartbeat"
         publishDebugState()
+    }
+
+    /// Transcription moved to the phone, so the boost list has to arrive
+    /// before a press rather than being read during one.  The walk still
+    /// happens here, because only this side can see this screen; what changed
+    /// is that the answer travels.
+    ///
+    /// Two triggers and no press-time round trip: the front window changing is
+    /// what actually changes the words, and the timer is the catch-all for
+    /// everything that changes inside a window that stays frontmost.
+    private func startVocabularyPush() {
+        frontAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pushVocabulary() }
+        }
+        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pushVocabulary() }
+        }
+        timer.tolerance = 2
+        vocabularyTimer = timer
+    }
+
+    /// Sends the current list when it differs from the last one the phone was
+    /// given.  An unpaired or secure screen sends nothing at all.
+    private func pushVocabulary(force: Bool = false) {
+        guard authenticatedSession != nil else { return }
+        screenVocabularyReader.speechContext { [weak self] phrases in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let bounded = VocabularyPayload.bounded(phrases)
+                guard force || bounded != self.lastSentVocabulary else { return }
+                guard let payload = try? VocabularyPayload(phrases: bounded) else { return }
+                do {
+                    try self.sendApplication(.vocabulary(payload))
+                    self.lastSentVocabulary = bounded
+                } catch {
+                    // The link will be back; the next trigger re-sends.
+                }
+            }
+        }
     }
 
     private func sendApplication(_ payload: MessagePayload) throws {

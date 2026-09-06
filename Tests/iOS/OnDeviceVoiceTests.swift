@@ -80,3 +80,74 @@ final class OnDeviceVoiceTests: XCTestCase {
         XCTAssertEqual(OnDeviceVoiceReadiness.ready.label, "Ready")
     }
 }
+
+/// The Mac's screen words and the owner's typed words become one list, and a
+/// finished sentence has to fit the wire.
+final class VoiceBoostMergeTests: XCTestCase {
+    func testTypedWordsComeFirstAndMacWordsFillTheRest() {
+        XCTAssertEqual(
+            VoiceBoostWords.merge(typed: ["Nemotron"], fromMac: ["Xcode", "Ollama"]),
+            ["Nemotron", "Xcode", "Ollama"]
+        )
+    }
+
+    func testAWordInBothListsIsBoostedOnce() {
+        XCTAssertEqual(
+            VoiceBoostWords.merge(typed: ["Ollama"], fromMac: ["ollama", "Xcode"]),
+            ["Ollama", "Xcode"]
+        )
+    }
+
+    func testEitherListAloneIsFine() {
+        XCTAssertEqual(VoiceBoostWords.merge(typed: [], fromMac: ["Xcode"]), ["Xcode"])
+        XCTAssertEqual(VoiceBoostWords.merge(typed: ["Xcode"], fromMac: []), ["Xcode"])
+        XCTAssertEqual(VoiceBoostWords.merge(typed: [], fromMac: []), [])
+    }
+
+    /// The screen can offer more than the recogniser should be given, and the
+    /// owner's own words are the ones that must survive the trim.
+    func testMergeStopsAtTheMaximumAndKeepsTypedWords() {
+        let mac = (0..<200).map { "screen\($0)" }
+        let merged = VoiceBoostWords.merge(typed: ["Nemotron"], fromMac: mac)
+        XCTAssertEqual(merged.count, VoiceBoostWords.maximumPhrases)
+        XCTAssertEqual(merged.first, "Nemotron")
+    }
+}
+
+final class SpokenTextChunkerTests: XCTestCase {
+    func testShortSentenceIsOnePiece() {
+        XCTAssertEqual(SpokenTextChunker.split("hello there"), ["hello there"])
+    }
+
+    func testBlankInputYieldsNothingToSend() {
+        XCTAssertEqual(SpokenTextChunker.split("   \n "), [])
+        XCTAssertEqual(SpokenTextChunker.split(""), [])
+    }
+
+    func testSurroundingWhitespaceIsTrimmed() {
+        XCTAssertEqual(SpokenTextChunker.split("  hello  "), ["hello"])
+    }
+
+    func testLongDictationIsSplitAndLosesNothing() {
+        let long = String(repeating: "word ", count: 800)
+        let pieces = SpokenTextChunker.split(long)
+        XCTAssertGreaterThan(pieces.count, 1)
+        for piece in pieces {
+            XCTAssertLessThanOrEqual(piece.utf8.count, SpokenTextChunker.maximumPieceUTF8Bytes)
+        }
+        XCTAssertEqual(pieces.joined(), long.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// A piece must never end halfway through a grapheme cluster, or the Mac
+    /// types a replacement character where an emoji was.
+    func testSplitKeepsGraphemeClustersWhole() {
+        let long = String(repeating: "👩‍👩‍👧‍👦", count: 200)
+        let pieces = SpokenTextChunker.split(long)
+        XCTAssertGreaterThan(pieces.count, 1)
+        XCTAssertEqual(pieces.joined(), long)
+        for piece in pieces {
+            XCTAssertFalse(piece.unicodeScalars.contains("\u{FFFD}"))
+            XCTAssertLessThanOrEqual(piece.utf8.count, SpokenTextChunker.maximumPieceUTF8Bytes)
+        }
+    }
+}

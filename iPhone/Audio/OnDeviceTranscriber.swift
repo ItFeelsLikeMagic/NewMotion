@@ -23,6 +23,20 @@ public enum OnDeviceVoiceReadiness: Equatable, Sendable {
 public enum VoiceBoostWords {
     public static let maximumPhrases = 100
 
+    /// The hand-typed list wins on order, because it is the one the owner
+    /// chose deliberately; the Mac's screen words fill the rest of the budget.
+    /// Case-insensitive, so a name typed once is not boosted twice.
+    public static func merge(typed: [String], fromMac: [String]) -> [String] {
+        var seen = Set(typed.map { $0.lowercased() })
+        var merged = typed
+        for phrase in fromMac where !seen.contains(phrase.lowercased()) {
+            guard merged.count < maximumPhrases else { break }
+            seen.insert(phrase.lowercased())
+            merged.append(phrase)
+        }
+        return merged
+    }
+
     public static func parse(_ raw: String) -> [String] {
         raw
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
@@ -33,6 +47,44 @@ public enum VoiceBoostWords {
                       !unique.contains(where: { $0.caseInsensitiveCompare(phrase) == .orderedSame }) else { return }
                 unique.append(phrase)
             }
+    }
+}
+
+/// Splits a finished utterance into pieces the wire will actually carry.
+///
+/// `ProtocolBytes` caps a field at 2048 bytes, but the payload is serialised
+/// as a JSON array of byte numbers, two to four characters each, inside an
+/// 8192-byte envelope. So the real ceiling is far below the field cap, and the
+/// keyboard chunker's 4096-byte default has always been over it. A dictated
+/// sentence is nowhere near either bound; a five-minute monologue is, and it
+/// should arrive in order rather than be dropped whole.
+public enum SpokenTextChunker {
+    /// Chosen so the worst case, four characters per byte, still clears the
+    /// envelope with room for the rest of the JSON.
+    public static let maximumPieceUTF8Bytes = 1_024
+
+    public static func split(_ text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard trimmed.utf8.count > maximumPieceUTF8Bytes else { return [trimmed] }
+
+        var pieces: [String] = []
+        var current = ""
+        var bytes = 0
+        // Iterating Characters keeps grapheme clusters whole, so a piece never
+        // splits an emoji or a combining mark down the middle.
+        for character in trimmed {
+            let size = String(character).utf8.count
+            if bytes + size > maximumPieceUTF8Bytes, !current.isEmpty {
+                pieces.append(current)
+                current = ""
+                bytes = 0
+            }
+            current.append(character)
+            bytes += size
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces
     }
 }
 
