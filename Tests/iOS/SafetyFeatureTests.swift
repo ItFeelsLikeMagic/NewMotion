@@ -508,32 +508,6 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop", "mic_suspend", "disconnect"])
     }
 
-    func testDroppedVoiceMessageLeavesSequenceGapAndNoPartialMessage() throws {
-        let session = try PairingSession(key: SymmetricKey(size: .bits256), sessionID: Data(repeating: 7, count: 16))
-        let uplink = VoiceUplink(queue: voiceQueue)
-        uplink.setSession(session)
-        let delivered = DeliveryLog()
-        uplink.deliver = { message, flags in delivered.messages.append((message, flags)) }
-        voiceQueue.sync {
-            uplink.beginStream()
-            uplink.send(samples: Array(repeating: 1_000, count: 640))
-            uplink.send(samples: Array(repeating: -1_000, count: 640))
-            uplink.endStream()
-        }
-        XCTAssertEqual(delivered.messages.count, 4)
-
-        // The link drops the second data message.  One message is one whole
-        // sealed body, so the Mac sees a clean sequence gap and can never be
-        // handed part of a message.
-        let kept = [delivered.messages[0], delivered.messages[1], delivered.messages[3]]
-        let frames = try kept.map { try VoiceStreamFrame.decode(session.decrypt($0.message).plaintext) }
-        XCTAssertEqual(frames.map(\.sequence), [0, 1, 3])
-        XCTAssertEqual(frames.map(\.isStart), [true, false, false])
-        XCTAssertEqual(frames.map(\.isEnd), [false, false, true])
-        XCTAssertEqual(frames[1].sampleCount, 640)
-        XCTAssertEqual(frames.map(\.streamID), Array(repeating: frames[0].streamID, count: 3))
-    }
-
     private func makeController(
         microphone: TestMicrophone,
         log: EventLog,
@@ -552,8 +526,6 @@ final class SafetyFeatureTests: XCTestCase {
         controller.onChunk = { log.events.append("chunk(\($0.count))") }
         controller.onUtteranceEnd = { log.events.append("end") }
         controller.onUtteranceCancel = { log.events.append("cancel") }
-        controller.onUtteranceEndAsEdit = { log.events.append("editEnd") }
-        controller.onEditIntent = { log.events.append($0 ? "intentEdit" : "intentType") }
         return controller
     }
 
@@ -606,78 +578,12 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
     }
 
-    /// Dragging to an edit target sends the words as an instruction, and says
-    /// so mid-hold so the Mac can hold its typing.
     @MainActor
-    func testDraggingToAnEditZoneSendsTheWordsAsAnInstruction() {
-        let log = EventLog()
-        let (audio, ptt) = makePushToTalk(log: log, editEnabled: true)
-        ptt.pressed()
-        voiceQueue.sync {}
-        ptt.dragged(to: CGPoint(x: 30, y: 400))
-        voiceQueue.sync {}
-        XCTAssertEqual(ptt.armedZone, .editLeading)
-        ptt.released()
-        voiceQueue.sync {}
-        XCTAssertEqual(log.events, ["start", "mic_start", "intentEdit", "editEnd", "mic_stop"])
-        XCTAssertEqual(audio.state, .idle)
-    }
-
-    /// Leaving the edit target tells the Mac to let go of the words again.
-    @MainActor
-    func testLeavingAnEditZoneClearsTheIntentAndTypesNormally() {
-        let log = EventLog()
-        let (_, ptt) = makePushToTalk(log: log, editEnabled: true)
-        ptt.pressed()
-        voiceQueue.sync {}
-        ptt.dragged(to: CGPoint(x: 30, y: 400))
-        ptt.dragged(to: CGPoint(x: 200, y: 300))
-        voiceQueue.sync {}
-        XCTAssertNil(ptt.armedZone)
-        ptt.released()
-        voiceQueue.sync {}
-        XCTAssertEqual(log.events, ["start", "mic_start", "intentEdit", "intentType", "end", "mic_stop"])
-    }
-
-    @MainActor
-    func testEditZonesDoNothingUntilTheSettingIsOn() {
-        let log = EventLog()
-        let (_, ptt) = makePushToTalk(log: log)
-        ptt.pressed()
-        voiceQueue.sync {}
-        ptt.dragged(to: CGPoint(x: 30, y: 400))
-        voiceQueue.sync {}
-        XCTAssertNil(ptt.armedZone)
-        ptt.released()
-        voiceQueue.sync {}
-        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
-    }
-
-    /// Turning the setting off with the finger already on an edit target drops
-    /// the arming rather than leaving it live.
-    @MainActor
-    func testTurningTheEditSettingOffDisarmsTheHold() {
-        let log = EventLog()
-        let (_, ptt) = makePushToTalk(log: log, editEnabled: true)
-        ptt.pressed()
-        ptt.dragged(to: CGPoint(x: 30, y: 400))
-        XCTAssertEqual(ptt.armedZone, .editLeading)
-        ptt.setEditEnabled(false)
-        XCTAssertNil(ptt.armedZone)
-    }
-
-    @MainActor
-    private func makePushToTalk(
-        log: EventLog,
-        editEnabled: Bool = false
-    ) -> (LocalPushToTalkAudioController, PushToTalkController) {
+    private func makePushToTalk(log: EventLog) -> (LocalPushToTalkAudioController, PushToTalkController) {
         let audio = makeController(microphone: TestMicrophone(log: log), log: log)
         let ptt = PushToTalkController(audio: audio, activity: { _ in }, logContext: { [:] })
-        ptt.setEditEnabled(editEnabled)
         ptt.setZoneFrame(.cancelLeading, CGRect(x: 0, y: 700, width: 120, height: 120))
         ptt.setZoneFrame(.cancelTrailing, CGRect(x: 280, y: 700, width: 120, height: 120))
-        ptt.setZoneFrame(.editLeading, CGRect(x: 0, y: 340, width: 120, height: 120))
-        ptt.setZoneFrame(.editTrailing, CGRect(x: 280, y: 340, width: 120, height: 120))
         return (audio, ptt)
     }
 
@@ -901,10 +807,6 @@ private final class EventLog: @unchecked Sendable {
 
 private final class ResultBox: @unchecked Sendable {
     var value: AudioCaptureStartResult?
-}
-
-private final class DeliveryLog: @unchecked Sendable {
-    var messages: [(message: Data, flags: VoiceStreamFlags)] = []
 }
 
 private final class TestMicrophone: MicrophoneInputProviding, @unchecked Sendable {

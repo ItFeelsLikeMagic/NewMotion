@@ -9,22 +9,22 @@ import XCTest
 final class VoiceBoostWordsTests: XCTestCase {
     func testSplitsOnCommasAndNewlines() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("Nemotron, Ollama\nXcode"),
-            ["Nemotron", "Ollama", "Xcode"]
+            VoiceBoostWords.parse("Testaflight, Ollama\nXcode"),
+            ["Testaflight", "Ollama", "Xcode"]
         )
     }
 
     func testTrimsSpacesAndDropsEmptyEntries() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("  Nemotron ,, \n , Ollama  \n\n"),
-            ["Nemotron", "Ollama"]
+            VoiceBoostWords.parse("  Testaflight ,, \n , Ollama  \n\n"),
+            ["Testaflight", "Ollama"]
         )
     }
 
     func testKeepsTheFirstSpellingOfARepeatedPhrase() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("Nemotron, nemotron, NEMOTRON, Ollama"),
-            ["Nemotron", "Ollama"]
+            VoiceBoostWords.parse("Testaflight, testaflight, TESTAFLIGHT, Ollama"),
+            ["Testaflight", "Ollama"]
         )
     }
 
@@ -86,8 +86,8 @@ final class OnDeviceVoiceTests: XCTestCase {
 final class VoiceBoostMergeTests: XCTestCase {
     func testTypedWordsComeFirstAndMacWordsFillTheRest() {
         XCTAssertEqual(
-            VoiceBoostWords.merge(typed: ["Nemotron"], fromMac: ["Xcode", "Ollama"]),
-            ["Nemotron", "Xcode", "Ollama"]
+            VoiceBoostWords.merge(typed: ["Testaflight"], fromMac: ["Xcode", "Ollama"]),
+            ["Testaflight", "Xcode", "Ollama"]
         )
     }
 
@@ -108,9 +108,9 @@ final class VoiceBoostMergeTests: XCTestCase {
     /// owner's own words are the ones that must survive the trim.
     func testMergeStopsAtTheMaximumAndKeepsTypedWords() {
         let mac = (0..<200).map { "screen\($0)" }
-        let merged = VoiceBoostWords.merge(typed: ["Nemotron"], fromMac: mac)
+        let merged = VoiceBoostWords.merge(typed: ["Testaflight"], fromMac: mac)
         XCTAssertEqual(merged.count, VoiceBoostWords.maximumPhrases)
-        XCTAssertEqual(merged.first, "Nemotron")
+        XCTAssertEqual(merged.first, "Testaflight")
     }
 }
 

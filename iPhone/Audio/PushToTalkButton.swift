@@ -12,11 +12,9 @@ final class PushToTalkController: ObservableObject {
     /// True from the moment the finger lands until it lifts; the cancel
     /// targets are on screen for exactly this long.
     @Published private(set) var isHolding = false
-    /// The target the finger is over right now, if any.  Releasing here throws
-    /// the utterance away, or turns it into an edit instruction.
+    /// The target the finger is over right now, if any.  Releasing here
+    /// throws the utterance away.
     @Published private(set) var armedZone: PushToTalkZone?
-    /// The edit targets are an experiment, off unless the setting says so.
-    @Published private(set) var editEnabled = false
 
     private let audio: LocalPushToTalkAudioController
     private let activity: @MainActor (String) -> Void
@@ -41,25 +39,14 @@ final class PushToTalkController: ObservableObject {
         start()
     }
 
-    func setEditEnabled(_ enabled: Bool) {
-        editEnabled = enabled
-        if !enabled, armedZone?.isEdit == true { armedZone = nil }
-    }
-
     /// Reported in window coordinates, which is the space the zone frames are
     /// measured in.  The touch keeps arriving after it leaves the button.
     func dragged(to point: CGPoint) {
         guard isHeld else { return }
         let zone = PushToTalkZone.allCases.first { covers($0, point) }
         guard zone != armedZone else { return }
-        let wasEditing = armedZone?.isEdit == true
         armedZone = zone
         Haptics.play(zone == nil ? .gestureEnded : .gestureBegan)
-        // The Mac holds its typing while an edit is on the table, and starts
-        // loading the editor before the finger lifts.
-        if wasEditing != (zone?.isEdit == true) {
-            audio.setEditIntent(zone?.isEdit == true)
-        }
     }
 
     func setZoneFrame(_ zone: PushToTalkZone, _ frame: CGRect) {
@@ -69,7 +56,6 @@ final class PushToTalkController: ObservableObject {
     /// The targets are drawn as circles, so the finger has to be inside the
     /// disc the frame encloses rather than anywhere in its square.
     private func covers(_ zone: PushToTalkZone, _ point: CGPoint) -> Bool {
-        guard !zone.isEdit || editEnabled else { return false }
         guard let frame = zoneFrames[zone], frame.width > 0, frame.height > 0 else { return false }
         let x = (point.x - frame.midX) / (frame.width / 2)
         let y = (point.y - frame.midY) / (frame.height / 2)
@@ -85,11 +71,6 @@ final class PushToTalkController: ObservableObject {
         let zone = armedZone
         armedZone = nil
         switch zone {
-        case .some(let zone) where zone.isEdit:
-            audio.pushToTalkReleasedAsEdit()
-            status = ""
-            activity("Push to talk sent an edit")
-            IPhoneDebugLog.emit("ptt_edit", logContext())
         case .some:
             audio.pushToTalkCancelled()
             status = ""
@@ -195,20 +176,20 @@ struct PushToTalkButton: View {
     /// The same icon as the target the finger is over, so the button under the
     /// thumb and the circle it is sitting on say one thing.
     private var icon: String {
-        guard let zone = controller.armedZone else { return isPressed ? "waveform" : "mic.fill" }
-        return zone.isEdit ? "pencil" : "trash.fill"
+        guard controller.armedZone == nil else { return "trash.fill" }
+        return isPressed ? "waveform" : "mic.fill"
     }
 
     /// Green means the words are being recorded.  Red is only ever cancel, and
     /// it is the red of the circle the finger has landed on.
     private var tint: Color {
-        guard let zone = controller.armedZone else { return isPressed ? .green : .accentColor }
-        return zone.isEdit ? .accentColor : .red
+        guard controller.armedZone == nil else { return .red }
+        return isPressed ? .green : .accentColor
     }
 
     private var spokenState: String {
-        guard let zone = controller.armedZone else { return isPressed ? "Recording" : "Push to talk" }
-        return zone.isEdit ? "Release to edit" : "Release to cancel"
+        guard controller.armedZone == nil else { return "Release to cancel" }
+        return isPressed ? "Recording" : "Push to talk"
     }
 
     private func press() {

@@ -3,17 +3,24 @@ import Foundation
 /// What the phone-side recogniser can do right now.  The Settings row reads
 /// this so a press never fails silently.
 public enum OnDeviceVoiceReadiness: Equatable, Sendable {
+    /// Looking for the language model. The first state on every launch, so the
+    /// row never claims a readiness nothing has checked yet.
+    case preparing
     case ready
-    /// The language model is still coming down from Apple.
-    case downloading
+    /// The language model is coming down from Apple. `fraction` is nil until
+    /// the download reports its size.
+    case downloading(fraction: Double?)
     /// This OS or locale has no on-device transcriber.
     case unsupported
 
     public var label: String {
         switch self {
-        case .ready: "Ready"
-        case .downloading: "Downloading the language model"
-        case .unsupported: "Not available on this iPhone"
+        case .preparing: return "Getting ready"
+        case .ready: return "Ready"
+        case let .downloading(fraction):
+            guard let fraction else { return "Downloading the language model" }
+            return "Downloading the language model, \(Int(fraction * 100))%"
+        case .unsupported: return "Not available on this iPhone"
         }
     }
 }
@@ -89,15 +96,13 @@ public enum SpokenTextChunker {
 }
 
 /// Turns push-to-talk audio into text on the phone, using Apple's on-device
-/// analyser, so the words never travel as audio and the Mac needs neither the
-/// `nemo-speech` server nor Ollama.  The Mac receives the finished sentence on
-/// the ordinary keyboard path.
+/// analyser, so what the microphone hears never leaves the phone: only the
+/// finished sentence travels, as text.
 ///
 /// This facade is available on every OS the app runs on and simply reports
-/// `.unsupported` below iOS 26, where Apple's analyser does not exist.  It sits
-/// beside `VoiceUplink` rather than replacing it: one Settings toggle picks
-/// which of the two handles an utterance, so the pair can be compared on the
-/// same voice.
+/// `.unsupported` below iOS 26, where Apple's analyser does not exist. Stored
+/// properties cannot be availability-gated, so the engine is held as `Any?`
+/// and cast at each call.
 public final class OnDeviceVoice: @unchecked Sendable {
     /// Final text for an utterance that ended normally.
     public var onText: (@Sendable (String) -> Void)?
@@ -139,9 +144,9 @@ public final class OnDeviceVoice: @unchecked Sendable {
         onReadiness?(.unsupported)
     }
 
-    /// Opens a recogniser for one utterance.  `boostWords` are the phrases the
-    /// recogniser should lean towards, the same idea as the Nemotron speech
-    /// context list.
+    /// Opens a recogniser for one utterance.  `boostWords` are the phrases it
+    /// should lean towards: the owner's own list, then whatever the Mac last
+    /// read off its screen.
     public func begin(boostWords: [String]) {
 #if os(iOS)
         if #available(iOS 26.0, *), let engine = engine as? AppleSpeechEngine {
@@ -186,8 +191,7 @@ import Speech
 /// The iOS 26 analyser itself.  Only `OnDeviceVoice` touches it.
 @available(iOS 26.0, *)
 final class AppleSpeechEngine: @unchecked Sendable {
-    /// The chunker upstream emits 16 kHz mono Int16, which is also what the
-    /// Nemotron path puts on the wire.
+    /// What the chunker upstream emits: 16 kHz mono Int16.
     private static let captureFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 16_000,
@@ -210,14 +214,21 @@ final class AppleSpeechEngine: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var analyzerFormat: AVAudioFormat?
     private var cancelled = false
+    private var preparing = false
 
     init(locale: Locale) {
         self.locale = locale
     }
 
+    /// Safe to call as often as the settings change: a second call while the
+    /// first is still working is dropped rather than starting a second
+    /// download of the same model.
     func prepare() {
+        guard beginPreparing() else { return }
         Task { [weak self] in
             guard let self else { return }
+            defer { self.endPreparing() }
+            self.onReadiness?(.preparing)
             guard SpeechTranscriber.isAvailable,
                   await SpeechTranscriber.supportedLocale(equivalentTo: self.locale) != nil else {
                 self.onReadiness?(.unsupported)
@@ -225,9 +236,14 @@ final class AppleSpeechEngine: @unchecked Sendable {
             }
             let probe = self.makeTranscriber()
             if await AssetInventory.status(forModules: [probe]) != .installed {
-                self.onReadiness?(.downloading)
+                self.onReadiness?(.downloading(fraction: nil))
                 do {
                     if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
+                        // A model this size takes minutes on a slow network.
+                        // Without a number the row looks wedged, and the owner
+                        // reaches for the button that is not there.
+                        let reporter = self.reportProgress(of: request.progress)
+                        defer { reporter.cancel() }
                         try await request.downloadAndInstall()
                     }
                 } catch {
@@ -240,6 +256,30 @@ final class AppleSpeechEngine: @unchecked Sendable {
             self.store(analyzerFormat: format)
             self.onReadiness?(.ready)
         }
+    }
+
+    private func reportProgress(of progress: Progress) -> Task<Void, Never> {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                self.onReadiness?(.downloading(fraction: progress.fractionCompleted))
+            }
+        }
+    }
+
+    private func beginPreparing() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !preparing else { return false }
+        preparing = true
+        return true
+    }
+
+    private func endPreparing() {
+        lock.lock()
+        preparing = false
+        lock.unlock()
     }
 
     func begin(boostWords: [String]) {

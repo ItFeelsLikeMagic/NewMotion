@@ -61,8 +61,8 @@ public struct AudioCaptureStateMachine: Sendable {
 }
 
 /// Regroups converted 16 kHz mono samples into fixed-size chunks.  40 ms per
-/// chunk halves the per-frame header and crypto overhead on BLE compared to
-/// the converter's native 20 ms buffers.
+/// chunk gives the recogniser a steadier feed than the converter's own
+/// variable 20 ms buffers.
 public struct PCM16Chunker: Sendable {
     public let samplesPerChunk: Int
     private var pending: [Int16] = []

@@ -17,7 +17,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testRoundTripCoversEveryMVPMessageType() throws {
-        let audio = try AudioChunkPayload(streamID: sessionID, chunkIndex: 3, pcm: [0, 1, 2, 3])
         let payloads: [MessagePayload] = [
             .heartbeat(HeartbeatPayload(isActive: true, buttons: 1, modifiers: 2)),
             .pointerDelta(PointerDeltaPayload(deltaX: 10, deltaY: -9)),
@@ -26,7 +25,6 @@ final class ProtocolTests: XCTestCase {
             .textInput(try TextInputPayload(text: "héllo")),
             .hotkey(HotkeyPayload(action: .selectAll)),
             .motionPointerDelta(MotionPointerDeltaPayload(deltaX: -4, deltaY: 6, sampleRateHz: 100)),
-            .audioChunk(audio),
             .acknowledgement(AcknowledgementPayload(acknowledgedSequence: 8, status: .accepted)),
             .connectionStatus(ConnectionStatusPayload(state: .authenticated)),
             .error(ErrorPayload(code: .unsafeState, retryable: false)),
@@ -35,7 +33,7 @@ final class ProtocolTests: XCTestCase {
             .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
             .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
             .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word)),
-            .vocabulary(try VocabularyPayload(phrases: ["Nemotron", "Ollama"])),
+            .vocabulary(try VocabularyPayload(phrases: ["Ollama", "Testaflight"])),
             .spokenText(try SpokenTextPayload(text: "héllo there"))
         ]
 
@@ -130,87 +128,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(tracker.observe(sequence: 0), .invalid)
     }
 
-    func testAudioChunkUsesBase64AndOptionalEndFlag() throws {
-        let audio = try AudioChunkPayload(
-            streamID: sessionID,
-            chunkIndex: 1,
-            pcm: [0, 1, 2, 3],
-            samplePosition: 16,
-            isLast: true
-        )
-        let envelope = ProtocolEnvelope(sessionID: sessionID, sequence: 1, timestampMs: 1, payload: .audioChunk(audio))
-        let encoded = try ProtocolCodec.encode(envelope)
-        let json = try XCTUnwrap(String(data: Data(encoded), encoding: .utf8))
-        XCTAssertTrue(json.contains("\"pcm\":\"AAECAw==\""))
-        XCTAssertFalse(json.contains("[0,1,2,3]"))
-        XCTAssertTrue(json.contains("\"isLast\":true"))
-        let decoded = try ProtocolCodec.decode(encoded)
-        XCTAssertEqual(decoded, envelope)
-        guard case let .audioChunk(value) = decoded.payload else {
-            return XCTFail("expected audio")
-        }
-        XCTAssertEqual(value.samplePosition, 16)
-        XCTAssertTrue(value.isLast)
-        XCTAssertEqual(value.pcm.bytes, [0, 1, 2, 3])
-    }
-
-    func testIMAADPCMRoundTripStaysBounded() {
-        var encoder = IMAADPCMEncoder()
-        let original: [Int16] = (0..<320).map { Int16((sin(Double($0) / 8.0) * 6_000).rounded()) }
-        let encoded = encoder.encode(original)
-        XCTAssertLessThan(encoded.count, original.count)
-        let decoded = IMAADPCM.decode(payload: encoded, sampleCount: original.count)
-        XCTAssertEqual(decoded.count, original.count)
-        var maxError = 0
-        for (lhs, rhs) in zip(original, decoded) {
-            maxError = max(maxError, abs(Int(lhs) - Int(rhs)))
-        }
-        XCTAssertLessThan(maxError, 3_000)
-    }
-
-    func testVoiceStreamFrameRoundTripStartDataAndEnd() throws {
-        var encoder = IMAADPCMEncoder()
-        let samples: [Int16] = [1_000, -2_000, 3_000, -4_000]
-        let start = try VoiceStreamFrame(
-            flags: .start,
-            streamID: sessionID,
-            sequence: 0,
-            sampleCount: 0,
-            payload: Data()
-        )
-        let data = try VoiceStreamFrame(
-            flags: [],
-            streamID: sessionID,
-            sequence: 1,
-            sampleCount: 4,
-            payload: encoder.encode(samples)
-        )
-        let end = try VoiceStreamFrame(
-            flags: .end,
-            streamID: sessionID,
-            sequence: 2,
-            sampleCount: 0,
-            payload: Data()
-        )
-        XCTAssertTrue(try VoiceStreamFrame.decode(start.encode()).isStart)
-        let decodedData = try VoiceStreamFrame.decode(data.encode())
-        XCTAssertEqual(decodedData.sampleCount, 4)
-        XCTAssertEqual(IMAADPCM.decode(payload: decodedData.payload, sampleCount: 4).count, 4)
-        XCTAssertTrue(try VoiceStreamFrame.decode(end.encode()).isEnd)
-
-        let cancelled = try VoiceStreamFrame(
-            flags: [.end, .cancel],
-            streamID: sessionID,
-            sequence: 3,
-            sampleCount: 0,
-            payload: Data()
-        )
-        let decodedCancel = try VoiceStreamFrame.decode(cancelled.encode())
-        XCTAssertTrue(decodedCancel.isEnd)
-        XCTAssertTrue(decodedCancel.isCancel)
-        XCTAssertFalse(try VoiceStreamFrame.decode(end.encode()).isCancel)
-    }
-
     func testDecoderBoundedDeterministicFuzzCorpus() {
         // This is a small, reproducible property corpus rather than a source
         // of security randomness. It exercises empty, truncated, malformed,
@@ -239,7 +156,7 @@ final class ProtocolTests: XCTestCase {
 /// and a long monologue are the two ways a caller can overrun the envelope.
 final class VocabularyProtocolTests: XCTestCase {
     func testVocabularyRoundTrip() throws {
-        let payload = try VocabularyPayload(phrases: ["Nemotron", "PhoneRemote", "xcodebuild"])
+        let payload = try VocabularyPayload(phrases: ["Testaflight", "PhoneRemote", "xcodebuild"])
         let data = try JSONEncoder().encode(MessagePayload.vocabulary(payload))
         let decoded = try JSONDecoder().decode(MessagePayload.self, from: data)
         XCTAssertEqual(decoded, .vocabulary(payload))

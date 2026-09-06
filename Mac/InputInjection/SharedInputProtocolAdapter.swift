@@ -112,8 +112,8 @@ public enum SharedInputProtocolAdapter {
         // `spokenText` is deliberately absent: dictation takes the transcript
         // path, which feeds the vocabulary cache and checks secure input first.
         // `vocabulary` only ever travels Mac to phone, so inbound it is junk.
-        case .heartbeat, .tabWalk, .deleteScrub, .audioChunk, .spokenText,
-             .vocabulary, .acknowledgement, .connectionStatus, .error, .ping, .pong:
+        case .heartbeat, .tabWalk, .deleteScrub, .spokenText, .vocabulary,
+             .acknowledgement, .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
         }
     }

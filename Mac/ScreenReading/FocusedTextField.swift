@@ -5,9 +5,9 @@ import AppKit
 import ApplicationServices
 #endif
 
-/// What the focused field had to say. Anything but `.text` sends voice typing
-/// back to plain appending, and the label says why. The label is safe for logs
-/// and the debug snapshot; the text it stands for never is.
+/// What the focused field had to say, and when it could not say it, why. The
+/// label is safe for logs and the debug server; the text it stands for never
+/// is, so only the label ever leaves this type.
 public enum FocusedText: Equatable, Sendable {
     case text(String)
     case unavailable(String)
@@ -44,9 +44,8 @@ public protocol FocusedTextReading: Sendable {
     /// extension, so a reader that can see the caret is actually asked.
     func textAroundCaret() -> FocusedCaretText
 
-    /// Called when the speaker starts talking. A field that has to be woken
-    /// before it can be read gets that head start here instead of stalling the
-    /// read at the end of the sentence.
+    /// Called as the press begins. A field that has to be woken before it can
+    /// be read gets that head start here instead of stalling the first read.
     func prepare()
 }
 
@@ -57,47 +56,6 @@ public extension FocusedTextReading {
     func textAroundCaret() -> FocusedCaretText { .unavailable("noCaretRead") }
 }
 
-/// Joins what is already in the field to what was just spoken, and works out
-/// the smallest edit that turns one into the other.
-public enum TranscriptMerge {
-    /// Each deletion costs about 20 ms and visibly rewinds text the speaker can
-    /// see, so the budget covers a reworded last sentence and nothing larger.
-    public static let maximumDeletions = 40
-
-    public struct Edit: Equatable, Sendable {
-        public var deletions: Int
-        public var insertion: String
-    }
-
-    /// What the normalizer sees: everything already in the field followed by
-    /// the new words, so it can punctuate and space across the join instead of
-    /// starting a fresh sentence on every press.
-    public static func payload(existing: String, transcript: String) -> String {
-        existing + tail(existing: existing, transcript: transcript)
-    }
-
-    /// The joining text on its own, for when the whole rewrite cannot be applied.
-    public static func tail(existing: String, transcript: String) -> String {
-        guard !existing.isEmpty, existing.last?.isWhitespace == false else { return transcript }
-        return " " + transcript
-    }
-
-    /// Nil when the rewrite would rewind more than the budget allows.
-    public static func edit(from existing: String, to merged: String) -> Edit? {
-        let existingCharacters = Array(existing)
-        let mergedCharacters = Array(merged)
-        var shared = 0
-        while shared < existingCharacters.count,
-              shared < mergedCharacters.count,
-              existingCharacters[shared] == mergedCharacters[shared] {
-            shared += 1
-        }
-        let deletions = existingCharacters.count - shared
-        guard deletions <= maximumDeletions else { return nil }
-        return Edit(deletions: deletions, insertion: String(mergedCharacters[shared...]))
-    }
-}
-
 #if os(macOS)
 /// Reads the focused field through Accessibility, the permission the app
 /// already holds in order to type. Nothing is written back through this path.
@@ -105,8 +63,8 @@ public final class AXFocusedTextReader: FocusedTextReading {
     /// Long enough for a busy app to answer, short enough that a wedged one
     /// costs the utterance a quarter second instead of the whole thing.
     private static let messagingTimeout: Float = 0.25
-    /// Past this the field is a document rather than an input, and rewriting it
-    /// around one spoken sentence is not what the speaker meant.
+    /// Past this the field is a document rather than an input, and walking the
+    /// whole of one to find the caret costs more than the read is worth.
     static let maximumUnits = 4_000
 
     public init() {}
@@ -126,8 +84,8 @@ public final class AXFocusedTextReader: FocusedTextReading {
         let units = (text as NSString).length
         guard units <= Self.maximumUnits else { return .unavailable("tooLong") }
 
-        // Typing lands at the caret, so a caret anywhere but the end would put
-        // the merged text somewhere the speaker did not ask for.
+        // A whole-field read only means anything with the caret at the end;
+        // anywhere else and what follows the caret is missing from it.
         let range: (value: AXValue?, error: AXError) = copy(kAXSelectedTextRangeAttribute, from: field)
         guard let selected = range.value else { return .unavailable(label("range", range.error)) }
         var caret = CFRange()
@@ -140,6 +98,8 @@ public final class AXFocusedTextReader: FocusedTextReading {
     /// `focusedText`, this does not insist the caret be at the very end: a
     /// held delete key erases backwards from wherever it is, and after a slide
     /// that ran past the start of a line it very often is not at the end.
+    /// This is the read the delete key uses; `focusedText` only serves the
+    /// debug server's account of what Accessibility can see.
     public func textAroundCaret() -> FocusedCaretText {
         let focused = focusedElement()
         guard let field = focused.value else { return .unavailable(label("focus", focused.error)) }
