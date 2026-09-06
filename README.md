@@ -22,11 +22,15 @@ hardware but has not been through its release checklist.
 
 ## Install
 
-**Mac companion.** Download `NewMotion.zip` from
-[Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), unzip it,
-and drag `NewMotion.app` to `~/Applications`. It is signed and notarized by
-Apple, so it opens without a warning. Grant it Accessibility access when asked;
-that is what lets it move your cursor and type.
+**Mac companion.** Download `NewMotion.dmg` from
+[Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), open it, and
+drag NewMotion into Applications. It is signed and notarized by Apple, so it
+opens without a warning. It lives in the menu bar, not the Dock. Grant it
+Accessibility access when asked; that is what lets it move your cursor and type.
+
+Take the disk image rather than the zip. A zipped Mac app can lose its Apple
+seal passing through a chat app or a third-party unarchiver, and the Mac at the
+far end then refuses to open it.
 
 **iPhone app.** Not on the App Store yet. Build and install it yourself with
 `./scripts/install-phone.sh` (needs Xcode, a paired iPhone with Developer Mode

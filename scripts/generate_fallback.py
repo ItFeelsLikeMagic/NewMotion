@@ -221,7 +221,7 @@ class Builder:
 
 def base_settings(kind: str, release: bool = False) -> dict[str, str]:
     settings = {
-        "ARCHS": "arm64",
+        "ARCHS": "$(ARCHS_STANDARD)",
         "CLANG_ENABLE_MODULES": "YES",
         "CODE_SIGNING_ALLOWED": "NO",
         "CODE_SIGNING_REQUIRED": "NO",

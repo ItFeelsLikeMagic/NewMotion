@@ -260,7 +260,7 @@ final class BluetoothPairingTests: XCTestCase {
 
     func testKeychainStoreEnumeratesRecordsOnMacOS() throws {
         try skipUnlessKeychainTestsRequested()
-        let service = "com.example.newmotion.tests.\(UUID().uuidString)"
+        let service = "com.davidliao.newmotion.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
 
@@ -291,7 +291,7 @@ final class BluetoothPairingTests: XCTestCase {
 
     func testMacPairingCoordinatorStartsWithEmptyKeychain() throws {
         try skipUnlessKeychainTestsRequested()
-        let service = "com.example.newmotion.tests.\(UUID().uuidString)"
+        let service = "com.davidliao.newmotion.tests.\(UUID().uuidString)"
         let store = KeychainTrustedDeviceStore(service: service)
         defer { try? store.deleteAll() }
 

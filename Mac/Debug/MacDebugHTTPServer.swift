@@ -24,7 +24,7 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
     private let portFileURL: URL
-    private let queue = DispatchQueue(label: "com.example.newmotion.macos.debug-server")
+    private let queue = DispatchQueue(label: "com.davidliao.newmotion.macos.debug-server")
     private var listener: NWListener?
     private var startPort: UInt16 = 0
 

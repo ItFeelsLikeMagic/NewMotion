@@ -38,7 +38,7 @@ enum MacHostRuntime {
 /// path even before a phone is paired.
 @MainActor
 final class MacRemoteAppModel: ObservableObject {
-    private static let trustedDeviceService = "com.example.newmotion.macos.trusted-devices"
+    private static let trustedDeviceService = "com.davidliao.newmotion.macos.trusted-devices"
 
     /// One beat is 250 ms, so the watchdog tolerates three lost in a row.  A
     /// held button that outlives the phone is a nuisance for this long; a

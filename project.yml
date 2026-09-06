@@ -11,7 +11,7 @@ options:
 
 settings:
   base:
-    ARCHS: arm64
+    ARCHS: "$(ARCHS_STANDARD)"
     SWIFT_VERSION: 6.0
     SWIFT_STRICT_CONCURRENCY: complete
     CURRENT_PROJECT_VERSION: 1

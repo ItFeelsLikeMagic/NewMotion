@@ -18,8 +18,13 @@ hardened runtime on, secure timestamp, notarized by Apple, and stapled so it
 opens on a Mac that has never seen it and has no network.
 
 Output lands in build/dist:
-  NewMotion.app      stapled, ready to run
-  NewMotion.zip      the same app zipped, ready to upload somewhere
+  NewMotion.dmg      the one to hand to people
+  NewMotion.zip      the same app zipped, for a download link
+
+Send the disk image, not the zip. A zipped Mac app loses its Apple seal on
+the way through chat apps, file sync, and third-party unarchivers, and the
+Mac at the far end then refuses to open it. A disk image is one opaque file
+that macOS mounts itself, so nothing in the middle can touch the app inside.
 
 Environment:
   NEWMOTION_DEVELOPMENT_TEAM  required. Your ten-character team id.
@@ -93,14 +98,30 @@ if [ "$NOTARIZE" = "1" ] && [ -z "$PROFILE" ]; then
     exit 2
 fi
 
-# Copied back into the repository only at the very end. The zip is the thing
-# to distribute: it carries the signature intact, whatever the synced folder
-# stamps on the loose copy afterwards.
+# Copied back into the repository only at the very end, and only as archives.
+# A loose .app here would be re-stamped with Finder metadata by the synced
+# folder and is exactly the copy someone would drag into a chat window.
 deliver() {
     rm -rf "$DIST_DIR"
     mkdir -p "$DIST_DIR"
-    ditto "$STAGE_APP" "$DIST_DIR/NewMotion.app"
     ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
+    [ -f "$DMG" ] && ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
+}
+
+# The app goes in beside a link to /Applications, which is the drag-to-install
+# window every Mac user already knows.
+build_dmg() {
+    ROOM="$WORK/dmg"
+    rm -rf "$ROOM"
+    mkdir -p "$ROOM"
+    ditto --norsrc --noextattr --noacl "$STAGE_APP" "$ROOM/NewMotion.app"
+    xcrun stapler staple "$ROOM/NewMotion.app" >/dev/null
+    ln -s /Applications "$ROOM/Applications"
+    rm -f "$DMG"
+    hdiutil create -quiet -volname NewMotion -srcfolder "$ROOM" \
+        -fs HFS+ -format UDZO -ov "$DMG"
+    codesign --force --sign "$IDENTITY" --team-identifier "$TEAM" \
+        --timestamp "$DMG"
 }
 
 "$SCRIPT_DIR/generate.sh"
@@ -109,9 +130,9 @@ echo "==> Building Release"
 # Built unsigned and signed afterwards, the same way install-mac.sh does it:
 # xcodebuild's own CodeSign step trips over Finder metadata in this tree.
 xcodebuild -project "$PROJECT" -configuration Release -derivedDataPath "$DERIVED_DATA" \
-    -scheme NewMotion-macOS -sdk macosx build \
+    -scheme NewMotion-macOS -destination "generic/platform=macOS" build \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-    ENABLE_DEBUG_DYLIB=NO >/dev/null
+    ENABLE_DEBUG_DYLIB=NO ONLY_ACTIVE_ARCH=NO >/dev/null
 
 BUILT="$DERIVED_DATA/Build/Products/Release/NewMotion.app"
 [ -d "$BUILT" ] || { echo "error: expected app not found at $BUILT" >&2; exit 1; }
@@ -144,6 +165,7 @@ codesign --display --verbose=2 "$STAGE_APP" 2>&1 | grep -q "flags=.*runtime" || 
 }
 
 ZIP="$WORK/NewMotion.zip"
+DMG="$WORK/NewMotion.dmg"
 if [ "$NOTARIZE" = "0" ]; then
     ditto -c -k --keepParent "$STAGE_APP" "$ZIP"
     deliver
@@ -153,23 +175,33 @@ if [ "$NOTARIZE" = "0" ]; then
     exit 0
 fi
 
-echo "==> Notarizing (this takes a few minutes)"
+echo "==> Notarizing the app (this takes a few minutes)"
 ditto -c -k --keepParent "$STAGE_APP" "$ZIP"
 xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
 
-echo "==> Stapling"
+echo "==> Stapling the app"
 # The ticket goes onto the app, so it opens on a Mac that is offline and has
-# never asked Apple about it. The shippable zip has to be made after this.
+# never asked Apple about it. Both archives have to be made after this.
 xcrun stapler staple "$STAGE_APP"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$STAGE_APP" "$ZIP"
 
+# A disk image is notarized in its own right. Stapling the ticket to the image
+# as well as to the app means the download opens even offline, before anything
+# has been dragged out of it.
+echo "==> Building and notarizing the disk image"
+build_dmg
+xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+xcrun stapler staple "$DMG"
+
 echo "==> Verifying as Gatekeeper sees it"
 xcrun stapler validate "$STAGE_APP"
+xcrun stapler validate "$DMG"
 spctl --assess --type exec --verbose=4 "$STAGE_APP"
+spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
 deliver
 echo
 echo "Ready to ship:"
-echo "  $DIST_DIR/NewMotion.app"
+echo "  $DIST_DIR/NewMotion.dmg   <- send this one"
 echo "  $DIST_DIR/NewMotion.zip"

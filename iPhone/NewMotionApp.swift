@@ -25,7 +25,7 @@ private extension RemoteLinkState {
 /// link carries.
 @MainActor
 final class NewMotionFeatureModel: ObservableObject {
-    private static let trustedDeviceService = "com.example.newmotion.ios.trusted-devices"
+    private static let trustedDeviceService = "com.davidliao.newmotion.ios.trusted-devices"
 
     @Published var latestAction = "Not paired"
     @Published var isPaired = false
