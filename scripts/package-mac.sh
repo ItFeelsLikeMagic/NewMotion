@@ -18,15 +18,14 @@ hardened runtime on, secure timestamp, notarized by Apple, and stapled so it
 opens on a Mac that has never seen it and has no network.
 
 Output lands in build/dist:
-  NewMotion.dmg      the only thing to hand out
+  NewMotion.dmg      the one to lead with
+  NewMotion.zip      the same stapled app, for anyone who wants a plain file
 
-A disk image, and deliberately nothing else. A zipped Mac app loses its
-Apple seal on the way through chat apps, file sync, and third-party
-unarchivers, and the Mac at the far end then refuses to open it. A disk
-image is one opaque file that macOS mounts itself, so nothing in the middle
-can touch the app inside. A zip is still made on the way, because that is
-the shape Apple's notary service takes an app in, but it is not delivered:
-offering both downloads only lets someone pick the fragile one.
+Both are notarized and stapled, and both open on a Mac that is offline and
+has never seen the app. Lead with the disk image: macOS mounts it itself, so
+no unarchiver ever touches the app, and it puts a link to Applications in
+the window. The zip is the same app and works, but it passes through
+whatever the recipient unzips with, which is one more thing to go wrong.
 
 Environment:
   NEWMOTION_DEVELOPMENT_TEAM  required. Your ten-character team id.
@@ -106,11 +105,8 @@ fi
 deliver() {
     rm -rf "$DIST_DIR"
     mkdir -p "$DIST_DIR"
-    if [ -f "$DMG" ]; then
-        ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
-    else
-        ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
-    fi
+    ditto "$ZIP" "$DIST_DIR/NewMotion.zip"
+    [ -f "$DMG" ] && ditto "$DMG" "$DIST_DIR/NewMotion.dmg"
 }
 
 # The app goes in beside a link to /Applications, which is the drag-to-install
@@ -188,8 +184,16 @@ echo "==> Stapling the app"
 # The ticket goes onto the app, so it opens on a Mac that is offline and has
 # never asked Apple about it. Both archives have to be made after this.
 xcrun stapler staple "$STAGE_APP"
+
+# The shippable zip is built without extended attributes. Signing leaves a
+# com.apple.provenance attribute on every file, and ditto writes attributes
+# into a zip as separate ._ files. macOS's own unzip folds those back into
+# attributes, but /usr/bin/unzip and most third-party unarchivers leave them
+# on disk as real files, and an unsealed file inside a signed bundle is what
+# makes a Mac say Apple cannot verify the app. Nothing here needs them.
 rm -f "$ZIP"
-ditto -c -k --keepParent "$STAGE_APP" "$ZIP"
+xattr -cr "$STAGE_APP"
+ditto -c -k --keepParent --norsrc --noextattr "$STAGE_APP" "$ZIP"
 
 # A disk image is notarized in its own right. Stapling the ticket to the image
 # as well as to the app means the download opens even offline, before anything
@@ -200,6 +204,26 @@ xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
 xcrun stapler staple "$DMG"
 
 echo "==> Verifying as Gatekeeper sees it"
+# The zip carries no ticket of its own; what matters is that the app inside
+# survives being unpacked. Both unpackers are checked, because they behave
+# differently and only one of them is macOS's: whoever downloads this may
+# open it with anything.
+CHECK="$WORK/check"
+for tool in ditto unzip; do
+    rm -rf "$CHECK"; mkdir -p "$CHECK"
+    if [ "$tool" = "ditto" ]; then
+        ditto -x -k "$ZIP" "$CHECK"
+    else
+        (cd "$CHECK" && /usr/bin/unzip -q "$ZIP")
+    fi
+    echo "--- zip unpacked with $tool"
+    codesign --verify --deep --strict "$CHECK/NewMotion.app" || {
+        echo "error: the zip does not survive $tool" >&2
+        exit 1
+    }
+    xcrun stapler validate "$CHECK/NewMotion.app"
+    spctl --assess --type exec --verbose=2 "$CHECK/NewMotion.app"
+done
 xcrun stapler validate "$STAGE_APP"
 xcrun stapler validate "$DMG"
 spctl --assess --type exec --verbose=4 "$STAGE_APP"
@@ -208,4 +232,5 @@ spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG
 deliver
 echo
 echo "Ready to ship:"
-echo "  $DIST_DIR/NewMotion.dmg"
+echo "  $DIST_DIR/NewMotion.dmg   lead with this one"
+echo "  $DIST_DIR/NewMotion.zip"
