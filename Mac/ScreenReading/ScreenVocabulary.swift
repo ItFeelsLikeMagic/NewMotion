@@ -376,6 +376,15 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
         var pid: pid_t = 0
         if AXUIElementGetPid(application, &pid) == .success {
             app = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "unknown"
+            // Never read ourselves. Accessibility answers a same-process
+            // request by running AppKit's accessibility path right here on the
+            // walk queue, which drives a SwiftUI update off the main thread and
+            // traps on the first main-actor property it touches. Our own menu
+            // bar has nothing worth boosting anyway.
+            guard pid != ProcessInfo.processInfo.processIdentifier else {
+                app = "self"
+                return []
+            }
         }
         AXUIElementSetMessagingTimeout(application, Self.messagingTimeout)
         // Chromium, and so every Electron app, builds its tree only once a

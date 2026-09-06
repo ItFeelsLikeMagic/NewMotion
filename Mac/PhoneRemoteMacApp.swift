@@ -739,8 +739,10 @@ final class MacRemoteAppModel: ObservableObject {
     /// given.  An unpaired or secure screen sends nothing at all.
     private func pushVocabulary(force: Bool = false) {
         guard authenticatedSession != nil else { return }
+        // The provider promises to call back but says nothing about where, so
+        // this hops rather than asserting it is already on the main actor.
         screenVocabularyReader.speechContext { [weak self] phrases in
-            MainActor.assumeIsolated {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 let bounded = VocabularyPayload.bounded(phrases)
                 guard force || bounded != self.lastSentVocabulary else { return }
