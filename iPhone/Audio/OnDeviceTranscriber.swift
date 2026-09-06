@@ -76,21 +76,32 @@ public enum SpokenTextChunker {
         guard trimmed.utf8.count > maximumPieceUTF8Bytes else { return [trimmed] }
 
         var pieces: [String] = []
-        var current = ""
+        var current: [Character] = []
         var bytes = 0
+        // How far into `current` the last space reached, so a piece can be cut
+        // between words. A word cut in half still types correctly, but neither
+        // half matches the vocabulary cache on the Mac, so the word silently
+        // loses the hit that buys it a three-hour lease.
+        var breakAfter: Int?
+
         // Iterating Characters keeps grapheme clusters whole, so a piece never
         // splits an emoji or a combining mark down the middle.
         for character in trimmed {
             let size = String(character).utf8.count
             if bytes + size > maximumPieceUTF8Bytes, !current.isEmpty {
-                pieces.append(current)
-                current = ""
-                bytes = 0
+                // No space to cut at means one word longer than a whole piece,
+                // and then a hard cut is the only way to send it at all.
+                let cut = breakAfter ?? current.count
+                pieces.append(String(current[..<cut]))
+                current = Array(current[cut...])
+                bytes = current.reduce(0) { $0 + String($1).utf8.count }
+                breakAfter = nil
             }
             current.append(character)
             bytes += size
+            if character.isWhitespace { breakAfter = current.count }
         }
-        if !current.isEmpty { pieces.append(current) }
+        if !current.isEmpty { pieces.append(String(current)) }
         return pieces
     }
 }

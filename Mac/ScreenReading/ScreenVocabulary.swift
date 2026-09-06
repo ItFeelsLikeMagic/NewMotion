@@ -376,12 +376,7 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
         var pid: pid_t = 0
         if AXUIElementGetPid(application, &pid) == .success {
             app = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "unknown"
-            // Never read ourselves. Accessibility answers a same-process
-            // request by running AppKit's accessibility path right here on the
-            // walk queue, which drives a SwiftUI update off the main thread and
-            // traps on the first main-actor property it touches. Our own menu
-            // bar has nothing worth boosting anyway.
-            guard pid != ProcessInfo.processInfo.processIdentifier else {
+            guard !Self.isOwnProcess(pid) else {
                 app = "self"
                 return []
             }
@@ -418,6 +413,16 @@ public final class AXScreenVocabularyReader: SpeechContextProviding, @unchecked 
     /// A named app if one is given, otherwise whichever has keyboard focus.
     /// Accessibility reaches a running app wherever it sits, so measuring one
     /// never means activating it.
+    /// Never read ourselves. Accessibility answers a same-process request by
+    /// running AppKit's accessibility path right here on the walk queue, which
+    /// drives a SwiftUI update off the main thread and traps on the first
+    /// main-actor property it touches. It is our own process that matters, not
+    /// our bundle id: a second copy of this app is someone else's window, and
+    /// our own menu bar has nothing worth boosting anyway.
+    static func isOwnProcess(_ pid: pid_t) -> Bool {
+        pid == ProcessInfo.processInfo.processIdentifier
+    }
+
     static func application(bundleID: String?) -> AXUIElement? {
         guard let bundleID else { return focusedApplication() }
         guard let running = NSRunningApplication
