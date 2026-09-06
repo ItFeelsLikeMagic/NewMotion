@@ -45,8 +45,8 @@ struct HeldRemoteInput: Equatable {
             case .next, .previous: break
             }
         case .pointerDelta, .scrollDelta, .motionPointerDelta, .mouseDoubleClick,
-             .textInput, .hotkey, .deleteScrub, .heartbeat, .audioChunk,
-             .acknowledgement, .connectionStatus, .error, .ping, .pong:
+             .textInput, .spokenText, .hotkey, .deleteScrub, .heartbeat, .audioChunk,
+             .vocabulary, .acknowledgement, .connectionStatus, .error, .ping, .pong:
             break
         }
     }

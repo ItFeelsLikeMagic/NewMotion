@@ -35,13 +35,16 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case mouseDoubleClick = 14
     case tabWalk = 15
     case deleteScrub = 16
+    case vocabulary = 17
+    case spokenText = 18
 
     public var deliveryClass: DeliveryClass {
         switch self {
         case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta, .audioChunk:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
-             .deleteScrub, .acknowledgement, .connectionStatus, .error, .ping, .pong:
+             .deleteScrub, .vocabulary, .spokenText, .acknowledgement,
+             .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
     }
@@ -302,6 +305,112 @@ public struct MouseDoubleClickPayload: Codable, Equatable, Sendable {
 /// Ordinary text is encoded as UTF-8 bytes so the protocol remains explicit
 /// about byte limits and does not depend on a platform string ABI.
 public struct TextInputPayload: Codable, Equatable, Sendable {
+    public let utf8: ProtocolBytes
+
+    public init(utf8: [UInt8]) throws {
+        self.utf8 = try ProtocolBytes(bytes: utf8)
+    }
+
+    public init(text: String) throws {
+        try self.init(utf8: Array(text.utf8))
+    }
+
+    public var text: String? {
+        String(bytes: utf8.bytes, encoding: .utf8)
+    }
+}
+
+/// Words the Mac has seen on its own screen, pushed to the phone so its
+/// recogniser can lean towards them.  The Mac is the only side that can walk
+/// the screen, and the phone is the only side that transcribes, so the list
+/// has to cross.  Bounded on both ends: a busy window must not be able to
+/// overrun the envelope, and a decoder must refuse an oversized array before
+/// it reserves storage for it.
+public struct VocabularyPayload: Codable, Equatable, Sendable {
+    /// Matches `ScreenVocabulary.maximumPhrases` on the Mac.
+    public static let maximumPhrases = 40
+    public static let maximumPhraseUTF8Bytes = 64
+    /// Leaves room inside the 8192-byte envelope for JSON string escaping.
+    public static let maximumTotalUTF8Bytes = 2_048
+
+    public let phrases: [String]
+
+    public init(phrases: [String]) throws {
+        try Self.check(count: phrases.count)
+        try Self.check(phrases: phrases)
+        self.phrases = phrases
+    }
+
+    /// Trims a candidate list to something this payload will accept.  A single
+    /// long token on screen should cost that token, not the whole push.
+    public static func bounded(_ phrases: [String]) -> [String] {
+        var kept: [String] = []
+        var total = 0
+        for phrase in phrases where !phrase.isEmpty {
+            let bytes = phrase.utf8.count
+            guard bytes <= maximumPhraseUTF8Bytes else { continue }
+            guard kept.count < maximumPhrases, total + bytes <= maximumTotalUTF8Bytes else { break }
+            kept.append(phrase)
+            total += bytes
+        }
+        return kept
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case phrases
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var list = try container.nestedUnkeyedContainer(forKey: .phrases)
+        if let declared = list.count {
+            try Self.check(count: declared)
+        }
+        var result: [String] = []
+        while !list.isAtEnd {
+            try Self.check(count: result.count + 1)
+            result.append(try list.decode(String.self))
+        }
+        try Self.check(phrases: result)
+        phrases = result
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(phrases, forKey: .phrases)
+    }
+
+    private static func check(count: Int) throws {
+        guard count <= maximumPhrases else {
+            throw ProtocolError.fieldTooLarge("vocabulary_phrases", actual: count, limit: maximumPhrases)
+        }
+    }
+
+    private static func check(phrases: [String]) throws {
+        var total = 0
+        for phrase in phrases {
+            let bytes = phrase.utf8.count
+            guard bytes > 0 else { throw ProtocolError.invalidField("vocabulary_phrase_empty") }
+            guard bytes <= maximumPhraseUTF8Bytes else {
+                throw ProtocolError.fieldTooLarge(
+                    "vocabulary_phrase", actual: bytes, limit: maximumPhraseUTF8Bytes
+                )
+            }
+            total += bytes
+        }
+        guard total <= maximumTotalUTF8Bytes else {
+            throw ProtocolError.fieldTooLarge(
+                "vocabulary_total", actual: total, limit: maximumTotalUTF8Bytes
+            )
+        }
+    }
+}
+
+/// A finished utterance, transcribed on the phone.  Kept apart from
+/// `textInput` so the Mac can tell spoken words from typed ones: only spoken
+/// words feed the vocabulary cache, and only they take the secure-input check
+/// that guards dictation.
+public struct SpokenTextPayload: Codable, Equatable, Sendable {
     public let utf8: ProtocolBytes
 
     public init(utf8: [UInt8]) throws {
@@ -578,6 +687,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case hotkey(HotkeyPayload)
     case tabWalk(TabWalkPayload)
     case deleteScrub(DeleteScrubPayload)
+    case vocabulary(VocabularyPayload)
+    case spokenText(SpokenTextPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case audioChunk(AudioChunkPayload)
     case acknowledgement(AcknowledgementPayload)
@@ -597,6 +708,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .hotkey: return .hotkey
         case .tabWalk: return .tabWalk
         case .deleteScrub: return .deleteScrub
+        case .vocabulary: return .vocabulary
+        case .spokenText: return .spokenText
         case .motionPointerDelta: return .motionPointerDelta
         case .audioChunk: return .audioChunk
         case .acknowledgement: return .acknowledgement
@@ -638,6 +751,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .tabWalk(try container.decode(TabWalkPayload.self, forKey: .value))
         case .deleteScrub:
             self = .deleteScrub(try container.decode(DeleteScrubPayload.self, forKey: .value))
+        case .vocabulary:
+            self = .vocabulary(try container.decode(VocabularyPayload.self, forKey: .value))
+        case .spokenText:
+            self = .spokenText(try container.decode(SpokenTextPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .audioChunk:
@@ -669,6 +786,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .hotkey(let value): try container.encode(value, forKey: .value)
         case .tabWalk(let value): try container.encode(value, forKey: .value)
         case .deleteScrub(let value): try container.encode(value, forKey: .value)
+        case .vocabulary(let value): try container.encode(value, forKey: .value)
+        case .spokenText(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .audioChunk(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
@@ -704,8 +823,15 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey, .tabWalk, .deleteScrub:
+        case .hotkey, .tabWalk, .deleteScrub, .vocabulary:
             break
+        case .spokenText(let value):
+            guard !value.utf8.bytes.isEmpty else {
+                throw ProtocolError.invalidField("spoken_text_empty")
+            }
+            guard value.text != nil else {
+                throw ProtocolError.invalidUTF8
+            }
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")
             guard (1...100).contains(Int(value.sampleRateHz)) else {

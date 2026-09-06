@@ -34,7 +34,9 @@ final class ProtocolTests: XCTestCase {
             .pong(PongPayload()),
             .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
             .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
-            .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word))
+            .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word)),
+            .vocabulary(try VocabularyPayload(phrases: ["Nemotron", "Ollama"])),
+            .spokenText(try SpokenTextPayload(text: "héllo there"))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)
@@ -228,5 +230,82 @@ final class ProtocolTests: XCTestCase {
                 XCTAssertTrue(error is ProtocolError)
             }
         }
+    }
+}
+
+
+/// The two messages that carry the word cache to the phone and the finished
+/// sentence back. Both are bounded on the decoder side, because a busy window
+/// and a long monologue are the two ways a caller can overrun the envelope.
+final class VocabularyProtocolTests: XCTestCase {
+    func testVocabularyRoundTrip() throws {
+        let payload = try VocabularyPayload(phrases: ["Nemotron", "PhoneRemote", "xcodebuild"])
+        let data = try JSONEncoder().encode(MessagePayload.vocabulary(payload))
+        let decoded = try JSONDecoder().decode(MessagePayload.self, from: data)
+        XCTAssertEqual(decoded, .vocabulary(payload))
+        XCTAssertEqual(decoded.messageType, .vocabulary)
+        XCTAssertEqual(MessageType.vocabulary.deliveryClass, .reliable)
+    }
+
+    func testTooManyPhrasesIsRefused() {
+        let many = (0..<(VocabularyPayload.maximumPhrases + 1)).map { "word\($0)" }
+        XCTAssertThrowsError(try VocabularyPayload(phrases: many))
+    }
+
+    func testOverlongPhraseIsRefused() {
+        let long = String(repeating: "a", count: VocabularyPayload.maximumPhraseUTF8Bytes + 1)
+        XCTAssertThrowsError(try VocabularyPayload(phrases: [long]))
+    }
+
+    func testEmptyPhraseIsRefused() {
+        XCTAssertThrowsError(try VocabularyPayload(phrases: ["fine", ""]))
+    }
+
+    /// The decoder must refuse an oversized array from its declared count,
+    /// before it reserves storage for the strings.
+    func testDecoderRefusesAnOversizedArray() throws {
+        let many = (0..<(VocabularyPayload.maximumPhrases + 20)).map { "word\($0)" }
+        let json = try JSONSerialization.data(withJSONObject: ["phrases": many])
+        XCTAssertThrowsError(try JSONDecoder().decode(VocabularyPayload.self, from: json))
+    }
+
+    /// One long token on screen should cost that token, not the whole push.
+    func testBoundedTrimsRatherThanRefusing() {
+        let long = String(repeating: "a", count: VocabularyPayload.maximumPhraseUTF8Bytes + 1)
+        let kept = VocabularyPayload.bounded(["keep", long, "", "also"])
+        XCTAssertEqual(kept, ["keep", "also"])
+        XCTAssertNoThrow(try VocabularyPayload(phrases: kept))
+    }
+
+    func testBoundedStopsAtThePhraseCount() {
+        let many = (0..<(VocabularyPayload.maximumPhrases + 50)).map { "w\($0)" }
+        XCTAssertEqual(VocabularyPayload.bounded(many).count, VocabularyPayload.maximumPhrases)
+    }
+
+    func testBoundedStopsAtTheByteBudget() {
+        let chunk = String(repeating: "b", count: VocabularyPayload.maximumPhraseUTF8Bytes)
+        let kept = VocabularyPayload.bounded(Array(repeating: chunk, count: VocabularyPayload.maximumPhrases))
+        let total = kept.reduce(0) { $0 + $1.utf8.count }
+        XCTAssertLessThanOrEqual(total, VocabularyPayload.maximumTotalUTF8Bytes)
+        XCTAssertLessThan(kept.count, VocabularyPayload.maximumPhrases)
+    }
+
+    func testSpokenTextRoundTripKeepsUnicode() throws {
+        let payload = try SpokenTextPayload(text: "naïve café 😀")
+        let data = try JSONEncoder().encode(MessagePayload.spokenText(payload))
+        let decoded = try JSONDecoder().decode(MessagePayload.self, from: data)
+        XCTAssertEqual(decoded, .spokenText(payload))
+        XCTAssertEqual(payload.text, "naïve café 😀")
+        XCTAssertEqual(MessageType.spokenText.deliveryClass, .reliable)
+    }
+
+    func testEmptySpokenTextFailsValidation() throws {
+        let payload = try SpokenTextPayload(utf8: [])
+        XCTAssertThrowsError(try MessagePayload.spokenText(payload).validate())
+    }
+
+    func testInvalidUTF8SpokenTextFailsValidation() throws {
+        let payload = try SpokenTextPayload(utf8: [0xFF, 0xFE])
+        XCTAssertThrowsError(try MessagePayload.spokenText(payload).validate())
     }
 }

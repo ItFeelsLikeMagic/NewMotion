@@ -40,6 +40,9 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     @Published var onDeviceVoiceEnabled = UserDefaults.standard.bool(forKey: "onDeviceVoiceEnabled")
     @Published var voiceBoostWords = UserDefaults.standard.string(forKey: "voiceBoostWords") ?? ""
     @Published var onDeviceVoiceStatus = "Off"
+    /// The Mac's screen vocabulary, as last pushed. Not persisted: it belongs
+    /// to whatever is on that screen now, not to this app's settings.
+    private var macVocabulary: [String] = []
     @Published var layoutMode = RemoteLayoutMode(
         rawValue: UserDefaults.standard.string(forKey: "remoteLayoutMode") ?? ""
     ) ?? .vertical
@@ -513,9 +516,14 @@ final class PhoneRemoteFeatureModel: ObservableObject {
     /// when the phone is transcribing, since a spoken edit needs the Mac to
     /// read the field first.
     private func refreshVoiceRoute() {
+        // The Settings field is a permanent extra on top of whatever the Mac
+        // can see, so a name you always want heard survives a window change.
         voiceRoute.update(
             onDevice: onDeviceVoiceEnabled,
-            boostWords: VoiceBoostWords.parse(voiceBoostWords)
+            boostWords: VoiceBoostWords.merge(
+                typed: VoiceBoostWords.parse(voiceBoostWords),
+                fromMac: macVocabulary
+            )
         )
         pushToTalk.setEditEnabled(spokenEditEnabled && !onDeviceVoiceEnabled)
         guard onDeviceVoiceEnabled else {
@@ -885,8 +893,17 @@ final class PhoneRemoteFeatureModel: ObservableObject {
         guard let session = authenticatedSession else { return }
         do {
             let envelope = try session.unwrapApplication(message)
-            if case .pong = envelope.payload {
+            switch envelope.payload {
+            case .pong:
                 recordPong()
+            case let .vocabulary(value):
+                // The Mac walks its own screen and sends what it found. It
+                // arrives between presses, so a press never waits for it.
+                macVocabulary = value.phrases
+                refreshVoiceRoute()
+                IPhoneDebugLog.emit("vocabulary", ["n": "\(value.phrases.count)"])
+            default:
+                break
             }
         } catch {
             latestAction = "Link check failed"
@@ -989,16 +1006,24 @@ final class PhoneRemoteFeatureModel: ObservableObject {
             latestAction = "Pair before typing"
             return
         }
-        switch keyboard.type(text) {
-        case let .chunks(chunks):
-            IPhoneDebugLog.emit("ondevice_typed", [
-                "chars": "\(text.count)",
-                "chunks": "\(chunks.count)"
-            ])
-        case let .rejected(reason):
-            IPhoneDebugLog.emit("ondevice_drop", ["why": reason.rawValue, "chars": "\(text.count)"])
-            latestAction = "Voice text refused"
+        let pieces = SpokenTextChunker.split(text)
+        guard !pieces.isEmpty else {
+            IPhoneDebugLog.emit("ondevice_drop", ["why": "empty"])
+            return
         }
+        for piece in pieces {
+            guard let payload = try? SpokenTextPayload(text: piece),
+                  inputUplink.send(.spokenText(payload)) else {
+                IPhoneDebugLog.emit("ondevice_drop", ["why": "wire", "chars": "\(text.count)"])
+                latestAction = "Voice text failed"
+                return
+            }
+        }
+        IPhoneDebugLog.emit("ondevice_typed", [
+            "chars": "\(text.count)",
+            "parts": "\(pieces.count)"
+        ])
+        latestAction = "Typing"
     }
 
     /// Characters are forwarded as they are typed and never stored or logged.
