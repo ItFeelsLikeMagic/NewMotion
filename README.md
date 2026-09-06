@@ -81,39 +81,22 @@ on, and your own Apple signing team).
 ## Build it
 
 ```sh
-./scripts/generate.sh   # writes NewMotion.xcodeproj from project.yml
-./scripts/build.sh
-./scripts/test.sh
+./scripts/build.sh   # both apps and every test bundle
+./scripts/test.sh    # shared and macOS suites
 ```
 
 The Xcode project is generated from [`project.yml`](project.yml) and is not
-checked in. Every script takes `--help`. Signing values come only from the
-environment and are never committed.
+checked in, so change that file rather than the project. Signing values come
+only from the environment and are never committed.
 
 The Mac companion you click must live at `~/Applications/NewMotion.app`.
 `./scripts/install-mac.sh` builds it, replaces that copy, and launches it. Do
 not `open` a build from `/tmp` or `DerivedData`, or the Accessibility grant
 will not follow the app.
 
-To build a signed, notarized copy for other people, see
-[`scripts/package-mac.sh --help`](scripts/package-mac.sh).
-
-## Cutting a release
-
-Releases are named by `MARKETING_VERSION` in [`project.yml`](project.yml). Bump
-that and `CURRENT_PROJECT_VERSION`, merge it to main, then from main:
-
-```sh
-./scripts/test.sh
-./scripts/release-mac.sh
-```
-
-That packages the notarized disk image and zip, tags the commit, and publishes
-the GitHub release with both attached. `install.sh` serves whatever the newest
-release holds, so publishing is what hands people the build. Add `--dry-run` to
-build the files and publish nothing, and `--notes <file>` to ship written
-release notes instead of the list GitHub makes from the commits. See
-[`scripts/release-mac.sh --help`](scripts/release-mac.sh).
+Packaging a notarized copy, cutting a release, reading logs, and every
+environment variable: [`scripts/README.md`](scripts/README.md). Each script
+also takes `--help`.
 
 ## How it is put together
 
@@ -122,9 +105,11 @@ release notes instead of the list GitHub makes from the commits. See
   peripheral.
 - `Shared/`: the wire protocol and the GATT contract both apps must match.
 - `Config/` and `project.yml`: build settings and the generated Xcode project.
-- `scripts/`: build, install, packaging, and releasing. Every script takes
-  `--help`.
+- `scripts/`: build, install, packaging, and releasing, with its own
+  [README](scripts/README.md).
 - `Tests/`: unit tests for the shared protocol and the Mac input path.
+- [`CLAUDE.md`](CLAUDE.md): the rules a coding agent has to know before it
+  changes anything here.
 
 ## License
 
