@@ -35,7 +35,7 @@ final class CursorMixer {
         travelCoalescer.send(delta)
     }
 
-    /// The same travel, sent as scroll because a finger is holding the clutch.
+    /// The same travel, sent as scroll because a finger is in an edge strip.
     /// It gets its own pacer so a 100 Hz sensor cannot outrun the link.
     func handleScrollTravel(_ delta: CursorDelta) {
         scrollCoalescer.send(delta)

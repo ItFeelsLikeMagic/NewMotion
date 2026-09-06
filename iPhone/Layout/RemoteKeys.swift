@@ -24,9 +24,7 @@ enum RemoteKeyMetrics {
 @MainActor
 struct RemoteKeys {
     let send: (RemoteHotkey) -> Void
-    let walkSensitivity: Double
     let walk: (TabWalkPhase, HeldModifier) -> Void
-    let scrubEnabled: Bool
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
     var newItem: some View { titledKey(.newItem) }
@@ -74,7 +72,6 @@ struct RemoteKeys {
             title: title,
             modifier: modifier,
             spokenName: spokenName,
-            sensitivity: walkSensitivity,
             send: walk
         )
     }
@@ -95,25 +92,18 @@ struct RemoteKeys {
         .accessibilityLabel(hotkey.spokenName)
     }
 
-    /// With the slide off, a delete key is an ordinary key and nothing about it
-    /// changes.
-    @ViewBuilder
     private func deleteKey<Label: View>(
         _ hotkey: RemoteHotkey,
         _ granularity: DeleteScrubGranularity,
         @ViewBuilder label: () -> Label
     ) -> some View {
-        if scrubEnabled {
-            DeleteScrubKey(
-                hotkey: hotkey,
-                granularity: granularity,
-                send: send,
-                scrub: scrub,
-                label: label()
-            )
-        } else {
-            key(hotkey, label: label)
-        }
+        DeleteScrubKey(
+            hotkey: hotkey,
+            granularity: granularity,
+            send: send,
+            scrub: scrub,
+            label: label()
+        )
     }
 }
 #endif

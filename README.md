@@ -15,6 +15,8 @@ hardware but has not been through its release checklist.
 - **Trackpad.** Move, tap, two-finger scroll, drag.
 - **Air mouse.** Point the phone and the cursor follows.
 - **Keyboard.** Type on the phone, the text lands on the Mac.
+- **Rub out text.** Hold a delete key and slide left to erase a word at a
+  time, right to bring it back. A tap is still one delete.
 - **Dictation.** Hold to talk. Apple's on-device speech turns it into text.
 - **Word boosting.** The Mac reads the names and jargon visible in your front
   window and nudges dictation toward them, so it spells your project's own

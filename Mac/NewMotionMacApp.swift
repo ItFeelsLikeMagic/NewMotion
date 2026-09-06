@@ -106,11 +106,7 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var pairingExpiry: Date? { didSet { publishDebugState() } }
     @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
-    @Published var smoothCursor = UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true
     @Published var smoothScroll = UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
-    @Published var screenVocabulary = UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true
-    @Published var smoothingMinimum = UserDefaults.standard.object(forKey: "smoothingMinimumDelta") as? Double
-        ?? SmoothedTravelSink.defaultMinimumSmoothed
     /// Cursor traffic is counted, not narrated.  Publishing a label per packet
     /// rebuilt the whole debug snapshot and invalidated the SwiftUI surface
     /// sixty times a second, on the same actor that applies the packets.
@@ -133,10 +129,7 @@ final class MacRemoteAppModel: ObservableObject {
         let latency = MacLatencyProbes()
         self.latency = latency
         let vocabularyCache = VocabularyCache()
-        let screenVocabularyReader = AXScreenVocabularyReader(
-            isEnabled: UserDefaults.standard.object(forKey: "screenVocabulary") as? Bool ?? true,
-            cache: vocabularyCache
-        )
+        let screenVocabularyReader = AXScreenVocabularyReader(cache: vocabularyCache)
         self.screenVocabularyReader = screenVocabularyReader
         self.vocabularyCache = vocabularyCache
         let trust = SystemAccessibilityTrust()
@@ -144,10 +137,7 @@ final class MacRemoteAppModel: ObservableObject {
         self.inputSink = sink
         let smoothing = SmoothedTravelSink(
             wrapping: sink,
-            cursor: UserDefaults.standard.object(forKey: "pointerSmoothing") as? Bool ?? true,
-            scroll: UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false,
-            minimumSmoothed: UserDefaults.standard.object(forKey: "smoothingMinimumDelta") as? Double
-                ?? SmoothedTravelSink.defaultMinimumSmoothed
+            scroll: UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
         )
         self.pointerSmoothing = smoothing
         let injector = SafeInputInjector(sink: smoothing, accessibility: trust)
@@ -250,36 +240,11 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     /// Smoothing is a feel setting, so it applies at once and survives a
-    /// restart. Turning it off posts whatever was mid-glide.  The stored key
-    /// still says pointer; it predates scrolling and renaming it would reset a
-    /// choice already made.
-    func setSmoothCursor(_ on: Bool) {
-        smoothCursor = on
-        UserDefaults.standard.set(on, forKey: "pointerSmoothing")
-        pointerSmoothing.smoothsCursor = on
-    }
-
-    /// Below this, a move is posted whole. Raising it keeps smoothing for
-    /// sweeps while slow aiming stays as direct as it was.
-    func setSmoothingMinimum(_ points: Double) {
-        smoothingMinimum = points
-        UserDefaults.standard.set(points, forKey: "smoothingMinimumDelta")
-        pointerSmoothing.minimumSmoothedDelta = points
-    }
-
+    /// restart.
     func setSmoothScroll(_ on: Bool) {
         smoothScroll = on
         UserDefaults.standard.set(on, forKey: "scrollSmoothing")
         pointerSmoothing.smoothsScroll = on
-    }
-
-    /// Applies to the next press; an utterance already under way keeps the
-    /// list it opened with, because the recogniser will not be re-biased
-    /// mid-stream.
-    func setScreenVocabulary(_ on: Bool) {
-        screenVocabulary = on
-        UserDefaults.standard.set(on, forKey: "screenVocabulary")
-        screenVocabularyReader.isEnabled = on
     }
 
     func togglePause() {
@@ -866,7 +831,6 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private var vocabularyLabel: String {
-        guard screenVocabulary else { return "off" }
         let walk = screenVocabularyReader.lastWalk
         guard walk.nodes > 0 else { return "on" }
         return "\(walk.milliseconds)ms/\(walk.nodes)nodes\(walk.truncated ? "+" : "")/\(walk.phrases)words"
@@ -958,38 +922,6 @@ struct MacRemoteStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            Toggle("Boost words on screen", isOn: Binding(
-                get: { model.screenVocabulary },
-                set: { model.setScreenVocabulary($0) }
-            ))
-            .font(.caption)
-            .help("Experimental. Reads names and jargon from the front window and nudges voice typing toward them. Skipped while a password field is focused.")
-
-            Toggle("Smooth cursor", isOn: Binding(
-                get: { model.smoothCursor },
-                set: { model.setSmoothCursor($0) }
-            ))
-            .font(.caption)
-            .help("Spreads each packet of movement over the next few frames. Smoother, with about one packet more lag.")
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.smoothingMinimum == 0
-                     ? "Smooth every move"
-                     : "Skip moves under \(Int(model.smoothingMinimum)) points")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Slider(
-                    value: Binding(
-                        get: { model.smoothingMinimum },
-                        set: { model.setSmoothingMinimum($0) }
-                    ),
-                    in: 0...30,
-                    step: 1
-                )
-            }
-            .disabled(!model.smoothCursor)
-            .help("Small moves are slow, careful aiming. Posting those whole keeps them lag free, while fast sweeps still glide.")
 
             Toggle("Smooth scroll", isOn: Binding(
                 get: { model.smoothScroll },

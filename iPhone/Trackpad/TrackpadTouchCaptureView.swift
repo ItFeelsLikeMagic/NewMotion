@@ -6,9 +6,9 @@ import UIKit
 /// timing, and never emits protocol messages itself.
 public final class TrackpadTouchCaptureView: UIView {
     public var onOutputs: (([RemoteInputEvent]) -> Void)?
-    /// Fires when a resting finger takes or releases the scroll clutch, so the
-    /// air mouse can send its travel as scroll for as long as it is held.
-    public var onScrollClutchChanged: ((Bool) -> Void)?
+    /// Fires when one finger enters or leaves an edge strip, so the air mouse
+    /// can send its travel as scroll for as long as the finger is down.
+    public var onOneFingerScrollChanged: ((Bool) -> Void)?
     public var engine = TrackpadGestureEngine()
 
     private let momentum = ScrollMomentumDriver()
@@ -26,7 +26,7 @@ public final class TrackpadTouchCaptureView: UIView {
     /// downstream fires unless the swipe is long enough, so the count itself is
     /// logged to separate a short swipe from touches that never arrived.
     private var peakTouches = 0
-    private var scrollClutchEngaged = false
+    private var oneFingerScrolling = false
     /// A drag whose finger has left holds the button down for a grace window,
     /// and no touch will arrive to close it.  This is that window's clock.
     private var dragReleaseTimer: Timer?
@@ -50,7 +50,7 @@ public final class TrackpadTouchCaptureView: UIView {
             onOutputs?(engine.handle(.foreground))
         }
         scheduleDragRelease()
-        publishScrollClutch()
+        publishOneFingerScroll()
     }
 
     /// The edge strips are measured from the sides of the glass, so the engine
@@ -67,7 +67,7 @@ public final class TrackpadTouchCaptureView: UIView {
         guard isActive != engine.isForeground else { return }
         onOutputs?(engine.handle(isActive ? .foreground : .background))
         scheduleDragRelease()
-        publishScrollClutch()
+        publishOneFingerScroll()
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -135,7 +135,7 @@ public final class TrackpadTouchCaptureView: UIView {
         }
         onOutputs?(outputs)
         scheduleDragRelease()
-        publishScrollClutch()
+        publishOneFingerScroll()
     }
 
     private func scheduleDragRelease() {
@@ -156,11 +156,11 @@ public final class TrackpadTouchCaptureView: UIView {
         }
     }
 
-    private func publishScrollClutch() {
-        let engaged = engine.isScrollClutchEngaged
-        guard engaged != scrollClutchEngaged else { return }
-        scrollClutchEngaged = engaged
-        onScrollClutchChanged?(engaged)
+    private func publishOneFingerScroll() {
+        let scrolling = engine.isOneFingerScrolling
+        guard scrolling != oneFingerScrolling else { return }
+        oneFingerScrolling = scrolling
+        onOneFingerScrollChanged?(scrolling)
     }
 
     private func scrollTravel(in outputs: [RemoteInputEvent]) -> Double {

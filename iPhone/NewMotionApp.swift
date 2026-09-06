@@ -32,10 +32,6 @@ final class NewMotionFeatureModel: ObservableObject {
     @Published var airMouseStatus = "Air mouse off"
     @Published var airMouseEnabled = UserDefaults.standard.bool(forKey: "airMouseEnabled")
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
-    @Published var tabWalkSensitivity = UserDefaults.standard.object(forKey: "tabWalkSensitivity") as? Double ?? 2.0
-    @Published var edgeScrollEnabled = UserDefaults.standard.bool(forKey: "edgeScrollEnabled")
-    @Published var holdScrollEnabled = UserDefaults.standard.bool(forKey: "holdScrollEnabled")
-    @Published var deleteScrubEnabled = UserDefaults.standard.bool(forKey: "deleteScrubEnabled")
     @Published var voiceBoostWords = UserDefaults.standard.string(forKey: "voiceBoostWords") ?? ""
     @Published var onDeviceVoiceStatus = OnDeviceVoiceReadiness.preparing.label
     /// The words heard so far in the utterance under way, shown on the remote
@@ -48,9 +44,9 @@ final class NewMotionFeatureModel: ObservableObject {
         rawValue: UserDefaults.standard.string(forKey: "remoteLayoutMode") ?? ""
     ) ?? .vertical
     @Published var mirrorHorizontalLayout = UserDefaults.standard.bool(forKey: "mirrorHorizontalLayout")
-    @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 1.0
-    @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 1.0
-    @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 1.0
+    @Published var trackpadSensitivityX = UserDefaults.standard.object(forKey: "trackpadSensitivityX") as? Double ?? 3.0
+    @Published var trackpadSensitivityY = UserDefaults.standard.object(forKey: "trackpadSensitivityY") as? Double ?? 4.0
+    @Published var trackpadScrollSensitivity = UserDefaults.standard.object(forKey: "trackpadScrollSensitivity") as? Double ?? 2.0
     @Published var scrollMomentum = UserDefaults.standard.object(forKey: "scrollMomentum") as? Double ?? TrackpadTouchCaptureView.defaultMomentumStrength
     @Published var pairingState: IPhonePairingScannerState = .idle
     /// The Mac whose user has yet to allow this phone. Drives the waiting
@@ -94,10 +90,10 @@ final class NewMotionFeatureModel: ObservableObject {
     )
     private let motionSink: DeltaCoalescer<MotionPointerDelta>
     private let cursorMixer = CursorMixer()
-    private var scrollClutchEngaged = false
+    private var oneFingerScrolling = false
     /// The air mouse has no finger to flick, so its scroll coasts off the same
-    /// curve as the trackpad's, released when the clutch finger lifts.
-    private let clutchMomentum = ScrollMomentumDriver()
+    /// curve as the trackpad's, released when the finger leaves the strip.
+    private let airScrollMomentum = ScrollMomentumDriver()
     private let inputLink: SessionInputLink
     private let inputUplink: InputUplink
     /// The trackpad surface is the only screen the air mouse runs on.
@@ -223,8 +219,8 @@ final class NewMotionFeatureModel: ObservableObject {
                 self?.sendInputEvent(event)
             }
         }
-        clutchMomentum.strength = scrollMomentum
-        clutchMomentum.onStep = { [weak self] delta in
+        airScrollMomentum.strength = scrollMomentum
+        airScrollMomentum.onStep = { [weak self] delta in
             MainActor.assumeIsolated {
                 self?.cursorMixer.handleScrollTravel(CursorDelta(x: 0, y: delta.y))
             }
@@ -398,7 +394,7 @@ final class NewMotionFeatureModel: ObservableObject {
     }
 
     private func refreshAirMouse() {
-        if !airMouseEnabled || !trackpadVisible { clutchMomentum.stop() }
+        if !airMouseEnabled || !trackpadVisible { airScrollMomentum.stop() }
         guard airMouseEnabled else {
             _ = motionSession.setClutchHeld(false)
             airMouseStatus = "Air mouse off"
@@ -442,16 +438,6 @@ final class NewMotionFeatureModel: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "mirrorHorizontalLayout")
     }
 
-    func setEdgeScrollEnabled(_ enabled: Bool) {
-        edgeScrollEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "edgeScrollEnabled")
-    }
-
-    func setDeleteScrubEnabled(_ enabled: Bool) {
-        deleteScrubEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "deleteScrubEnabled")
-    }
-
     func setVoiceBoostWords(_ raw: String) {
         voiceBoostWords = raw
         UserDefaults.standard.set(raw, forKey: "voiceBoostWords")
@@ -475,28 +461,17 @@ final class NewMotionFeatureModel: ObservableObject {
         onDeviceVoice.prepare()
     }
 
-    func setHoldScrollEnabled(_ enabled: Bool) {
-        holdScrollEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "holdScrollEnabled")
-        if !enabled { setScrollClutch(false) }
-    }
-
-    /// A finger resting on the glass turns every sensor's travel into scroll,
-    /// which is what makes the air mouse usable as a scroll wheel.  Taking the
-    /// clutch stops any glide still running; letting go starts one.
-    func setScrollClutch(_ engaged: Bool) {
-        guard scrollClutchEngaged != engaged else { return }
-        scrollClutchEngaged = engaged
-        if engaged {
-            clutchMomentum.stop()
+    /// A finger in an edge strip turns every sensor's travel into scroll, which
+    /// is what makes the air mouse usable as a scroll wheel.  Landing in the
+    /// strip stops any glide still running; leaving it starts one.
+    func setOneFingerScrolling(_ scrolling: Bool) {
+        guard oneFingerScrolling != scrolling else { return }
+        oneFingerScrolling = scrolling
+        if scrolling {
+            airScrollMomentum.stop()
         } else {
-            clutchMomentum.release(at: ProcessInfo.processInfo.systemUptime)
+            airScrollMomentum.release(at: ProcessInfo.processInfo.systemUptime)
         }
-    }
-
-    func setTabWalkSensitivity(_ value: Double) {
-        tabWalkSensitivity = value
-        UserDefaults.standard.set(value, forKey: "tabWalkSensitivity")
     }
 
     func setAirMouseSensitivity(_ value: Double) {
@@ -900,8 +875,8 @@ final class NewMotionFeatureModel: ObservableObject {
             return
         }
         let travel = CursorDelta(x: delta.x, y: delta.y)
-        if scrollClutchEngaged {
-            clutchMomentum.track(travel: travel.y, at: ProcessInfo.processInfo.systemUptime)
+        if oneFingerScrolling {
+            airScrollMomentum.track(travel: travel.y, at: ProcessInfo.processInfo.systemUptime)
             cursorMixer.handleScrollTravel(travel)
         } else {
             cursorMixer.handleTravel(travel)
@@ -925,7 +900,7 @@ final class NewMotionFeatureModel: ObservableObject {
 
     func setScrollMomentum(_ value: Double) {
         scrollMomentum = value
-        clutchMomentum.strength = value
+        airScrollMomentum.strength = value
         UserDefaults.standard.set(value, forKey: "scrollMomentum")
     }
 
@@ -1113,36 +1088,27 @@ private struct PairingCameraPreview: UIViewRepresentable {
 }
 
 private struct TrackpadSurface: UIViewRepresentable {
-    /// A thumb's width in from each side, so the strips are findable without
-    /// looking and still leave most of the glass for the cursor.
-    static let edgeScrollWidth: Double = 44
-    /// Just past `tapMaximumDuration`, so taking the clutch can never also
-    /// read as a tap.
-    static let holdScrollDelay: TimeInterval = 0.35
-
     let pointerSensitivityX: Double
     let pointerSensitivityY: Double
     let scrollSensitivity: Double
     let momentumStrength: Double
-    let edgeScrollEnabled: Bool
-    let holdScrollEnabled: Bool
     /// A drag holds a real mouse button down on the Mac, so it has to end when
     /// the app stops being the thing in front.
     let isActive: Bool
-    let onScrollClutch: (Bool) -> Void
+    let onOneFingerScroll: (Bool) -> Void
     let onOutputs: ([RemoteInputEvent]) -> Void
 
     func makeUIView(context: Context) -> TrackpadTouchCaptureView {
         let view = TrackpadTouchCaptureView(frame: .zero)
         view.onOutputs = onOutputs
-        view.onScrollClutchChanged = onScrollClutch
+        view.onOneFingerScrollChanged = onOneFingerScroll
         apply(to: view)
         return view
     }
 
     func updateUIView(_ uiView: TrackpadTouchCaptureView, context: Context) {
         uiView.onOutputs = onOutputs
-        uiView.onScrollClutchChanged = onScrollClutch
+        uiView.onOneFingerScrollChanged = onOneFingerScroll
         apply(to: uiView)
     }
 
@@ -1151,10 +1117,6 @@ private struct TrackpadSurface: UIViewRepresentable {
             pointerX: pointerSensitivityX,
             pointerY: pointerSensitivityY,
             scroll: scrollSensitivity
-        )
-        view.engine.setScrollGestures(
-            edgeScrollWidth: edgeScrollEnabled ? Self.edgeScrollWidth : 0,
-            holdScrollDelay: holdScrollEnabled ? Self.holdScrollDelay : 0
         )
         view.momentumStrength = momentumStrength
         view.setActive(isActive)
@@ -1256,14 +1218,14 @@ extension RemoteHotkey {
 /// tabs.  A plain tap is the ordinary one-step flip, because begin already
 /// takes that step.
 struct TabWalkButton: View {
-    /// Travel per app at 1x.  Roughly a thumb's width, so a wobble while
-    /// holding does not step; the sensitivity setting divides it.
-    static let baseStepWidth: Double = 44
+    /// Travel per app.  Half a thumb's width: far enough that a wobble while
+    /// holding does not step, close enough to cross a full switcher in one
+    /// slide.
+    static let stepWidth: Double = 22
 
     let title: String
     let modifier: HeldModifier
     let spokenName: String
-    let sensitivity: Double
     let send: (TabWalkPhase, HeldModifier) -> Void
     @State private var isHeld = false
     @State private var steps = 0
@@ -1272,10 +1234,6 @@ struct TabWalkButton: View {
         Text(title)
             .heldKeyStyle(isHeld: isHeld)
             .holdSlide("tab_walk", spokenName: spokenName, onPhase: handle)
-    }
-
-    private var stepWidth: Double {
-        Self.baseStepWidth / min(max(sensitivity, 0.5), 4)
     }
 
     private func handle(_ phase: HoldSlidePhase) {
@@ -1288,7 +1246,7 @@ struct TabWalkButton: View {
             step(.begin)
         case let .moved(translationX, _):
             guard isHeld else { return }
-            step(to: Int((translationX / stepWidth).rounded(.towardZero)))
+            step(to: Int((translationX / Self.stepWidth).rounded(.towardZero)))
         case .ended:
             finish(.commit)
         case .cancelled:
@@ -1411,9 +1369,7 @@ private struct RemoteControlScreen: View {
     private var keys: RemoteKeys {
         RemoteKeys(
             send: { model.sendHotkey($0) },
-            walkSensitivity: model.tabWalkSensitivity,
             walk: { model.sendTabWalk($0, holding: $1) },
-            scrubEnabled: model.deleteScrubEnabled,
             scrub: { model.sendDeleteScrub($0, granularity: $1) }
         )
     }
@@ -1424,12 +1380,10 @@ private struct RemoteControlScreen: View {
             pointerSensitivityY: model.trackpadSensitivityY,
             scrollSensitivity: model.trackpadScrollSensitivity,
             momentumStrength: model.scrollMomentum,
-            edgeScrollEnabled: model.edgeScrollEnabled,
-            holdScrollEnabled: model.holdScrollEnabled,
             isActive: scenePhase == .active,
-            onScrollClutch: { engaged in
-                model.setScrollClutch(engaged)
-                Haptics.play(engaged ? .gestureBegan : .gestureEnded)
+            onOneFingerScroll: { scrolling in
+                model.setOneFingerScrolling(scrolling)
+                Haptics.play(scrolling ? .gestureBegan : .gestureEnded)
             }
         ) { outputs in
             model.handleRemoteInputEvents(outputs)
@@ -1613,29 +1567,6 @@ private struct RemoteSettingsSheet: View {
                     }
                 }
 
-                Section {
-                    VStack(alignment: .leading) {
-                        Text("Slide sensitivity \(model.tabWalkSensitivity.formatted(.number.precision(.fractionLength(1))))x")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Binding(
-                                get: { model.tabWalkSensitivity },
-                                set: { model.setTabWalkSensitivity($0) }
-                            ),
-                            in: 0.5...4,
-                            step: 0.1
-                        )
-                        Text("One step per \(Int((TabWalkButton.baseStepWidth / model.tabWalkSensitivity).rounded())) points of slide")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("Tab walk")
-                } footer: {
-                    Text("How far you slide sideways, holding the app switcher or next tab button, to move one step.")
-                }
-
                 Section("Layout") {
                     Toggle(
                         "Mirror horizontal mode",
@@ -1709,43 +1640,6 @@ private struct RemoteSettingsSheet: View {
                     Text("Air mouse")
                 } footer: {
                     Text("Works on the Trackpad screen. Tap the trackpad to click while you aim.")
-                }
-
-                Section {
-                    Toggle(
-                        "Scroll from the side edges",
-                        isOn: Binding(
-                            get: { model.edgeScrollEnabled },
-                            set: { model.setEdgeScrollEnabled($0) }
-                        )
-                    )
-                    Text("Drag in the left or right margin of the trackpad to scroll.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Toggle(
-                        "Hold a finger to scroll",
-                        isOn: Binding(
-                            get: { model.holdScrollEnabled },
-                            set: { model.setHoldScrollEnabled($0) }
-                        )
-                    )
-                    Text("Rest a finger, then move. With the air mouse on, hold and aim to scroll.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Toggle(
-                        "Hold a delete key and slide",
-                        isOn: Binding(
-                            get: { model.deleteScrubEnabled },
-                            set: { model.setDeleteScrubEnabled($0) }
-                        )
-                    )
-                    Text("Slide left to rub out text a buzz at a time, right to bring it back. A tap still sends one delete.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Extra features")
-                } footer: {
-                    Text("Off until you turn them on. Change them whenever you like.")
                 }
 
                 Section {
