@@ -55,6 +55,13 @@ touches building, installing, packaging, or releasing. Each script also takes
   in `~/Applications` is trusted, and an unsigned rebuild drops the grant.
   This is also why every release has to carry the same Developer ID: an update
   that swaps the app in place keeps the grant only if the signature matches.
+- **The iPhone app ships only through TestFlight.**
+  `./scripts/testflight-phone.sh` archives, signs, and uploads in one command.
+  Do not hand-roll `xcodebuild archive`; two traps are already handled there.
+  Automatic signing picks the identity itself, so naming `Apple Distribution`
+  makes it refuse the build outright. And App Store Connect rejects a build
+  number it has already accepted, so a second upload of one version needs
+  `--build N` or a bump in `project.yml`.
 
 ## The hot path
 
