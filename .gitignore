@@ -19,6 +19,7 @@ xcuserdata/
 *.provisionprofile
 *.p12
 *.cer
+*.p8
 *.ipa
 *.dSYM.zip
 
