@@ -23,23 +23,24 @@ single run without editing the repository.
 
 Environment:
   NEWMOTION_DEVELOPMENT_TEAM  required. Your ten-character team id.
-  NEWMOTION_ASC_KEY_ID        required unless --dry-run.
-  NEWMOTION_ASC_ISSUER_ID     required unless --dry-run.
-  NEWMOTION_ASC_KEY_PATH      required unless --dry-run. The AuthKey_*.p8
-                                file. Make the key in App Store Connect under
-                                Users and Access, Integrations, App Store
-                                Connect API, with the App Manager role. Apple
-                                lets you download it once. Keep it outside
-                                this repository.
+  NEWMOTION_ASC_KEY_ID        optional, all three together.
+  NEWMOTION_ASC_ISSUER_ID     An App Store Connect API key. Without one this
+  NEWMOTION_ASC_KEY_PATH        uploads as whoever is signed in to Xcode,
+                                which is enough on your own Mac. Set them for
+                                a build machine that has no Xcode account:
+                                make the key in App Store Connect under Users
+                                and Access, Integrations, App Store Connect
+                                API, with the App Manager role, and point
+                                NEWMOTION_ASC_KEY_PATH at the AuthKey_*.p8.
+                                Apple lets you download it once. Keep it
+                                outside this repository.
 
   --build N   use N as the build number for this upload only.
   --dry-run   archive and write build/dist/NewMotion.ipa, upload nothing.
-              Needs the certificate but no API key, so it checks the whole
-              signing half on its own.
 
-Signing is automatic: the first run may create the Apple Distribution
-certificate and the App Store profile for you. The app record has to exist in
-App Store Connect first, under the bundle id com.davidliao.newmotion.ios.
+Signing is automatic: the first run creates the Apple Distribution certificate
+and the App Store profile for you. The app record has to exist in App Store
+Connect first, under the bundle id com.davidliao.newmotion.ios.
 HELP
     exit 0
 fi
@@ -74,15 +75,15 @@ if [ -z "$BUILD" ]; then
     [ -n "$BUILD" ] || { echo "error: no CURRENT_PROJECT_VERSION in project.yml" >&2; exit 1; }
 fi
 
-# An App Store Connect API key rather than an Apple ID: it uploads without a
-# password prompt or a two-factor code, and xcodebuild takes the file by path,
-# which altool does not. The same key also lets automatic signing create the
-# distribution certificate on a Mac that has never had one.
-if [ "$UPLOAD" = "1" ]; then
+# Without an API key xcodebuild signs and uploads as the Apple ID signed in to
+# Xcode, which is the normal case here. A key is for a machine that has no
+# Xcode account; all three parts are needed or none of them.
+set --
+if [ -n "${NEWMOTION_ASC_KEY_ID:-}${NEWMOTION_ASC_ISSUER_ID:-}${NEWMOTION_ASC_KEY_PATH:-}" ]; then
     for var in NEWMOTION_ASC_KEY_ID NEWMOTION_ASC_ISSUER_ID NEWMOTION_ASC_KEY_PATH; do
         eval "value=\${$var:-}"
         [ -n "$value" ] || {
-            echo "error: $var is required to upload; see --help, or pass --dry-run" >&2
+            echo "error: $var is missing; set all three or none" >&2
             exit 2
         }
     done
@@ -93,9 +94,11 @@ if [ "$UPLOAD" = "1" ]; then
     set -- -authenticationKeyPath "$NEWMOTION_ASC_KEY_PATH" \
         -authenticationKeyID "$NEWMOTION_ASC_KEY_ID" \
         -authenticationKeyIssuerID "$NEWMOTION_ASC_ISSUER_ID"
+fi
+
+if [ "$UPLOAD" = "1" ]; then
     DESTINATION=upload
 else
-    set --
     DESTINATION=export
 fi
 
@@ -109,6 +112,9 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 ARCHIVE="$WORK/NewMotion.xcarchive"
 
+# Automatic signing picks the identity itself, and naming a distribution one
+# here is a conflict it refuses outright. The archive is signed for
+# development; exportArchive re-signs it for the App Store below.
 echo "==> Archiving $VERSION ($BUILD)"
 xcodebuild -project "$PROJECT" -scheme NewMotion-iOS -configuration Release \
     -destination "generic/platform=iOS" \
@@ -117,7 +123,6 @@ xcodebuild -project "$PROJECT" -scheme NewMotion-iOS -configuration Release \
     -allowProvisioningUpdates "$@" \
     archive \
     CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$TEAM" \
-    CODE_SIGN_IDENTITY="Apple Distribution" \
     CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES \
     CURRENT_PROJECT_VERSION="$BUILD" >/dev/null
 

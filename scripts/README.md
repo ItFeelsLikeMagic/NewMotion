@@ -89,11 +89,10 @@ commits, which is thinner than the install help the last release carried.
 build.
 
 The iPhone app ships through TestFlight instead, because Apple allows nothing
-else. Make an App Store Connect API key once, then:
+else. On a Mac signed in to Xcode that is the whole command:
 
 ```sh
-export NEWMOTION_ASC_KEY_ID=... NEWMOTION_ASC_ISSUER_ID=... NEWMOTION_ASC_KEY_PATH=~/keys/AuthKey_XXX.p8
-./scripts/testflight-phone.sh
+NEWMOTION_DEVELOPMENT_TEAM=4B8P47VZGT ./scripts/testflight-phone.sh
 ```
 
 App Store Connect refuses a build number it has already accepted for a
@@ -101,6 +100,9 @@ version, so a second upload of the same version needs `--build N` with a
 higher number, or a bump in `project.yml`. The reviewer has only a phone and
 the app does nothing alone, so external testing and App Review both need the
 Mac companion's download link in the notes.
+
+The `NEWMOTION_ASC_*` variables are for a build machine with no Xcode account.
+Set all three or none.
 
 ## Updates
 
@@ -144,9 +146,9 @@ The matching public key is `SUPublicEDKey` in
 | `NEWMOTION_DEVELOPMENT_TEAM` | install, package | Your ten-character Apple team id. |
 | `NEWMOTION_CODE_SIGN_IDENTITY` | install, package | Overrides the certificate picked from your keychain. |
 | `NEWMOTION_NOTARY_PROFILE` | package, release | The `notarytool` keychain profile name. On David's Mac it is `phoneremote`, after the app's old name. |
-| `NEWMOTION_ASC_KEY_ID` | `testflight-phone.sh` | The App Store Connect API key id. |
-| `NEWMOTION_ASC_ISSUER_ID` | `testflight-phone.sh` | The issuer id that key belongs to. |
-| `NEWMOTION_ASC_KEY_PATH` | `testflight-phone.sh` | Path to the `AuthKey_*.p8` file. Apple lets you download it once; keep it out of this repo. |
+| `NEWMOTION_ASC_KEY_ID` | `testflight-phone.sh` | Optional. The App Store Connect API key id. |
+| `NEWMOTION_ASC_ISSUER_ID` | `testflight-phone.sh` | Optional. The issuer id that key belongs to. |
+| `NEWMOTION_ASC_KEY_PATH` | `testflight-phone.sh` | Optional. Path to the `AuthKey_*.p8` file. Apple lets you download it once; keep it out of this repo. Without these three, the upload goes out as whoever is signed in to Xcode. |
 | `IPHONE_UDID` | phone scripts | The device to install to, launch, or pull logs from. `--udid` does the same. |
 | `NEWMOTION_RUN_IOS_TESTS` | `test.sh` | `1` also runs the iOS suite on a simulator. |
 | `NEWMOTION_KEYCHAIN_TESTS` | `test.sh` | `1` runs the tests that use the real Keychain and prompt you. |
