@@ -485,15 +485,40 @@ public enum KeyPickerPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
 
 public struct KeyPickerPayload: Codable, Equatable, Sendable {
     public let phase: KeyPickerPhase
-    /// `begin` and `cancel` name no cell. `highlight` names the newly lit one.
-    /// `commit` names the cell to fire, or none if the finger never moved.
+    /// `cancel` names no cell. `highlight` names the newly lit one.
+    /// `commit` names the cell to fire, or none if the lit cell was Cancel.
     /// Commit carrying its own cell is what makes a dropped highlight cost a
     /// stale card rather than the wrong shortcut.
+    ///
+    /// No cell is how the wire spells the grid's Cancel cell, which is why it
+    /// needs no value of its own here: a `highlight` naming nothing means
+    /// Cancel is lit, and `begin` says the same thing, because the card opens
+    /// on Cancel. Nothing is fired for it, which is what a picker that named
+    /// nothing has always done.
     public let cell: HotkeyAction?
 
     public init(phase: KeyPickerPhase, cell: HotkeyAction? = nil) {
         self.phase = phase
         self.cell = cell
+    }
+}
+
+/// One cell of the picker grid. Most are shortcuts; the first is the way out
+/// of a press, and it is no hotkey at all, so the grid cannot be a plain list
+/// of them.
+public enum KeyPickerCell: Equatable, Hashable, Sendable {
+    /// Lit the moment the card opens, and leftmost, so the way out is where
+    /// the finger already is and a press left alone fires nothing.
+    case cancel
+    case hotkey(HotkeyAction)
+
+    /// What the wire carries for this cell. Cancel has none: the absent cell
+    /// is how the protocol already says "fire nothing".
+    public var hotkey: HotkeyAction? {
+        switch self {
+        case .cancel: return nil
+        case let .hotkey(action): return action
+        }
     }
 }
 
@@ -504,22 +529,22 @@ public struct KeyPickerPayload: Codable, Equatable, Sendable {
 /// different grids would still agree on every message and quietly light and
 /// fire different things.
 public enum KeyPickerGrid {
-    public static let rows: [[HotkeyAction]] = [
-        [.cut, .copy, .paste, .undo, .redo],
-        [.newItem, .newTab, .save, .closeWindow, .find],
-        [.selectAll, .deleteLineBackward, .nextWindow, .previousWindow]
+    public static let rows: [[KeyPickerCell]] = [
+        [.cancel, .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.undo), .hotkey(.redo)],
+        [.hotkey(.newItem), .hotkey(.newTab), .hotkey(.save), .hotkey(.closeWindow), .hotkey(.find)],
+        [.hotkey(.selectAll), .hotkey(.deleteLineBackward), .hotkey(.nextWindow), .hotkey(.previousWindow)]
     ]
 
     /// Every cell in `rows` has one. Nothing outside the grid does, because no
     /// other hotkey is ever drawn.
-    public static func displayName(for cell: HotkeyAction) -> String? {
+    public static func displayName(for cell: KeyPickerCell) -> String? {
         displayNames[cell]
     }
 
     /// The cell a name stands for, matched on the display name ignoring case
     /// and spaces, so the Mac's debug route can light one by name. Matching the
     /// case names instead would break silently the day a case is renamed.
-    public static func cell(named name: String) -> HotkeyAction? {
+    public static func cell(named name: String) -> KeyPickerCell? {
         let wanted = folded(name)
         return displayNames.first { folded($0.value) == wanted }?.key
     }
@@ -528,21 +553,22 @@ public enum KeyPickerGrid {
         name.lowercased().filter { !$0.isWhitespace }
     }
 
-    private static let displayNames: [HotkeyAction: String] = [
-        .cut: "Cut",
-        .copy: "Copy",
-        .paste: "Paste",
-        .undo: "Undo",
-        .redo: "Redo",
-        .newItem: "New",
-        .newTab: "New Tab",
-        .save: "Save",
-        .closeWindow: "Close",
-        .find: "Find",
-        .selectAll: "Select All",
-        .deleteLineBackward: "Delete Line",
-        .nextWindow: "Next Window",
-        .previousWindow: "Prev Window"
+    private static let displayNames: [KeyPickerCell: String] = [
+        .cancel: "Cancel",
+        .hotkey(.cut): "Cut",
+        .hotkey(.copy): "Copy",
+        .hotkey(.paste): "Paste",
+        .hotkey(.undo): "Undo",
+        .hotkey(.redo): "Redo",
+        .hotkey(.newItem): "New",
+        .hotkey(.newTab): "New Tab",
+        .hotkey(.save): "Save",
+        .hotkey(.closeWindow): "Close",
+        .hotkey(.find): "Find",
+        .hotkey(.selectAll): "Select All",
+        .hotkey(.deleteLineBackward): "Delete Line",
+        .hotkey(.nextWindow): "Next Window",
+        .hotkey(.previousWindow): "Prev Window"
     ]
 }
 

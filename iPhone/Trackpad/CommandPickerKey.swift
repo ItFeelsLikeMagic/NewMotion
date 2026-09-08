@@ -1,4 +1,5 @@
 #if canImport(SwiftUI) && os(iOS)
+import Foundation
 import SwiftUI
 
 #if canImport(NewMotionShared)
@@ -11,14 +12,16 @@ import NewMotionShared
 /// that never ends leaves nothing stuck.
 ///
 /// Like the delete keys, the press announces itself the moment the key goes
-/// down, so the card is already up by the time the finger starts to move.  A
-/// stray tap therefore costs one message, and still fires nothing.
+/// down, so the card is already up by the time the finger starts to move.  It
+/// opens on the grid's Cancel cell, so a stray tap costs one message and still
+/// fires nothing.
 struct CommandPickerKey: View {
     let picker: (KeyPickerPhase, HotkeyAction?) -> Void
 
     @State private var tracker = SlideStepTracker()
     @State private var press = KeyPickerPress()
     @State private var isHeld = false
+    @State private var keepalive = KeyPickerKeepalive()
     /// The lit cell's name, kept here rather than on the model: the model is
     /// published, and a write per notch would rebuild the screen under the
     /// finger that is still sliding.
@@ -37,6 +40,9 @@ struct CommandPickerKey: View {
                 spokenName: "Command shortcuts. Hold and slide to choose.",
                 onPhase: handle
             )
+            // A key that leaves the screen mid-press takes its heartbeat with
+            // it; the Mac's silence timeout then closes the card on its own.
+            .onDisappear { keepalive.stop() }
     }
 
     /// The phone's own copy of what is lit.  The Mac's card is the display
@@ -59,8 +65,11 @@ struct CommandPickerKey: View {
             isHeld = true
             tracker = SlideStepTracker()
             press = KeyPickerPress()
-            litName = ""
             if let message = press.begin() { picker(message.phase, message.cell) }
+            // Cancel is lit from the word go, so the label says so from the
+            // word go too.
+            litName = KeyPickerGrid.displayName(for: press.cell) ?? ""
+            keepalive.start(press.keepalive) { picker($0.phase, $0.cell) }
             Haptics.play(.press)
         case let .moved(translationX, translationY):
             guard isHeld else { return }
@@ -68,7 +77,8 @@ struct CommandPickerKey: View {
                 let messages = press.notch(step)
                 guard !messages.isEmpty else { continue }
                 for message in messages { picker(message.phase, message.cell) }
-                litName = press.cell.flatMap { KeyPickerGrid.displayName(for: $0) } ?? ""
+                litName = KeyPickerGrid.displayName(for: press.cell) ?? ""
+                keepalive.update(press.keepalive)
                 // The tick is how a thumb counts cells off a screen it is not
                 // looking at.
                 Haptics.play(.step)
@@ -80,11 +90,12 @@ struct CommandPickerKey: View {
         }
     }
 
-    /// Every press closes the card it opened.  A commit that lit no cell fires
+    /// Every press closes the card it opened.  A commit lifted on Cancel fires
     /// nothing, which is what keeps a stray tap on this key harmless.
     private func finish(committing: Bool) {
         guard isHeld else { return }
         isHeld = false
+        keepalive.stop()
         if let message = press.lift(committing: committing) {
             picker(message.phase, message.cell)
             Haptics.play(.release)
@@ -92,6 +103,56 @@ struct CommandPickerKey: View {
         }
         tracker = SlideStepTracker()
         litName = ""
+    }
+}
+
+/// The heartbeat that keeps the Mac's card open while the key is held.
+///
+/// The Mac closes a picker that has gone quiet, because a phone that suspends
+/// mid-press sends no lift and would otherwise leave the card up and the
+/// cursor frozen.  A thumb resting on a cell is quiet too, so the lit cell is
+/// said again on a timer.  It lives here rather than on the model because a
+/// published write every two seconds would rebuild the screen under the
+/// finger, and it holds the payload rather than the press so the block sends
+/// the cell that is lit now, not the one lit when it was scheduled.
+@MainActor
+final class KeyPickerKeepalive {
+    /// Three of these fit inside the Mac's silence timeout, so it takes three
+    /// missed heartbeats, not one, to close a card someone is still using.
+    static let interval: TimeInterval = 2
+
+    private var timer: Timer?
+    private var payload: KeyPickerPayload?
+    private var send: ((KeyPickerPayload) -> Void)?
+
+    func start(_ payload: KeyPickerPayload?, send: @escaping (KeyPickerPayload) -> Void) {
+        stop()
+        self.payload = payload
+        self.send = send
+        // `.common` mode on purpose: the run loop tracks a touch in its own
+        // mode, and this beats while a finger is very much down.
+        let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.beat() }
+        }
+        timer.tolerance = Self.interval / 4
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func update(_ payload: KeyPickerPayload?) {
+        self.payload = payload
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        payload = nil
+        send = nil
+    }
+
+    private func beat() {
+        guard let payload, let send else { return }
+        send(payload)
     }
 }
 #endif

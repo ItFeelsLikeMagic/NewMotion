@@ -70,19 +70,22 @@ struct MacOverlayView: View {
         }
     }
 
+    /// `lit` is the hotkey the phone named, and no hotkey means the Cancel
+    /// cell, which is what an open card starts on.
     private func grid(lit: HotkeyAction?) -> some View {
         VStack(spacing: 6) {
             ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 6) {
                     ForEach(row, id: \.self) { cell in
+                        let isLit = cell.hotkey == lit
                         Text(KeyPickerGrid.displayName(for: cell) ?? "")
                             .font(.callout)
                             .lineLimit(1)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .foregroundStyle(cell == lit ? Color.white : Color.primary)
+                            .foregroundStyle(isLit ? Color.white : Color.primary)
                             .background(
-                                Capsule().fill(cell == lit ? Color.accentColor : Color.primary.opacity(0.08))
+                                Capsule().fill(isLit ? Color.accentColor : Color.primary.opacity(0.08))
                             )
                     }
                 }

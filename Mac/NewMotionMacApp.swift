@@ -1017,7 +1017,9 @@ final class MacRemoteAppModel: ObservableObject {
                 return ["error": "unknown cell"]
             }
             if !overlay.isPickerOpen { overlay.beginPicker() }
-            overlay.highlight(cell)
+            // Cancel names no hotkey, so this lights it the way the phone
+            // does: a highlight carrying nothing.
+            overlay.highlight(cell.hotkey)
             return ["picker": name]
         case .hint:
             overlay.showHint(MacOverlayPresenter.deleteSlideHint)

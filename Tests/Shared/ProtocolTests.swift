@@ -131,19 +131,25 @@ final class ProtocolTests: XCTestCase {
     /// change, because the phone lights a cell the Mac then fires.
     func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
         XCTAssertEqual(KeyPickerGrid.rows, [
-            [.cut, .copy, .paste, .undo, .redo],
-            [.newItem, .newTab, .save, .closeWindow, .find],
-            [.selectAll, .deleteLineBackward, .nextWindow, .previousWindow]
+            [.cancel, .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.undo), .hotkey(.redo)],
+            [.hotkey(.newItem), .hotkey(.newTab), .hotkey(.save), .hotkey(.closeWindow), .hotkey(.find)],
+            [.hotkey(.selectAll), .hotkey(.deleteLineBackward), .hotkey(.nextWindow), .hotkey(.previousWindow)]
         ])
 
+        // The way out is the first cell, so it is where a press starts and a
+        // finger that never moves fires nothing.
+        XCTAssertEqual(KeyPickerGrid.rows[0][0], .cancel)
+        XCTAssertNil(KeyPickerCell.cancel.hotkey)
+
         let cells = KeyPickerGrid.rows.flatMap { $0 }
-        XCTAssertEqual(cells.count, 14)
+        XCTAssertEqual(cells.count, 15)
         XCTAssertEqual(Set(cells).count, cells.count, "a cell appears twice")
         for cell in cells {
             XCTAssertNotNil(KeyPickerGrid.displayName(for: cell), "\(cell)")
             XCTAssertEqual(KeyPickerGrid.cell(named: KeyPickerGrid.displayName(for: cell) ?? ""), cell)
         }
-        XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .newTab)
+        XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .hotkey(.newTab))
+        XCTAssertEqual(KeyPickerGrid.cell(named: "cancel"), .cancel)
         XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
     }
 

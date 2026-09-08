@@ -56,7 +56,9 @@ final class OverlayPresenterTests: XCTestCase {
         return (presenter, clock)
     }
 
-    func testPickerOpensLightsACellAndClosesOnCommit() {
+    /// A card opens on the grid's Cancel cell, which is what no lit cell
+    /// means, and a picker that names one lights it instead.
+    func testPickerOpensOnCancelLightsACellAndClosesOnCommit() {
         let (presenter, _) = make()
         presenter.beginPicker()
         XCTAssertEqual(presenter.content, .picker(cell: nil))
@@ -65,16 +67,22 @@ final class OverlayPresenterTests: XCTestCase {
         presenter.highlight(.save)
         XCTAssertEqual(presenter.content, .picker(cell: .save))
 
+        presenter.highlight(nil)
+        XCTAssertEqual(presenter.content, .picker(cell: nil))
+
         presenter.endPicker()
         XCTAssertEqual(presenter.content, .nothing)
         XCTAssertFalse(presenter.isPickerOpen)
     }
 
+    /// The phone says the lit cell again every couple of seconds while the key
+    /// is held. Those repeats change nothing on screen and must not redraw it.
     func testHighlightRepeatingTheSameCellDoesNotRedraw() {
         let (presenter, _) = make()
         var draws = 0
         presenter.onChange = { _ in draws += 1 }
         presenter.beginPicker()
+        presenter.highlight(nil)
         presenter.highlight(.cut)
         presenter.highlight(.cut)
         presenter.highlight(.cut)
@@ -94,13 +102,50 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .nothing)
     }
 
-    func testAPickerThatIsNeverEndedTimesOutAndUnfreezesTheCursor() {
+    func testAPickerThatGoesSilentTimesOutAndUnfreezesTheCursor() {
         let (presenter, clock) = make()
         presenter.beginPicker()
         presenter.highlight(.find)
         clock.fire(.picker)
         XCTAssertEqual(presenter.content, .nothing)
         XCTAssertFalse(presenter.isPickerOpen)
+    }
+
+    /// The timeout counts silence, not the length of the press, so someone
+    /// reading the card at five seconds keeps it: the deadline set at begin
+    /// passes with the card still up, and the one the highlight set is what
+    /// finally closes it.
+    func testAHighlightPutsTheSilenceTimeoutBackToTheStart() {
+        let (presenter, clock) = make()
+        presenter.beginPicker()
+        presenter.highlight(.save)
+
+        clock.fireOldest(.picker)
+        XCTAssertEqual(presenter.content, .picker(cell: .save))
+        XCTAssertTrue(presenter.isPickerOpen)
+
+        clock.fire(.picker)
+        XCTAssertEqual(presenter.content, .nothing)
+        XCTAssertFalse(presenter.isPickerOpen)
+    }
+
+    /// A heartbeat repeating the lit cell changes nothing on screen and still
+    /// has to buy the card another timeout.
+    func testAKeepaliveThatChangesNothingStillHoldsTheCardOpen() {
+        let (presenter, clock) = make()
+        presenter.beginPicker()
+        presenter.highlight(.cut)
+        var draws = 0
+        presenter.onChange = { _ in draws += 1 }
+
+        presenter.highlight(.cut)
+        clock.fireOldest(.picker)
+        clock.fireOldest(.picker)
+        XCTAssertEqual(presenter.content, .picker(cell: .cut))
+        XCTAssertEqual(draws, 0)
+
+        clock.fire(.picker)
+        XCTAssertEqual(presenter.content, .nothing)
     }
 
     /// A picker that ended before its timeout must not take the next one down

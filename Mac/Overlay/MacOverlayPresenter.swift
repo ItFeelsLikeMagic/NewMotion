@@ -57,7 +57,12 @@ public final class MacOverlayPresenter {
     /// The phone records nothing about a picker, so the watchdog cannot see
     /// one. A phone that suspends mid-press would otherwise leave the card up
     /// and the cursor frozen until the session ends.
-    public static let pickerTimeout: TimeInterval = 10
+    ///
+    /// It counts silence, not the length of the press: someone reading the
+    /// card before choosing must not have it taken away mid-decision. The
+    /// phone says the lit cell again every 2 seconds while the key is held, so
+    /// this is three missed heartbeats, which means the phone is gone.
+    public static let pickerSilenceTimeout: TimeInterval = 6
     /// Long enough to read one line, short enough not to be in the way.
     public static let hintDuration: TimeInterval = 2
     /// The preview channel is unreliable, so a lost "clear" must not strand
@@ -117,16 +122,18 @@ public final class MacOverlayPresenter {
     public func beginPicker() {
         isPickerOpen = true
         litCell = nil
-        let generation = bump(&pickerGeneration)
-        scheduler.schedule(.picker, after: Self.pickerTimeout) { [weak self] in
-            self?.endPicker(generation: generation)
-        }
+        armPickerSilence()
         refresh()
     }
 
-    /// The phone aims; this only lights what it named.
+    /// The phone aims; this only lights what it named. No cell means the
+    /// grid's Cancel cell, which is where a press starts and what a card that
+    /// has only just opened is showing.
     public func highlight(_ cell: HotkeyAction?) {
         guard isPickerOpen else { return }
+        // Ahead of the redraw guard: a heartbeat that lights the same cell
+        // changes nothing on screen and still proves the phone is there.
+        armPickerSilence()
         litCell = cell
         refresh()
     }
@@ -249,6 +256,15 @@ public final class MacOverlayPresenter {
         pendingDeleteUnit = nil
         _ = bump(&deleteGeneration)
         refresh()
+    }
+
+    /// Starts the silence over. Every picker message does this, so the card
+    /// outlives any decision as long as the phone keeps saying it is there.
+    private func armPickerSilence() {
+        let generation = bump(&pickerGeneration)
+        scheduler.schedule(.picker, after: Self.pickerSilenceTimeout) { [weak self] in
+            self?.endPicker(generation: generation)
+        }
     }
 
     private func endPicker(generation: UInt64) {
