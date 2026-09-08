@@ -17,8 +17,17 @@ final class FakeMessageLink: MessageLink {
     private(set) var beacons: [UUID] = []
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var sent: [(channel: LinkChannel, message: Data)] = []
 
-    func send(_ message: Data, on channel: LinkChannel, delivery: LinkDelivery) -> LinkSendResult { .sent }
+    /// The handshake is the one traffic a test reads back; everything on the
+    /// data channel is sealed, so tests count those rather than open them.
+    var controlMessages: [Data] { sent.filter { $0.channel == .control }.map(\.message) }
+    var dataMessageCount: Int { sent.count { $0.channel == .data } }
+
+    func send(_ message: Data, on channel: LinkChannel, delivery: LinkDelivery) -> LinkSendResult {
+        sent.append((channel, message))
+        return .sent
+    }
     func setBeacons(_ beacons: [UUID]) { self.beacons = beacons }
     func start() { startCount += 1 }
     func stop() { stopCount += 1 }

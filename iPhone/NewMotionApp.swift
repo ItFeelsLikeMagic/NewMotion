@@ -154,6 +154,8 @@ final class NewMotionFeatureModel: ObservableObject {
     /// preview so it can tell a revision from a repeat; nothing is stored past
     /// the utterance.
     private var previewThrottle = TranscriptPreviewThrottle()
+    /// Runs only while there is a preview to keep alive.
+    private var previewKeepalive: Timer?
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     /// The coordinator is a parameter so a caller can hand in one over its own
@@ -1031,16 +1033,42 @@ final class NewMotionFeatureModel: ObservableObject {
     /// last, and the debug line counts characters rather than carrying any.
     private func showVoicePreview(_ text: String) {
         voicePreview = text
+        startPreviewKeepalive()
+        sendVoicePreview(text)
+    }
+
+    /// The throttle's one send point.  It runs on every revision the analyser
+    /// makes and again on every keepalive tick, so nothing here may write
+    /// published state or a debug line.
+    private func sendVoicePreview(_ text: String) {
         guard isControllable,
-              let tail = previewThrottle.partial(text, at: ProcessInfo.processInfo.systemUptime),
+              let tail = previewThrottle.partial(text, at: uptime()),
               let payload = try? TranscriptPreviewPayload(text: tail) else { return }
         inputUplink.sendTranscriptPreview(payload)
+    }
+
+    /// Someone pausing mid-sentence stops the analyser revising, so nothing
+    /// reaches the Mac and its two-second idle clear takes the words away
+    /// while the talk button is still held.  This puts the same words back on
+    /// the wire once a second until the utterance ends.
+    func keepVoicePreviewAlive() {
+        guard !voicePreview.isEmpty else { return }
+        sendVoicePreview(voicePreview)
+    }
+
+    private func startPreviewKeepalive() {
+        guard previewKeepalive == nil else { return }
+        previewKeepalive = repeatingTimer(every: TranscriptPreviewThrottle.keepaliveInterval) {
+            $0.keepVoicePreviewAlive()
+        }
     }
 
     /// The utterance is over, so the preview goes.  The empty message only
     /// makes the common case instant; the Mac clears itself if it never lands.
     private func clearVoicePreview() {
         voicePreview = ""
+        previewKeepalive?.invalidate()
+        previewKeepalive = nil
         let previews = previewThrottle.sentCount
         let characters = previewThrottle.characterCount
         guard previewThrottle.clear() else { return }

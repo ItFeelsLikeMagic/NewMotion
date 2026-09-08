@@ -14,6 +14,12 @@ public struct TranscriptPreviewThrottle: Sendable {
     /// finished sentence behind it is not queued up behind previews.
     public static let minimumInterval: Double = 0.1
 
+    /// How long the same words may sit unsent.  The Mac wipes its card after
+    /// two silent seconds, which is the guarantee against a lost clear on an
+    /// unreliable channel, so a pause mid-sentence has to be answered with the
+    /// same words again well inside that.
+    public static let keepaliveInterval: Double = 1
+
     /// Previews this utterance has put on the wire.
     public private(set) var sentCount = 0
     /// Characters in the last preview sent.  The only number a debug line may
@@ -21,15 +27,18 @@ public struct TranscriptPreviewThrottle: Sendable {
     public var characterCount: Int { lastSent.count }
 
     private let minimumInterval: Double
+    private let keepaliveInterval: Double
     private let maximumUTF8Bytes: Int
     private var lastSent = ""
     private var lastSentAt: Double?
 
     public init(
         minimumInterval: Double = TranscriptPreviewThrottle.minimumInterval,
+        keepaliveInterval: Double = TranscriptPreviewThrottle.keepaliveInterval,
         maximumUTF8Bytes: Int = TranscriptPreviewPayload.maximumUTF8Bytes
     ) {
         self.minimumInterval = minimumInterval
+        self.keepaliveInterval = keepaliveInterval
         self.maximumUTF8Bytes = maximumUTF8Bytes
     }
 
@@ -38,12 +47,19 @@ public struct TranscriptPreviewThrottle: Sendable {
         // The clock first: trimming and the tail walk both run the length of
         // the whole utterance, and this is called on the main actor for every
         // revision the analyser makes, most of which are held back anyway.
-        if let lastSentAt, now - lastSentAt < minimumInterval { return nil }
+        let sinceLastSend = lastSentAt.map { now - $0 }
+        if let sinceLastSend, sinceLastSend < minimumInterval { return nil }
         let tail = Self.tail(
             of: text.trimmingCharacters(in: .whitespacesAndNewlines),
             maximumUTF8Bytes: maximumUTF8Bytes
         )
-        guard tail != lastSent else { return nil }
+        if tail == lastSent {
+            // Words the card is already showing, so this is only worth the
+            // wire once the Mac's idle clear is close.  An empty preview is
+            // never worth repeating: there is nothing to keep alive.
+            guard !tail.isEmpty, let sinceLastSend,
+                  sinceLastSend >= keepaliveInterval else { return nil }
+        }
         lastSent = tail
         lastSentAt = now
         sentCount += 1
@@ -57,6 +73,7 @@ public struct TranscriptPreviewThrottle: Sendable {
         let hadPreview = !lastSent.isEmpty
         self = TranscriptPreviewThrottle(
             minimumInterval: minimumInterval,
+            keepaliveInterval: keepaliveInterval,
             maximumUTF8Bytes: maximumUTF8Bytes
         )
         return hadPreview

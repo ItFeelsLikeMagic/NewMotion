@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import NewMotion_iOS
@@ -15,14 +16,48 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     }
 
     /// The analyser repeats itself between words, and a repeat tells the card
-    /// nothing it is not already showing.
+    /// nothing it is not already showing, until the Mac's idle clear is close.
     func testARepeatedPartialIsNotSent() {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
-        XCTAssertNil(throttle.partial("hello", at: 1))
-        XCTAssertNil(throttle.partial("  hello \n", at: 2))
+        XCTAssertNil(throttle.partial("hello", at: 0.3))
+        XCTAssertNil(throttle.partial("  hello \n", at: 0.6))
         XCTAssertEqual(throttle.sentCount, 1)
+    }
+
+    /// Someone pausing mid-sentence sends nothing new, and the Mac wipes its
+    /// card after two silent seconds. So the same words go out again, once a
+    /// second, and the words stay up until the talk button is let go.
+    func testUnchangedWordsGoOutAgainAfterASecond() {
+        var throttle = TranscriptPreviewThrottle()
+
+        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
+        XCTAssertEqual(throttle.partial("hello", at: 1), "hello")
+        XCTAssertEqual(throttle.partial("  hello \n", at: 2), "hello")
+        XCTAssertEqual(throttle.sentCount, 3)
+    }
+
+    /// Halfway through the pause the card is in no danger, so the repeat is
+    /// still not worth the wire.
+    func testUnchangedWordsAreNotResentHalfwayThroughThePause() {
+        var throttle = TranscriptPreviewThrottle()
+
+        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
+        XCTAssertNil(throttle.partial("hello", at: 0.5))
+        XCTAssertNil(throttle.partial("hello", at: 0.99))
+        XCTAssertEqual(throttle.partial("hello", at: 1.0), "hello")
+        XCTAssertEqual(throttle.sentCount, 2)
+    }
+
+    /// A pause before any words means there is nothing to keep alive, and an
+    /// empty message is the one that clears the card.
+    func testAnEmptyPreviewIsNeverKeptAlive() {
+        var throttle = TranscriptPreviewThrottle()
+
+        XCTAssertNil(throttle.partial("", at: 0))
+        XCTAssertNil(throttle.partial("", at: 5))
+        XCTAssertEqual(throttle.sentCount, 0)
     }
 
     func testNoMoreThanTenASecond() {
@@ -104,4 +139,141 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         XCTAssertEqual(throttle.partial("hello", at: 0.01), "hello")
         XCTAssertEqual(throttle.sentCount, 1)
     }
+}
+
+/// The phone's own tick behind the throttle. Apple's analyser stops revising
+/// while someone pauses mid-sentence, so without a tick nothing would call the
+/// throttle at all and the Mac's idle clear would take the words away.
+@MainActor
+final class VoicePreviewKeepaliveTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
+        super.tearDown()
+    }
+
+    func testAPauseStillPutsTheWordsBackOnTheWire() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let mac = MacHandshakePeer()
+        let model = NewMotionFeatureModel(
+            link: link,
+            pairingCoordinator: try mac.trustedCoordinator(),
+            uptime: { clock.value }
+        )
+        try await mac.authenticate(model: model, link: link)
+
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        let afterFirstPartial = link.dataMessageCount
+        XCTAssertGreaterThan(afterFirstPartial, 0, "the first partial goes straight out")
+
+        // The analyser says nothing more: they are pausing, finger still down.
+        clock.value += 1
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, afterFirstPartial + 1)
+
+        clock.value += 1
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, afterFirstPartial + 2)
+    }
+
+    /// A tick inside the second is the analyser's own repeat rate, and it must
+    /// not turn into traffic.
+    func testTicksInsideTheSecondSendNothing() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let mac = MacHandshakePeer()
+        let model = NewMotionFeatureModel(
+            link: link,
+            pairingCoordinator: try mac.trustedCoordinator(),
+            uptime: { clock.value }
+        )
+        try await mac.authenticate(model: model, link: link)
+
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        let afterFirstPartial = link.dataMessageCount
+
+        clock.value += 0.5
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, afterFirstPartial)
+    }
+
+    /// The utterance ending stops the tick, so a phone sitting idle is not
+    /// repeating the last thing anyone said.
+    func testTheTickStopsWhenTheUtteranceEnds() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let mac = MacHandshakePeer()
+        let model = NewMotionFeatureModel(
+            link: link,
+            pairingCoordinator: try mac.trustedCoordinator(),
+            uptime: { clock.value }
+        )
+        try await mac.authenticate(model: model, link: link)
+
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        model.onDeviceVoice.onUtteranceFinished?()
+        try await settle()
+        let afterClear = link.dataMessageCount
+
+        clock.value += 5
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, afterClear)
+    }
+
+    /// The model answers its recogniser and its link through a main-actor hop.
+    private func settle() async throws {
+        try await Task.sleep(for: .milliseconds(80))
+    }
+}
+
+/// The Mac's half of a trusted reconnect, which is what it takes for the phone
+/// to consider itself able to send anything at all.
+private final class MacHandshakePeer {
+    let deviceID = UUID()
+    let identity = PairingIdentity()
+    private var phone: IPhonePairingCoordinator?
+
+    func trustedCoordinator() throws -> IPhonePairingCoordinator {
+        let coordinator = try IPhonePairingCoordinator(store: InMemoryTrustedDeviceStore())
+        _ = try coordinator.rememberPairedMac(
+            deviceID: deviceID,
+            displayName: "Trusted Mac",
+            peerIdentityPublicKey: identity.publicKey
+        )
+        phone = coordinator
+        return coordinator
+    }
+
+    @MainActor
+    func authenticate(model: NewMotionFeatureModel, link: FakeMessageLink) async throws {
+        link.state = .connected
+        link.onStateChange?(.connected)
+        try await Task.sleep(for: .milliseconds(80))
+
+        let hello = try XCTUnwrap(link.controlMessages.first)
+        let server = PairingHandshakeServer(
+            mode: .trusted(
+                deviceID: deviceID,
+                peerIdentityPublicKey: try XCTUnwrap(phone).identity.publicKey
+            ),
+            identity: identity,
+            ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey()
+        )
+        link.onMessage?(.control, try server.accept(clientHelloData: hello).response)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(model.isPaired, "the phone has a session and can send")
+    }
+}
+
+private final class PreviewClock {
+    var value: TimeInterval
+    init(_ value: TimeInterval) { self.value = value }
 }
