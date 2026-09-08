@@ -4,6 +4,13 @@ import Foundation
 import NewMotionShared
 #endif
 
+/// What a debug request may put on the on-screen card. Deliberately not a
+/// string: a named grid cell or the one fixed hint, and never arbitrary words.
+public enum MacDebugCardRequest: Equatable, Sendable {
+    case picker(cell: String?)
+    case hint
+}
+
 public enum MacDebugHTTP {
     public static let defaultPort: UInt16 = 18765
     public static let portFileURL = URL(fileURLWithPath: "/tmp/newmotion-mac-debug.json")
@@ -40,7 +47,8 @@ public enum MacDebugHTTP {
         focus: () -> [String: String] = { [:] },
         vocabulary: (String?) -> [String: String] = { _ in [:] },
         keyBurst: (Int) -> [String: String] = { _ in [:] },
-        latency: () -> [LatencySummary] = { [] }
+        latency: () -> [LatencySummary] = { [] },
+        card: (MacDebugCardRequest) -> [String: String] = { _ in [:] }
     ) -> Response {
         let lines = request.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
@@ -60,6 +68,9 @@ public enum MacDebugHTTP {
         // `/keyburst?count=40` presses Delete that many times in one burst.
         let count = query.split(separator: "&").first { $0.hasPrefix("count=") }
             .flatMap { Int(String($0.dropFirst("count=".count))) }
+        // `/picker?cell=save` lights one cell of the grid.
+        let cell = query.split(separator: "&").first { $0.hasPrefix("cell=") }
+            .map { String($0.dropFirst("cell=".count)) }
         guard method == "GET" else {
             return json(status: 405, object: ["error": "method not allowed"])
         }
@@ -83,6 +94,13 @@ public enum MacDebugHTTP {
         // settled rather than guessed at.  Lengths only; no text leaves the app.
         case "/keyburst":
             return json(status: 200, object: keyBurst(count ?? 20))
+        // Drives the card with no phone on the link.  A cell of the picker
+        // grid by name, or the delete hint; a request with no cell closes the
+        // picker.  Nothing here can put arbitrary words on the screen.
+        case "/picker":
+            return json(status: 200, object: card(.picker(cell: cell?.isEmpty == false ? cell : nil)))
+        case "/hint":
+            return json(status: 200, object: card(.hint))
         default:
             return json(status: 404, object: ["error": "not found"])
         }

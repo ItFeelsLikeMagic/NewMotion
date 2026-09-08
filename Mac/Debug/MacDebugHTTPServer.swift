@@ -20,6 +20,9 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     /// stage, so it happens here, on a reader's connection, and never on the
     /// path being measured.
     public var latencyProbe: (@Sendable () -> [LatencySummary])?
+    /// Answers `/picker` and `/hint`.  Puts the card on screen from a terminal
+    /// so it can be looked at before the phone knows how to open one.
+    public var cardProbe: (@Sendable (MacDebugCardRequest) -> [String: String])?
 
     private let box: MacDebugSnapshotBox
     private let preferredPort: UInt16
@@ -110,7 +113,8 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
                 focus: { self.probeFocus() },
                 vocabulary: { self.probeVocabulary(app: $0) },
                 keyBurst: { self.probeKeyBurst(count: $0) },
-                latency: { self.latencyProbe?() ?? [] }
+                latency: { self.latencyProbe?() ?? [] },
+                card: { self.probeCard($0) }
             )
             connection.send(content: response.httpData, completion: .contentProcessed { _ in
                 connection.cancel()
@@ -131,6 +135,11 @@ public final class MacDebugHTTPServer: @unchecked Sendable {
     private func probeKeyBurst(count: Int) -> [String: String] {
         guard let keyBurstProbe else { return ["error": "no probe"] }
         return onMainThread(timeout: 6) { keyBurstProbe(count) }
+    }
+
+    private func probeCard(_ request: MacDebugCardRequest) -> [String: String] {
+        guard let cardProbe else { return ["error": "no probe"] }
+        return onMainThread { cardProbe(request) }
     }
 
     private func probeFocus() -> [String: String] {

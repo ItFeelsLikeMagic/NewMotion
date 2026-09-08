@@ -96,4 +96,33 @@ final class DebugServerTests: XCTestCase {
         XCTAssertTrue(json.contains("\"pairingProgressKind\":\"paired\""))
         XCTAssertTrue(json.contains("\"linkKind\":\"searching\""))
     }
+
+    func testTheCardRoutesCarryACellNameOrNothingAtAll() throws {
+        let snapshot = MacDebugSnapshot(
+            status: "Remote: Active",
+            paused: false,
+            accessibility: "granted",
+            link: "Connected",
+            linkKind: "connected",
+            pairingProgress: "Paired with Phone",
+            pairingProgressKind: "paired",
+            authenticated: true,
+            pairingOffer: "idle",
+            hasPairingQR: false,
+            pairingError: nil,
+            peerName: "Phone"
+        )
+        var asked: [MacDebugCardRequest] = []
+        func respond(_ request: String) -> MacDebugHTTP.Response {
+            MacDebugHTTP.handle(
+                request: "GET \(request) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                snapshot: snapshot,
+                card: { asked.append($0); return ["ok": "1"] }
+            )
+        }
+        XCTAssertEqual(respond("/picker?cell=save").status, 200)
+        XCTAssertEqual(respond("/picker").status, 200)
+        XCTAssertEqual(respond("/hint").status, 200)
+        XCTAssertEqual(asked, [.picker(cell: "save"), .picker(cell: nil), .hint])
+    }
 }

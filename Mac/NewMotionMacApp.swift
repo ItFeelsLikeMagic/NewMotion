@@ -141,6 +141,11 @@ final class MacRemoteAppModel: ObservableObject {
     private var debugServer: MacDebugHTTPServer?
     private let focusedTextReader = AXFocusedTextReader()
     private let deleteScrub: DeleteScrubCoordinator
+    /// Decides what the card shows. Free of AppKit and cheap to hold, so it
+    /// exists from launch; the panel it drives is only built once something
+    /// asks to be drawn, which is never under the test host.
+    let overlay = MacOverlayPresenter()
+    private var overlayWindow: MacScreenOverlayWindow?
 
     /// Both parameters exist so a test can put a fake radio and a fake clock
     /// under the whole model; the app passes neither.
@@ -245,12 +250,16 @@ final class MacRemoteAppModel: ObservableObject {
             }
         }
 
+        overlay.onChange = { [weak self] content in
+            self?.drawOverlay(content)
+        }
+
         if !inert {
             screenVocabularyReader.warmUp()
             startVocabularyPush()
         }
 
-        _ = lifecycle.handle(.startup)
+        handleLifecycle(.startup)
         // A fresh install has no Accessibility entry, so ask on launch rather
         // than letting the first press from the phone be refused.  macOS shows
         // its own dialog, and only ever once, which is why the poll apply()
@@ -277,7 +286,7 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     func togglePause() {
-        _ = lifecycle.handle(isPaused ? .userResume : .userPause)
+        handleLifecycle(isPaused ? .userResume : .userPause)
         updateStatus()
     }
 
@@ -307,7 +316,7 @@ final class MacRemoteAppModel: ObservableObject {
     private func apply(_ state: AccessibilityState) {
         guard state != accessibility else { return }
         accessibility = state
-        _ = lifecycle.handle(.accessibilityChanged(state))
+        handleLifecycle(.accessibilityChanged(state))
         updateStatus()
         if state == .granted {
             stopAccessibilityPolling()
@@ -382,7 +391,7 @@ final class MacRemoteAppModel: ObservableObject {
         pairingError = nil
         if wasOnTheLink {
             clearHandshakeState()
-            _ = lifecycle.handle(.disconnected)
+            handleLifecycle(.disconnected)
             updateStatus()
         }
         // Before the drop: the beacon list is what the link forgets a turned
@@ -407,11 +416,31 @@ final class MacRemoteAppModel: ObservableObject {
         status = lifecycle.status()
     }
 
+    /// Every lifecycle transition goes through here so the card follows held
+    /// input: whatever is unsafe enough to let a button up is unsafe enough to
+    /// leave a picker on screen with the cursor frozen behind it.
+    private func handleLifecycle(_ event: MacLifecycleEvent) {
+        if lifecycle.handle(event).released { overlay.clearAll() }
+    }
+
+    /// The panel is built the first time there is something to draw, and never
+    /// under the test host, which has no business opening windows.
+    private func drawOverlay(_ content: MacOverlayContent) {
+        if content == .nothing {
+            overlayWindow?.hide()
+            return
+        }
+        guard !MacHostRuntime.isInert else { return }
+        let window = overlayWindow ?? MacScreenOverlayWindow()
+        overlayWindow = window
+        window.show(content)
+    }
+
     private func handleLinkState(_ state: RemoteLinkState) {
         linkState = state
         if state != .connected, authenticatedSession != nil {
             clearHandshakeState()
-            _ = lifecycle.handle(.disconnected)
+            handleLifecycle(.disconnected)
             updateStatus()
         }
         if state != .connected, pendingHello != nil {
@@ -585,7 +614,7 @@ final class MacRemoteAppModel: ObservableObject {
         pairingProgress = .paired(deviceName: displayName)
         nextApplicationSequence = 1
         lastApplicationMessage = nil
-        _ = lifecycle.handle(.authenticated)
+        handleLifecycle(.authenticated)
         updateStatus()
     }
 
@@ -598,7 +627,7 @@ final class MacRemoteAppModel: ObservableObject {
     private func handleLinkError(_ error: LinkError) {
         if authenticatedSession != nil {
             clearHandshakeState()
-            _ = lifecycle.handle(.disconnected)
+            handleLifecycle(.disconnected)
             updateStatus()
             pairingProgress = .disconnected
             return
@@ -623,7 +652,7 @@ final class MacRemoteAppModel: ObservableObject {
             return
         }
         clearHandshakeState()
-        _ = lifecycle.handle(.disconnected)
+        handleLifecycle(.disconnected)
         updateStatus()
         lastPairingFailure = Self.pairingFailureName(error)
         pairingError = "Pairing failed. The phone will retry, or show a new QR code."
@@ -705,7 +734,7 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    private func dispatchApplication(_ payload: MessagePayload) throws {
+    func dispatchApplication(_ payload: MessagePayload) throws {
         switch payload {
         case let .heartbeat(value):
             // Not a command: it says what the phone believes it is holding.
@@ -730,7 +759,17 @@ final class MacRemoteAppModel: ObservableObject {
             lastApplicationMessage = applied
                 ? "tabWalk \(value.modifier) \(value.phase)"
                 : "tabWalk blocked"
+        case let .keyPicker(value):
+            try dispatchKeyPicker(value)
+        case let .transcriptPreview(value):
+            // Spoken words, on their way to the card and nowhere else. This
+            // must not touch `lastApplicationMessage`, whose `didSet` copies
+            // it into the debug snapshot ten times a second.
+            overlay.showTranscript(value.text ?? "")
         case let .spokenText(value):
+            // The finished words are about to be typed, so the guess at them
+            // has done its job.
+            overlay.clearTranscript()
             // Dictation carries the risk the old transcript path did: never
             // type into a secure field. Words actually spoken are also what
             // buy a phrase its three-hour lease, so the cache is credited
@@ -756,6 +795,14 @@ final class MacRemoteAppModel: ObservableObject {
             let isCursor = payload.messageType == .pointerDelta
                 || payload.messageType == .scrollDelta
                 || payload.messageType == .motionPointerDelta
+            // A picker freezes the cursor. The finger is on the phone's
+            // Command key, so anything still arriving is travel already in
+            // flight, and it must not slide the pointer out from under the
+            // shortcut that is about to fire. One boolean per packet.
+            if isCursor, overlay.isPickerOpen { return }
+            if !isCursor, case let .hotkey(value) = payload, value.action == .deleteBackward {
+                overlay.noteDeleteBackward(at: ProcessInfo.processInfo.systemUptime)
+            }
             if let command = try? SharedInputProtocolAdapter.command(for: payload) {
                 switch injector.submit(command) {
                 case .applied:
@@ -768,6 +815,35 @@ final class MacRemoteAppModel: ObservableObject {
             } else {
                 lastApplicationMessage = String(describing: payload.messageType)
             }
+        }
+    }
+
+    /// The phone aims and the Mac draws and fires. Nothing is held down while
+    /// a picker lasts, so a press that never ends leaves nothing stuck: the
+    /// chord is one atomic hotkey at commit, or nothing at all.
+    private func dispatchKeyPicker(_ value: KeyPickerPayload) throws {
+        switch value.phase {
+        case .begin:
+            overlay.beginPicker()
+            lastApplicationMessage = "keyPicker begin"
+        case .highlight:
+            // Deliberately silent: one debug line per notch would rebuild the
+            // snapshot under a sliding finger.
+            overlay.highlight(value.cell)
+        case .commit:
+            overlay.endPicker()
+            guard let cell = value.cell else {
+                lastApplicationMessage = "keyPicker commit empty"
+                return
+            }
+            // The cell the commit names, not the last one lit: a highlight
+            // lost on the way costs a stale card, never the wrong shortcut.
+            // Sent back through dispatch as an ordinary hotkey so it takes the
+            // same policy path as every key the phone draws as a button.
+            try dispatchApplication(.hotkey(HotkeyPayload(action: cell)))
+        case .cancel:
+            overlay.endPicker()
+            lastApplicationMessage = "keyPicker cancel"
         }
     }
 
@@ -795,6 +871,8 @@ final class MacRemoteAppModel: ObservableObject {
 
     func pollPhone() {
         if reliableInput.poll().contains(.watchdogExpired) {
+            // The phone has stopped talking, so nothing on the card is current.
+            overlay.clearAll()
             lastApplicationMessage = "held input released: no heartbeat"
             publishDebugState()
         }
@@ -869,6 +947,7 @@ final class MacRemoteAppModel: ObservableObject {
         // A press whose end never arrived must not restore its characters into
         // whatever the next session is pointed at.
         deleteScrub.abandon()
+        overlay.clearAll()
         dismissApproval()
         pairingServer = nil
         pairingID = nil
@@ -888,12 +967,39 @@ final class MacRemoteAppModel: ObservableObject {
         server.vocabularyProbe = { vocabulary.probe(bundleID: $0) }
         let probes = latency
         server.latencyProbe = { probes.summaries() }
+        server.cardProbe = { [weak self] request in
+            MainActor.assumeIsolated { self?.driveCard(request) ?? ["error": "gone"] }
+        }
         let keys = MainThreadInjector(injector: injector)
         server.keyBurstProbe = { count in
             MacRemoteAppModel.measureKeyBurst(count, keys: keys.injector, reader: reader)
         }
         server.start()
         debugServer = server
+    }
+
+    /// Puts the card on screen with no phone on the link, so it can be looked
+    /// at while it is being built. It can name a cell of the picker grid or
+    /// ask for the delete hint, and nothing else: no debug route may put
+    /// arbitrary words on the screen.
+    private func driveCard(_ request: MacDebugCardRequest) -> [String: String] {
+        switch request {
+        case let .picker(name):
+            guard let name else {
+                overlay.endPicker()
+                return ["picker": "closed"]
+            }
+            guard let cell = KeyPickerGrid.rows.flatMap({ $0 })
+                .first(where: { String(describing: $0) == name }) else {
+                return ["error": "unknown cell"]
+            }
+            if !overlay.isPickerOpen { overlay.beginPicker() }
+            overlay.highlight(cell)
+            return ["picker": name]
+        case .hint:
+            overlay.showHint(MacOverlayPresenter.deleteSlideHint)
+            return ["hint": "shown"]
+        }
     }
 
     /// Carries the injector to the debug probe.  Both are main-thread only:
