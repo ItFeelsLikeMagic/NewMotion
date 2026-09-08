@@ -11,8 +11,10 @@ import NewMotionShared
 /// are this view, so what one notch removes is the only difference between
 /// them.
 ///
-/// A tap still costs exactly one message: the press says nothing until the
-/// finger actually moves.
+/// The press announces itself the moment the key goes down, before anything
+/// has been asked for, because that is when the Mac starts waking the focused
+/// field and a Chromium field takes seconds to wake.  A tap therefore costs
+/// three small messages instead of one, which is nothing beside the cursor.
 struct DeleteScrubKey<Label: View>: View {
     let hotkey: RemoteHotkey
     let granularity: DeleteScrubGranularity
@@ -22,7 +24,6 @@ struct DeleteScrubKey<Label: View>: View {
 
     @State private var tracker = DeleteScrubTracker()
     @State private var isHeld = false
-    @State private var hasBegun = false
 
     var body: some View {
         label
@@ -53,14 +54,13 @@ struct DeleteScrubKey<Label: View>: View {
         case .began:
             guard !isHeld else { return }
             isHeld = true
-            hasBegun = false
             tracker = DeleteScrubTracker()
+            scrub(.begin, granularity)
             Haptics.play(.press)
         case let .moved(translationX, _):
             guard isHeld else { return }
             let steps = tracker.advance(translationX: translationX)
             guard !steps.isEmpty else { return }
-            beginIfNeeded()
             for step in steps {
                 scrub(step.phase, granularity)
                 // The tick is the whole point: it is how a thumb counts
@@ -76,20 +76,12 @@ struct DeleteScrubKey<Label: View>: View {
         }
     }
 
-    /// The Mac only needs to know a press is under way once it is about to be
-    /// asked to erase something, which is also when it should start waking the
-    /// focused field.
-    private func beginIfNeeded() {
-        guard !hasBegun else { return }
-        hasBegun = true
-        scrub(.begin, granularity)
-    }
-
     private func finish(sendKey: Bool) {
         guard isHeld else { return }
         isHeld = false
-        if hasBegun { scrub(.end, granularity) }
-        hasBegun = false
+        // The lift is also where the Mac erases anything it had to hold back,
+        // so it arrives even for a tap that never slid.
+        scrub(.end, granularity)
         if sendKey { send(hotkey) }
         IPhoneDebugLog.emit("delete_scrub", [
             "steps": "\(tracker.steps)",

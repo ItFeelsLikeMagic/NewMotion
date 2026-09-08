@@ -71,7 +71,13 @@ public final class AXFocusedTextReader: FocusedTextReading {
 
     public func prepare() {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else { return }
-        wakeAccessibilityTree(of: AXUIElementCreateApplication(frontmost.processIdentifier))
+        let application = AXUIElementCreateApplication(frontmost.processIdentifier)
+        // This runs on every press of a delete key, on the actor that carries
+        // the cursor, and an attribute write waits six seconds by default.
+        // Chromium only sets a flag here and builds the tree afterwards on its
+        // own time, so there is nothing worth waiting longer than a read for.
+        AXUIElementSetMessagingTimeout(application, Self.messagingTimeout)
+        wakeAccessibilityTree(of: application)
     }
 
     public func focusedText() -> FocusedText {

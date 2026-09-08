@@ -16,11 +16,11 @@ extension SafeInputInjector: RemoteInputSubmitting {}
 /// Holds one press of a delete key so the text it rubbed out can come back.
 ///
 /// The phone sends notches; it has no idea what is in the field.  So the field
-/// is read once, as the press starts erasing, and every notch after that is
-/// served from that one reading: a notch works out how much of the tail it
-/// wants, presses Delete exactly that many times, and remembers the characters
-/// it took.  Restoring types the last of them back.  Lifting the key throws the
-/// memory away, because by then the field may have moved on.
+/// is read as the press starts, and every notch after that is served from that
+/// one reading: a notch works out how much of the tail it wants, presses Delete
+/// exactly that many times, and remembers the characters it took.  Restoring
+/// types the last of them back.  Lifting the key throws the memory away,
+/// because by then the field may have moved on.
 ///
 /// The Mac decides where a word ends rather than pressing Option and Delete and
 /// asking the app afterwards.  Asking is what an app has to answer honestly,
@@ -29,30 +29,38 @@ extension SafeInputInjector: RemoteInputSubmitting {}
 /// however far along it really is, which reads exactly like a field that was
 /// emptied.  Counting its own plain Delete presses is the one measurement no
 /// app can get wrong, so the whole class of question disappears.  The cost is a
-/// word rule of its own, close to a Mac text field's, and about 20 ms per
-/// character in the key queue.
+/// word rule of its own, close to a Mac text field's.
 ///
 /// A slide that runs past the start of the text presses nothing at all, so
 /// overshooting is free and everything it did erase still comes back.
 ///
-/// When the field cannot be read there is nothing to count from, so a notch
-/// falls back to the plain key the phone would have tapped and there is nothing
-/// to restore.  Secure input is exactly that case: it is never read from and
-/// never typed into.
+/// A notch taken before the field has answered erases nothing.  It is held: the
+/// count goes up, a slide back takes one off it, and whatever is still held
+/// when the finger lifts goes out then as the plain key the phone would have
+/// tapped.  Erasing only at the lift is the one way a slide back can undo
+/// something that was never measured, and it is what stops an unreadable app
+/// from quietly taking more than the count on the screen says.  It also hands
+/// the reading the whole length of the press rather than its first few notches,
+/// which is what Chromium needs: its accessibility tree takes about three
+/// seconds to build after a client first asks for it.
+///
+/// Secure input is the case that never resolves: it is never read from, so
+/// every notch of that press is held and the lift sends the app's own key.
 public final class DeleteScrubCoordinator {
-    /// What one notch falls back to for a field this could not read.
+    /// What a held notch falls back to at the lift.
     private static let blindHotkey: [DeleteScrubGranularity: MacAllowedHotkey] = [
         .character: .deleteBackward,
         .word: .deleteWordBackward
     ]
     /// A field that will not answer costs a quarter second of the main actor
-    /// per read, and that actor also carries every arriving BLE frame.  Only
-    /// failures count against this, and Electron needs several of them: its
-    /// accessibility tree is still being built as a press begins.
-    private static let maximumFailedReads = 6
+    /// per read, and that actor also carries every arriving BLE frame.  Reads
+    /// are spaced and counted so one press can only ever spend a moment of it,
+    /// while still spanning the seconds an Electron tree takes to build.
+    private static let maximumReads = 12
+    private static let readGap: TimeInterval = 0.3
     /// Enough of a slide to see its shape without a press growing without end.
     private static let maximumTrail = 40
-    /// Presses one notch may ask for, matching `InputPolicyLimits.maxHotkeyRun`
+    /// Presses one command may ask for, matching `InputPolicyLimits.maxHotkeyRun`
     /// so a run this builds is never the thing the policy turns down.  Longer
     /// than any word; a notch that hits it simply takes the first 64.
     private static let maximumRun = 64
@@ -60,6 +68,7 @@ public final class DeleteScrubCoordinator {
     private let submitter: RemoteInputSubmitting
     private let focusedText: FocusedTextReading?
     private let isSecureInputActive: @Sendable () -> Bool
+    private let now: @Sendable () -> TimeInterval
 
     /// The text in front of the caret that this press has not erased yet.
     private var remaining: [Character] = []
@@ -69,10 +78,11 @@ public final class DeleteScrubCoordinator {
     /// What each notch took, newest last.  Restoring walks back along it, so a
     /// notch always gives back exactly what its own delete took.
     private var removed: [String] = []
-    /// Set when there is nothing to count from.  Erasing goes on blind;
-    /// restoring does not happen at all.
-    private var isBlind = false
-    private var failedReads = 0
+    /// Notches that have pressed nothing yet, because the field had not
+    /// answered when they arrived.
+    private var held = 0
+    private var reads = 0
+    private var lastReadAt: TimeInterval?
     /// What each notch of the last press did, for the debug surface.  Counts
     /// and outcomes only; field text never appears here.
     private var trail: [String] = []
@@ -82,11 +92,13 @@ public final class DeleteScrubCoordinator {
     public init(
         submitter: RemoteInputSubmitting,
         focusedText: FocusedTextReading? = nil,
-        isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive
+        isSecureInputActive: @escaping @Sendable () -> Bool = SecureInput.isActive,
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.submitter = submitter
         self.focusedText = focusedText
         self.isSecureInputActive = isSecureInputActive
+        self.now = now
     }
 
     /// Every notch of the last press, oldest first.  Outlives the press so a
@@ -109,7 +121,8 @@ public final class DeleteScrubCoordinator {
             reset()
             trail = []
             // An Electron field answers nothing until its accessibility tree
-            // has been asked for and built.  The slide is the head start.
+            // has been asked for and built.  This arrives on the key going
+            // down, so the wake has the whole hold before the first notch.
             focusedText?.prepare()
             return "deleteScrub begin"
         case .delete:
@@ -117,41 +130,62 @@ public final class DeleteScrubCoordinator {
         case .restore:
             return restore()
         case .end:
+            let outcome = flush(payload.granularity)
             reset()
-            return "deleteScrub end"
+            return outcome
         }
     }
 
     /// Called when the link drops, so a press whose `end` never arrived cannot
-    /// restore its text into whatever the next session is pointed at.
+    /// erase into whatever the next session is pointed at, nor restore into it.
+    /// Held notches are dropped rather than pressed, which is the safe half of
+    /// holding them in the first place.
     public func abandon() {
         reset()
     }
 
     private func delete(_ granularity: DeleteScrubGranularity) -> String {
-        if !hasSnapshot, !isBlind { takeSnapshot() }
-        // Either the budget is spent or this one read did not answer.  A notch
-        // with nothing to count from still has to erase something.
-        guard hasSnapshot else { return blindDelete(granularity) }
+        held += 1
+        takeSnapshotIfDue()
+        guard hasSnapshot else { return "deleteScrub delete held \(held)" }
+        return press(granularity)
+    }
 
-        let length = min(Self.runLength(in: remaining, granularity: granularity), Self.maximumRun)
-        // Past the start of the text.  Pressing nothing is what makes an
-        // overshoot free: the notches already taken are still restorable.
-        guard length > 0 else { return "deleteScrub delete start" }
-        guard deleteBackward(length) else { return "deleteScrub delete failed" }
-        removed.append(String(remaining.suffix(length)))
-        remaining.removeLast(length)
-        return "deleteScrub delete \(length)"
+    /// Presses everything this notch is now able to count, oldest held notch
+    /// first.  Until the field answered there was nothing to count against, so
+    /// a press that has been waiting comes out here rather than at its notch.
+    private func press(_ granularity: DeleteScrubGranularity) -> String {
+        var outcome = "deleteScrub delete start"
+        while held > 0 {
+            let length = min(Self.runLength(in: remaining, granularity: granularity), Self.maximumRun)
+            // Past the start of the text.  Pressing nothing is what makes an
+            // overshoot free: the notches already taken are still restorable,
+            // and the ones still held ask for nothing.
+            guard length > 0 else {
+                held = 0
+                return "deleteScrub delete start"
+            }
+            held -= 1
+            guard deleteBackward(length) else { return "deleteScrub delete failed" }
+            removed.append(String(remaining.suffix(length)))
+            remaining.removeLast(length)
+            outcome = "deleteScrub delete \(length)"
+        }
+        return outcome
     }
 
     private func restore() -> String {
+        // A held notch pressed nothing, so taking one back types nothing.  That
+        // makes it the only restore a password field ever gets.
+        if removed.isEmpty {
+            guard held > 0 else { return "deleteScrub nothing to restore" }
+            held -= 1
+            return "deleteScrub restore held \(held)"
+        }
         // Secure input can come on mid-press, so the typing side is guarded as
         // well as the reading side.
         guard !isSecureInputActive() else { return "deleteScrub restore secure" }
-        guard let run = removed.last else {
-            return isBlind ? "deleteScrub restore blind:\(readFailure)" : "deleteScrub nothing to restore"
-        }
-        guard submitter.submit(.text(run)) == .applied else {
+        guard let run = removed.last, submitter.submit(.text(run)) == .applied else {
             return "deleteScrub restore failed"
         }
         removed.removeLast()
@@ -159,39 +193,52 @@ public final class DeleteScrubCoordinator {
         return "deleteScrub restore \(run.count)"
     }
 
-    /// No reading to count from, so the notch becomes the key a plain tap would
-    /// have sent and the app decides what it takes.  Nothing knows what left,
-    /// so nothing is restorable.
-    private func blindDelete(_ granularity: DeleteScrubGranularity) -> String {
-        guard let hotkey = Self.blindHotkey[granularity],
-              submitter.submit(.hotkey(hotkey)) == .applied else {
-            return "deleteScrub delete failed"
+    /// The lift.  Whatever is still held never found a reading to count
+    /// against, so it goes out now as the key a plain tap would have sent and
+    /// the app decides what each press takes.  Nothing knew what left, so
+    /// nothing was restorable, and nothing was erased before the count settled.
+    private func flush(_ granularity: DeleteScrubGranularity) -> String {
+        guard held > 0, let hotkey = Self.blindHotkey[granularity] else {
+            return "deleteScrub end"
         }
-        return "deleteScrub delete blind:\(readFailure)"
+        var left = held
+        while left > 0 {
+            let run = min(left, Self.maximumRun)
+            guard submitter.submit(.hotkeyRun(hotkey, times: run)) == .applied else {
+                return "deleteScrub end failed"
+            }
+            left -= run
+        }
+        return "deleteScrub end blind:\(held):\(readFailure)"
     }
 
     /// The text in front of the caret before this press erases anything.  A
-    /// read that does not answer is not fatal: the next notch tries again,
-    /// which is what an Electron tree still being built needs.  Running out of
-    /// tries is what ends it.
-    private func takeSnapshot() {
-        guard let focusedText, !isSecureInputActive() else {
-            readFailure = focusedText == nil ? "noReader" : "secure"
-            isBlind = true
+    /// read that does not answer is not fatal: a later notch tries again, which
+    /// is what an Electron tree still being built needs.  The tries are spaced
+    /// and counted, so an app that never answers cannot spend the press on the
+    /// main actor.
+    private func takeSnapshotIfDue() {
+        guard let focusedText else {
+            readFailure = "noReader"
             return
         }
+        guard !isSecureInputActive() else {
+            readFailure = "secure"
+            return
+        }
+        guard reads < Self.maximumReads else { return }
+        let moment = now()
+        if let lastReadAt, moment - lastReadAt < Self.readGap { return }
+        lastReadAt = moment
+        reads += 1
+
         let answer = focusedText.textAroundCaret()
         guard case let .split(head, _) = answer else {
             readFailure = answer.label
-            failedReads += 1
-            if failedReads >= Self.maximumFailedReads { isBlind = true }
             return
         }
-        guard !head.isEmpty else {
-            readFailure = "emptyField"
-            isBlind = true
-            return
-        }
+        // An empty head is an answer like any other: there is nothing in front
+        // of the caret, so every notch of this press presses nothing.
         remaining = Array(head)
         hasSnapshot = true
     }
@@ -204,8 +251,9 @@ public final class DeleteScrubCoordinator {
         remaining = []
         hasSnapshot = false
         removed = []
-        isBlind = false
-        failedReads = 0
+        held = 0
+        reads = 0
+        lastReadAt = nil
         readFailure = ""
     }
 
