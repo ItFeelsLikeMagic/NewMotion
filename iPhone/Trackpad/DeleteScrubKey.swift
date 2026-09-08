@@ -11,8 +11,10 @@ import NewMotionShared
 /// to a word, sliding down switches it back, and the mode stays until it is
 /// slid the other way.
 ///
-/// A tap still costs exactly one message: the press says nothing until the
-/// finger actually moves.
+/// The press announces itself the moment the key goes down, before anything
+/// has been asked for, because that is when the Mac starts waking the focused
+/// field and a Chromium field takes seconds to wake.  A tap therefore costs
+/// three small messages instead of one, which is nothing beside the cursor.
 struct DeleteScrubKey: View {
     let send: (RemoteHotkey) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
@@ -20,7 +22,6 @@ struct DeleteScrubKey: View {
     @State private var tracker = DeleteScrubTracker()
     @State private var latch = DeleteGranularityLatch()
     @State private var isHeld = false
-    @State private var hasBegun = false
     /// A press that changed the unit was about the unit, not about deleting,
     /// so it must not also rub a character out when the finger lifts.
     @State private var hasChangedUnit = false
@@ -72,10 +73,10 @@ struct DeleteScrubKey: View {
         case .began:
             guard !isHeld else { return }
             isHeld = true
-            hasBegun = false
             hasChangedUnit = false
             tracker = DeleteScrubTracker()
             latch.reset()
+            scrub(.begin, granularity)
             Haptics.play(.press)
         case let .moved(translationX, translationY):
             guard isHeld else { return }
@@ -87,7 +88,6 @@ struct DeleteScrubKey: View {
             }
             let steps = tracker.advance(translationX: translationX)
             guard !steps.isEmpty else { return }
-            beginIfNeeded()
             for step in steps {
                 scrub(step.phase, granularity)
                 // The tick is the whole point: it is how a thumb counts
@@ -103,20 +103,12 @@ struct DeleteScrubKey: View {
         }
     }
 
-    /// The Mac only needs to know a press is under way once it is about to be
-    /// asked to erase something, which is also when it should start waking the
-    /// focused field.
-    private func beginIfNeeded() {
-        guard !hasBegun else { return }
-        hasBegun = true
-        scrub(.begin, granularity)
-    }
-
     private func finish(sendKey: Bool) {
         guard isHeld else { return }
         isHeld = false
-        if hasBegun { scrub(.end, granularity) }
-        hasBegun = false
+        // The lift is also where the Mac erases anything it had to hold back,
+        // so it arrives even for a tap that never slid.
+        scrub(.end, granularity)
         if sendKey { send(hotkey) }
         IPhoneDebugLog.emit("delete_scrub", [
             "steps": "\(tracker.steps)",
