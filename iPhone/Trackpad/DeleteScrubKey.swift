@@ -8,8 +8,8 @@ import NewMotionShared
 /// The delete key, which is also a dial.  A tap rubs out one unit.  Holding it
 /// and sliding left rubs out one unit at a time, with a tick for each; sliding
 /// back brings that text back.  Sliding up switches the unit from a character
-/// to a word, sliding down switches it back, and the mode stays until it is
-/// slid the other way.
+/// to a word, sliding down switches it back, and every new press starts back
+/// on characters.
 ///
 /// The press announces itself the moment the key goes down, before anything
 /// has been asked for, because that is when the Mac starts waking the focused
@@ -116,6 +116,9 @@ struct DeleteScrubKey: View {
             "unit": latch.isWord ? "word" : "character"
         ])
         tracker = DeleteScrubTracker()
+        // The key reports back to characters as soon as the finger lifts, so
+        // the label never shows a mode from a press that already ended.
+        latch.reset()
     }
 }
 #endif

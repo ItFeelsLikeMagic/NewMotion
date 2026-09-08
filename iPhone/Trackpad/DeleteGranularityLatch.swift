@@ -6,8 +6,9 @@ import Foundation
 /// sideways to erase, so a wobble on the way across must not change what the
 /// key is deleting.
 ///
-/// The mode outlives the press that set it, so the key can be tapped in word
-/// mode without holding anything.
+/// The mode only lasts for the press that set it: every new press starts back
+/// on characters, so the key never silently deletes a word because of how the
+/// last press ended.
 public struct DeleteGranularityLatch: Equatable, Sendable {
     /// Travel that flips the mode.  Most of the height of a key, so the
     /// finger has to leave the one it is on.
@@ -23,9 +24,10 @@ public struct DeleteGranularityLatch: Equatable, Sendable {
         self.isWord = isWord
     }
 
-    /// Call at the start of a press: the finger is at zero again, and only the
-    /// mode carries over.
+    /// Call at the start of a press: the finger is at zero again and the mode
+    /// is back on characters.
     public mutating func reset() {
+        isWord = false
         anchor = 0
     }
 
