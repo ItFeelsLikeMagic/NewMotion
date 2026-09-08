@@ -356,14 +356,16 @@ final class NewMotionFeatureModel: ObservableObject {
         // live session over it.
         let alreadyInUse = id == selectedMac?.deviceID
         selectedMacID = id
-        guard !alreadyInUse else { return }
-        if authenticatedSession != nil || pairingClient != nil {
+        if !alreadyInUse, authenticatedSession != nil || pairingClient != nil {
             authenticatedSession = nil
             pairingClient = nil
             handshakeHelloSent = false
             awaitingMacName = nil
             link.stop()
         }
+        // Still worth a reconnect when the row was already ticked: tapping the
+        // Mac you are on is how someone retries a link that is down. It is a
+        // no-op while a session is up.
         beginTrustedReconnect()
     }
 

@@ -58,11 +58,14 @@ public final class TrustedDeviceManager {
         // Re-pairing the same peer supersedes the old record rather than
         // adding one. Each stale record is a beacon the other side keeps
         // scanning for, and a duplicate row in the device picker.
+        //
+        // Save first. A store that throws on the way in would otherwise leave
+        // the peer with no record at all, losing a pairing that was working.
+        try store.save(record)
         for superseded in try store.allRecords()
         where superseded.peerIdentityPublicKey == peerIdentityPublicKey && superseded.deviceID != deviceID {
             try store.delete(deviceID: superseded.deviceID)
         }
-        try store.save(record)
         return Self.summary(record)
     }
 

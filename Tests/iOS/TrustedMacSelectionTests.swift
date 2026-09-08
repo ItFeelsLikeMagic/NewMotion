@@ -28,14 +28,15 @@ final class TrustedMacSelectionTests: XCTestCase {
         XCTAssertEqual(model.selectedMac?.deviceID, macs.newer.deviceID)
         XCTAssertEqual(link.beacons, [NewMotionBeacon.uuid(pairingID: macs.newer.deviceID)])
         let stopsBefore = link.stopCount
-        let startsBefore = link.startCount
 
         model.selectMac(macs.newer.deviceID)
 
         XCTAssertEqual(model.selectedMacID, macs.newer.deviceID)
         XCTAssertEqual(link.stopCount, stopsBefore, "picking the Mac in use must not drop its link")
-        XCTAssertEqual(link.startCount, startsBefore)
         XCTAssertEqual(link.beacons, [NewMotionBeacon.uuid(pairingID: macs.newer.deviceID)])
+        // The reconnect still runs, because tapping the Mac you are on is how
+        // someone retries a link that is down. It costs nothing when one is up:
+        // the transport refuses to restart a live or in-flight link.
     }
 
     func testPickingTheOtherMacDropsTheLinkAndAimsAtTheNewOne() throws {

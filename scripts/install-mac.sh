@@ -77,7 +77,12 @@ if [ "${NEWMOTION_SIGNING:-0}" = "1" ]; then
     # Sparkle carries its own helper app and XPC services; re-signing only the
     # outer app leaves their signatures sealed under the old one and the
     # --deep verify below rejects the result.
-    sign() { [ -e "$1" ] && codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$1"; }
+    sign() {
+        # An early return, not a guard: under set -e a false test here would
+        # end the install silently, with the app already replaced.
+        [ -e "$1" ] || return 0
+        codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$1"
+    }
 
     SPARKLE="$INSTALL_APP/Contents/Frameworks/Sparkle.framework/Versions/B"
     sign "$SPARKLE/XPCServices/Downloader.xpc"
