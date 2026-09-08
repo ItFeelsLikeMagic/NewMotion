@@ -96,7 +96,6 @@ public enum SharedKeyboardProtocolAdapter {
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp
         case .selectDown: return .selectDown
-        case .controlCenter: return .controlCenter
         }
     }
 }
