@@ -553,8 +553,10 @@ public enum KeyPickerGrid {
 public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
     /// A glance at the tail of a sentence, not a transcript, so far below
     /// `ProtocolBytes.maximumCount`: ten of these a second share the link with
-    /// the typing they are previewing.
-    public static let maximumUTF8Bytes = 256
+    /// the typing they are previewing.  The bytes go out as a JSON array of
+    /// numbers, four or so bytes of envelope for each one of these, so the cap
+    /// is what decides how many BLE fragments a partial costs.
+    public static let maximumUTF8Bytes = 128
 
     public let utf8: ProtocolBytes
 

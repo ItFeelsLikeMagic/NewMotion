@@ -156,6 +156,11 @@ final class NewMotionFeatureModel: ObservableObject {
     private var previewThrottle = TranscriptPreviewThrottle()
     /// Runs only while there is a preview to keep alive.
     private var previewKeepalive: Timer?
+    /// The newest words the throttle held back, and the one-shot wait that
+    /// puts them on the wire the moment its window opens.  Not published: the
+    /// banner already has them.
+    private var pendingPreview: String?
+    private var previewTrailing: Timer?
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     /// The coordinator is a parameter so a caller can hand in one over its own
@@ -1041,10 +1046,46 @@ final class NewMotionFeatureModel: ObservableObject {
     /// makes and again on every keepalive tick, so nothing here may write
     /// published state or a debug line.
     private func sendVoicePreview(_ text: String) {
-        guard isControllable,
-              let tail = previewThrottle.partial(text, at: uptime()),
-              let payload = try? TranscriptPreviewPayload(text: tail) else { return }
-        inputUplink.sendTranscriptPreview(payload)
+        guard isControllable else { return }
+        let now = uptime()
+        switch previewThrottle.partial(text, at: now) {
+        case .nothing:
+            return
+        case let .tooSoon(after):
+            holdPreviewForTrailingSend(text, after: after)
+        case let .send(tail):
+            guard let payload = try? TranscriptPreviewPayload(text: tail) else { return }
+            guard inputUplink.sendTranscriptPreview(payload) else { return }
+            previewThrottle.sent(tail, at: now)
+            // Newer words than anything waiting, so the wait is over.
+            cancelTrailingPreview()
+        }
+    }
+
+    /// The last revision of a phrase often lands inside the throttle's window,
+    /// and the analyser then goes quiet: without this the card shows those
+    /// words a second late, or not at all when the utterance ends first.  One
+    /// timer waits out the window, and later revisions only replace the words
+    /// it will carry, because the window closes at a time the wait already has
+    /// right.
+    private func holdPreviewForTrailingSend(_ text: String, after delay: TimeInterval) {
+        pendingPreview = text
+        guard previewTrailing == nil else { return }
+        previewTrailing = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.previewTrailing = nil
+                guard let pending = self.pendingPreview else { return }
+                self.pendingPreview = nil
+                self.sendVoicePreview(pending)
+            }
+        }
+    }
+
+    private func cancelTrailingPreview() {
+        previewTrailing?.invalidate()
+        previewTrailing = nil
+        pendingPreview = nil
     }
 
     /// Someone pausing mid-sentence stops the analyser revising, so nothing
@@ -1069,11 +1110,14 @@ final class NewMotionFeatureModel: ObservableObject {
         voicePreview = ""
         previewKeepalive?.invalidate()
         previewKeepalive = nil
+        // Words still waiting on the window belong to an utterance that is
+        // over, and the card is about to be cleared of them anyway.
+        cancelTrailingPreview()
         let previews = previewThrottle.sentCount
         let characters = previewThrottle.characterCount
         guard previewThrottle.clear() else { return }
         if isControllable, let payload = try? TranscriptPreviewPayload(text: "") {
-            inputUplink.sendTranscriptPreview(payload)
+            _ = inputUplink.sendTranscriptPreview(payload)
         }
         IPhoneDebugLog.emit("voice_preview", ["sent": "\(previews)", "chars": "\(characters)"])
     }

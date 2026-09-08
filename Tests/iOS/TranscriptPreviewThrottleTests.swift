@@ -4,6 +4,17 @@ import XCTest
 @testable import NewMotion_iOS
 @testable import NewMotionShared
 
+/// Deciding and recording are two calls, so the tests that are only about the
+/// decision say so once here: they offer the words and take the send as having
+/// reached the wire.
+private extension TranscriptPreviewThrottle {
+    mutating func sends(_ text: String, at now: Double) -> String? {
+        guard case let .send(tail) = partial(text, at: now) else { return nil }
+        sent(tail, at: now)
+        return tail
+    }
+}
+
 /// What the phone lets through to the Mac's card while someone is still
 /// talking. Apple's analyser revises a partial many times a second, and every
 /// one of them shares the link with the typing it is previewing.
@@ -11,7 +22,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testTheFirstPartialGoesStraightOut() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
         XCTAssertEqual(throttle.sentCount, 1)
     }
 
@@ -20,9 +31,9 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testARepeatedPartialIsNotSent() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
-        XCTAssertNil(throttle.partial("hello", at: 0.3))
-        XCTAssertNil(throttle.partial("  hello \n", at: 0.6))
+        XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
+        XCTAssertNil(throttle.sends("hello", at: 0.3))
+        XCTAssertNil(throttle.sends("  hello \n", at: 0.6))
         XCTAssertEqual(throttle.sentCount, 1)
     }
 
@@ -32,9 +43,9 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testUnchangedWordsGoOutAgainAfterASecond() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
-        XCTAssertEqual(throttle.partial("hello", at: 1), "hello")
-        XCTAssertEqual(throttle.partial("  hello \n", at: 2), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 1), "hello")
+        XCTAssertEqual(throttle.sends("  hello \n", at: 2), "hello")
         XCTAssertEqual(throttle.sentCount, 3)
     }
 
@@ -43,10 +54,10 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testUnchangedWordsAreNotResentHalfwayThroughThePause() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertEqual(throttle.partial("hello", at: 0), "hello")
-        XCTAssertNil(throttle.partial("hello", at: 0.5))
-        XCTAssertNil(throttle.partial("hello", at: 0.99))
-        XCTAssertEqual(throttle.partial("hello", at: 1.0), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
+        XCTAssertNil(throttle.sends("hello", at: 0.5))
+        XCTAssertNil(throttle.sends("hello", at: 0.99))
+        XCTAssertEqual(throttle.sends("hello", at: 1.0), "hello")
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
@@ -55,18 +66,18 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testAnEmptyPreviewIsNeverKeptAlive() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertNil(throttle.partial("", at: 0))
-        XCTAssertNil(throttle.partial("", at: 5))
+        XCTAssertNil(throttle.sends("", at: 0))
+        XCTAssertNil(throttle.sends("", at: 5))
         XCTAssertEqual(throttle.sentCount, 0)
     }
 
     func testNoMoreThanTenASecond() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertEqual(throttle.partial("one", at: 0), "one")
-        XCTAssertNil(throttle.partial("one two", at: 0.05))
-        XCTAssertNil(throttle.partial("one two three", at: 0.099))
-        XCTAssertEqual(throttle.partial("one two three four", at: 0.1), "one two three four")
+        XCTAssertEqual(throttle.sends("one", at: 0), "one")
+        XCTAssertNil(throttle.sends("one two", at: 0.05))
+        XCTAssertNil(throttle.sends("one two three", at: 0.099))
+        XCTAssertEqual(throttle.sends("one two three four", at: 0.1), "one two three four")
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
@@ -75,9 +86,9 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testAHeldBackRevisionIsNotRecordedAsSent() {
         var throttle = TranscriptPreviewThrottle()
 
-        _ = throttle.partial("one", at: 0)
-        XCTAssertNil(throttle.partial("one two", at: 0.05))
-        XCTAssertEqual(throttle.partial("one two", at: 0.2), "one two")
+        _ = throttle.sends("one", at: 0)
+        XCTAssertNil(throttle.sends("one two", at: 0.05))
+        XCTAssertEqual(throttle.sends("one two", at: 0.2), "one two")
     }
 
     /// The card only ever shows the end of a sentence, so a long one is cut
@@ -86,7 +97,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         var throttle = TranscriptPreviewThrottle()
         let words = Array(repeating: "chatter", count: 80).joined(separator: " ")
 
-        let sent = try XCTUnwrap(throttle.partial(words, at: 0))
+        let sent = try XCTUnwrap(throttle.sends(words, at: 0))
         XCTAssertLessThanOrEqual(sent.utf8.count, TranscriptPreviewPayload.maximumUTF8Bytes)
         XCTAssertTrue(words.hasSuffix(sent))
         XCTAssertTrue(sent.hasPrefix("chatter"))
@@ -124,7 +135,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertFalse(throttle.clear())
-        _ = throttle.partial("hello", at: 0)
+        _ = throttle.sends("hello", at: 0)
         XCTAssertTrue(throttle.clear())
         XCTAssertFalse(throttle.clear())
     }
@@ -134,9 +145,36 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     func testClearingStartsTheNextUtteranceFresh() {
         var throttle = TranscriptPreviewThrottle()
 
-        _ = throttle.partial("hello", at: 0)
+        _ = throttle.sends("hello", at: 0)
         _ = throttle.clear()
-        XCTAssertEqual(throttle.partial("hello", at: 0.01), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 0.01), "hello")
+        XCTAssertEqual(throttle.sentCount, 1)
+    }
+
+    /// A revision held back is owed a message, and the wait is the rest of the
+    /// window rather than the keepalive's whole second.
+    func testWordsHeldBackAskForATrailingSend() {
+        var throttle = TranscriptPreviewThrottle()
+
+        _ = throttle.sends("one", at: 0)
+        guard case let .tooSoon(after) = throttle.partial("one two", at: 0.04) else {
+            return XCTFail("new words inside the window are owed a message")
+        }
+        XCTAssertEqual(after, 0.06, accuracy: 0.001)
+    }
+
+    /// The link refusing a message leaves the card showing the words before it,
+    /// so the same words are still worth sending.
+    func testARefusedSendIsOfferedAgain() {
+        var throttle = TranscriptPreviewThrottle()
+
+        XCTAssertEqual(throttle.partial("one two", at: 0), .send("one two"))
+        // Nothing recorded: the link said no.
+        XCTAssertEqual(throttle.partial("one two", at: 0.2), .send("one two"))
+        XCTAssertEqual(throttle.sentCount, 0)
+
+        throttle.sent("one two", at: 0.2)
+        XCTAssertEqual(throttle.partial("one two", at: 0.4), .nothing)
         XCTAssertEqual(throttle.sentCount, 1)
     }
 }
@@ -159,13 +197,7 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
     func testAPauseStillPutsTheWordsBackOnTheWire() async throws {
         let clock = PreviewClock(1_000)
         let link = FakeMessageLink()
-        let mac = MacHandshakePeer()
-        let model = NewMotionFeatureModel(
-            link: link,
-            pairingCoordinator: try mac.trustedCoordinator(),
-            uptime: { clock.value }
-        )
-        try await mac.authenticate(model: model, link: link)
+        let model = try await pairedModel(link: link, clock: clock)
 
         model.onDeviceVoice.onPartialText?("hello there")
         try await settle()
@@ -187,13 +219,7 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
     func testTicksInsideTheSecondSendNothing() async throws {
         let clock = PreviewClock(1_000)
         let link = FakeMessageLink()
-        let mac = MacHandshakePeer()
-        let model = NewMotionFeatureModel(
-            link: link,
-            pairingCoordinator: try mac.trustedCoordinator(),
-            uptime: { clock.value }
-        )
-        try await mac.authenticate(model: model, link: link)
+        let model = try await pairedModel(link: link, clock: clock)
 
         model.onDeviceVoice.onPartialText?("hello there")
         try await settle()
@@ -209,13 +235,7 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
     func testTheTickStopsWhenTheUtteranceEnds() async throws {
         let clock = PreviewClock(1_000)
         let link = FakeMessageLink()
-        let mac = MacHandshakePeer()
-        let model = NewMotionFeatureModel(
-            link: link,
-            pairingCoordinator: try mac.trustedCoordinator(),
-            uptime: { clock.value }
-        )
-        try await mac.authenticate(model: model, link: link)
+        let model = try await pairedModel(link: link, clock: clock)
 
         model.onDeviceVoice.onPartialText?("hello there")
         try await settle()
@@ -227,11 +247,96 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
         model.keepVoicePreviewAlive()
         XCTAssertEqual(link.dataMessageCount, afterClear)
     }
+}
 
-    /// The model answers its recogniser and its link through a main-actor hop.
-    private func settle() async throws {
-        try await Task.sleep(for: .milliseconds(80))
+/// The words a revision adds inside the throttle's window. The analyser often
+/// goes quiet right after that last revision, so without a trailing send the
+/// card shows those words a second late, or never when the utterance ends
+/// first.
+@MainActor
+final class VoicePreviewTrailingSendTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
     }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
+        super.tearDown()
+    }
+
+    func testWordsHeldBackCrossWhenTheWindowOpens() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+
+        model.onDeviceVoice.onPartialText?("hello")
+        try await settle()
+        let afterFirstPartial = link.dataMessageCount
+
+        // The last revision of the phrase, too soon after the one before it.
+        clock.value += 0.04
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        XCTAssertEqual(link.dataMessageCount, afterFirstPartial, "the window is still closed")
+
+        // The wait is real time; the clock the throttle reads is the test's, so
+        // it has to reach past the end of the window as well.
+        clock.value += 0.07
+        spinRunLoop(for: 0.2)
+        XCTAssertEqual(
+            link.dataMessageCount,
+            afterFirstPartial + 1,
+            "nothing else would have sent those words before the keepalive"
+        )
+    }
+
+    /// Words waiting on the window belong to an utterance that is over, and
+    /// the card is being cleared of them anyway.
+    func testTheUtteranceEndingCancelsTheWait() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+
+        model.onDeviceVoice.onPartialText?("hello")
+        try await settle()
+
+        clock.value += 0.04
+        model.onDeviceVoice.onPartialText?("hello there")
+        model.onDeviceVoice.onUtteranceFinished?()
+        try await settle()
+        let afterClear = link.dataMessageCount
+
+        clock.value += 1
+        spinRunLoop(for: 0.2)
+        XCTAssertEqual(link.dataMessageCount, afterClear, "the wait went with the utterance")
+    }
+}
+
+/// A phone that has finished a trusted reconnect, and so is willing to send,
+/// on a clock the test moves by hand.
+@MainActor
+private func pairedModel(link: FakeMessageLink, clock: PreviewClock) async throws -> NewMotionFeatureModel {
+    let mac = MacHandshakePeer()
+    let model = NewMotionFeatureModel(
+        link: link,
+        pairingCoordinator: try mac.trustedCoordinator(),
+        uptime: { clock.value }
+    )
+    try await mac.authenticate(model: model, link: link)
+    return model
+}
+
+/// The model answers its recogniser and its link through a main-actor hop.
+private func settle() async throws {
+    try await Task.sleep(for: .milliseconds(80))
+}
+
+/// A trailing send is a run-loop timer, and an async test's sleep leaves the
+/// run loop parked, so the wait for one has to turn it over by hand.
+@MainActor
+private func spinRunLoop(for duration: TimeInterval) {
+    RunLoop.main.run(until: Date().addingTimeInterval(duration))
 }
 
 /// The Mac's half of a trusted reconnect, which is what it takes for the phone

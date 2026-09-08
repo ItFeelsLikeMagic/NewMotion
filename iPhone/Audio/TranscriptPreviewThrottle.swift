@@ -10,6 +10,18 @@ import NewMotionShared
 /// revisions that changed nothing and holds the rest to ten a second.  The
 /// clock is passed in rather than read, so its tests do not sleep.
 public struct TranscriptPreviewThrottle: Sendable {
+    /// What a revision is worth.
+    public enum Decision: Equatable, Sendable {
+        /// These words, cut to the wire's cap, are worth a message now.
+        case send(String)
+        /// Nothing the card is not already showing.
+        case nothing
+        /// New words, but too soon after the last send.  They are owed a
+        /// message in this many seconds; without one the card waits for the
+        /// keepalive, or never sees them at all if the utterance ends first.
+        case tooSoon(after: Double)
+    }
+
     /// Ten a second: fast enough to read as live, slow enough that the
     /// finished sentence behind it is not queued up behind previews.
     public static let minimumInterval: Double = 0.1
@@ -42,13 +54,17 @@ public struct TranscriptPreviewThrottle: Sendable {
         self.maximumUTF8Bytes = maximumUTF8Bytes
     }
 
-    /// The text to put on the wire for this partial, or nil to send nothing.
-    public mutating func partial(_ text: String, at now: Double) -> String? {
+    /// What to do with this partial.  Deciding is separate from recording so
+    /// that a message the link refuses is offered again instead of being
+    /// mistaken for words the card is already showing.
+    public mutating func partial(_ text: String, at now: Double) -> Decision {
         // The clock first: trimming and the tail walk both run the length of
         // the whole utterance, and this is called on the main actor for every
         // revision the analyser makes, most of which are held back anyway.
         let sinceLastSend = lastSentAt.map { now - $0 }
-        if let sinceLastSend, sinceLastSend < minimumInterval { return nil }
+        if let sinceLastSend, sinceLastSend < minimumInterval {
+            return .tooSoon(after: minimumInterval - sinceLastSend)
+        }
         let tail = Self.tail(
             of: text.trimmingCharacters(in: .whitespacesAndNewlines),
             maximumUTF8Bytes: maximumUTF8Bytes
@@ -58,12 +74,18 @@ public struct TranscriptPreviewThrottle: Sendable {
             // wire once the Mac's idle clear is close.  An empty preview is
             // never worth repeating: there is nothing to keep alive.
             guard !tail.isEmpty, let sinceLastSend,
-                  sinceLastSend >= keepaliveInterval else { return nil }
+                  sinceLastSend >= keepaliveInterval else { return .nothing }
         }
-        lastSent = tail
+        return .send(tail)
+    }
+
+    /// Records the words that reached the wire.  Only a send the link took
+    /// counts: one it refused left the card unchanged, so the interval and the
+    /// repeat check must both still let those words through.
+    public mutating func sent(_ text: String, at now: Double) {
+        lastSent = text
         lastSentAt = now
         sentCount += 1
-        return tail
     }
 
     /// Whether the Mac still has words on its card, and so needs the empty

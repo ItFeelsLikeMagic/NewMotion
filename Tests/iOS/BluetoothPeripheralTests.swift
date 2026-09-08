@@ -175,6 +175,47 @@ final class BluetoothPeripheralTests: XCTestCase {
         XCTAssertEqual(transport.queueCapacity(on: .control), 2)
     }
 
+    /// A `latestWins` message is never queued and never repaired, so half of
+    /// one on the wire is words the Mac can never put back together and a
+    /// caller who was told they arrived.
+    func testAMultiFragmentLatestWinsMessageIsRefusedWhole() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        // Four payload bytes a fragment, two free slots: twelve bytes is one
+        // fragment more than fits.
+        let transport = readyTransport(adapter: adapter, queueLimit: 2)
+        let link = BLEMessageLink(peripheral: transport)
+
+        let result = link.send(Data(repeating: 7, count: 12), on: .data, delivery: .latestWins)
+
+        XCTAssertEqual(result, .busy)
+        XCTAssertTrue(adapter.updates.isEmpty)
+    }
+
+    func testAMultiFragmentLatestWinsMessageGoesOutWhenItFits() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn)
+        let transport = readyTransport(adapter: adapter, queueLimit: 4)
+        let link = BLEMessageLink(peripheral: transport)
+
+        let result = link.send(Data(repeating: 7, count: 12), on: .data, delivery: .latestWins)
+
+        XCTAssertEqual(result, .sent)
+        XCTAssertEqual(adapter.updates.count, 3)
+        XCTAssertEqual(transport.queuedFrameCount, 0, "a preview never queues")
+    }
+
+    private func readyTransport(
+        adapter: FakePeripheralAdapter,
+        queueLimit: Int
+    ) -> IPhoneBLEPeripheralTransport {
+        let transport = IPhoneBLEPeripheralTransport(adapter: adapter, queueLimit: queueLimit)
+        transport.setBeacon(Self.beacon)
+        transport.setForeground(true)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitSubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacControlUUID)
+        return transport
+    }
+
     func testAdvertisingStartErrorDoesNotTearDownALiveBeacon() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
@@ -373,6 +414,9 @@ private final class FakePeripheralAdapter: IPhonePeripheralManagerAdapter {
     var stopAdvertisingCalled = false
     var removeAllServicesCalled = false
     var updateResult: Bool
+    /// What actually went out, so a test can tell a whole message from half of
+    /// one.
+    private(set) var updates: [Data] = []
 
     init(state: BLEPeripheralManagerState, updateResult: Bool = true) {
         self.state = state
@@ -397,7 +441,9 @@ private final class FakePeripheralAdapter: IPhonePeripheralManagerAdapter {
 
     @discardableResult
     func updateValue(_ data: Data, characteristicUUID: UUID) -> Bool {
-        updateResult
+        guard updateResult else { return false }
+        updates.append(data)
+        return true
     }
 
     func emitServicePublished(_ uuid: UUID) { onServicePublished?(uuid, nil) }

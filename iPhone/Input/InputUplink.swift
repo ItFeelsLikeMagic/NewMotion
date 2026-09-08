@@ -77,8 +77,10 @@ final class InputUplink {
     /// behind it.  It holds nothing down either, so it stays out of the held
     /// set, and out of the latency window where an expected refusal would bury
     /// a real one.
-    func sendTranscriptPreview(_ payload: TranscriptPreviewPayload) {
-        _ = link.send(.payload(.transcriptPreview(payload)), delivery: .latestWins)
+    /// Answers whether the words reached the wire, because a preview the link
+    /// refused must not be remembered as the one the card is showing.
+    func sendTranscriptPreview(_ payload: TranscriptPreviewPayload) -> Bool {
+        link.send(.payload(.transcriptPreview(payload)), delivery: .latestWins) == .sent
     }
 
     /// Puts one message on the link and folds it into the held set.  The beat

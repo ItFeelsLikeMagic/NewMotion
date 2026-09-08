@@ -27,8 +27,27 @@ struct MacOverlayView: View {
             .padding(.vertical, 14)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .fixedSize()
-            .animation(Self.fade, value: shown.content)
+            .animation(Self.fade, value: shape)
             .frame(width: Self.panelSize.width, height: Self.panelSize.height)
+    }
+
+    /// What the fade is allowed to notice.  A card arriving or leaving, and a
+    /// picker lighting a different key, are worth a fade; a transcript revising
+    /// its words ten times a second is not, and animating those smears them.
+    private enum CardShape: Equatable {
+        case nothing
+        case picker(HotkeyAction?)
+        case transcript
+        case hint(String)
+    }
+
+    private var shape: CardShape {
+        switch shown.content {
+        case .nothing: return .nothing
+        case let .picker(cell): return .picker(cell)
+        case .transcript: return .transcript
+        case let .hint(text): return .hint(text)
+        }
     }
 
     @ViewBuilder
