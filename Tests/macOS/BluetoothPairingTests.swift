@@ -406,6 +406,57 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.scanCount, 0)
     }
 
+    func testRejectedPeerIsNotTakenBackUntilTheBeaconsChange() {
+        let adapter = FakeCentralAdapter()
+        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
+        adapter.preconnected = [peripheral]
+        let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
+        link.start()
+        XCTAssertEqual(adapter.connectCount, 1)
+
+        link.rejectCurrentPeer()
+        XCTAssertEqual(adapter.cancelledConnections, [peripheral.identifier])
+        XCTAssertEqual(link.state, .searching)
+        link.tick()
+        link.tick()
+        XCTAssertEqual(adapter.connectCount, 1)
+
+        // Pairing the same phone again is a new beacon, and that is what lets
+        // it be taken back.
+        link.setBeacons([UUID()])
+        link.tick()
+        XCTAssertEqual(adapter.connectCount, 2)
+    }
+
+    func testForgottenPhoneCannotReconnectAndCanBePairedAgain() throws {
+        let store = InMemoryTrustedDeviceStore()
+        let mac = try MacPairingCoordinator(store: store)
+        let offer = try mac.issueOffer(displayName: "Mac", lifetime: 60)
+        let phoneIdentity = PairingIdentity()
+        let client = try PairingHandshakeClient(
+            mode: .oneTime(offer.token),
+            identity: phoneIdentity,
+            ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey()
+        )
+        let server = try mac.makeOneTimeServer(pairingID: offer.token.pairingID)
+        let serverHello = try server.accept(clientHelloData: client.hello)
+        let clientResult = try client.accept(serverHelloData: serverHello.response)
+        let serverResult = try server.accept(clientFinishData: clientResult.finish)
+        _ = try mac.rememberPairedPhone(
+            deviceID: offer.token.pairingID,
+            displayName: "Phone",
+            peerIdentityPublicKey: serverResult.peerIdentityPublicKey
+        )
+
+        try mac.revoke(deviceID: offer.token.pairingID)
+        XCTAssertTrue(mac.trustedDevices.isEmpty)
+        XCTAssertThrowsError(try mac.makeReconnectServer(for: offer.token.pairingID))
+
+        let second = try mac.issueOffer(displayName: "Mac", lifetime: 60)
+        XCTAssertNoThrow(try mac.makeOneTimeServer(pairingID: second.token.pairingID))
+    }
+
     func testLinkScansForExactlyTheBeaconsItIsGiven() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)

@@ -48,6 +48,10 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     private let inbound: [LinkChannel: BLEReassembler]
 
     private var beacons: [UUID] = []
+    /// Peripherals turned away by `rejectCurrentPeer`, so the poll that
+    /// adopts a system-held connection does not pick the same one straight
+    /// back up.
+    private var shunned: Set<UUID> = []
     private var lifecycle: BLECentralLifecycleState = .idle
     private var connectedPeripheral: BLEDiscoveredPeripheral?
     private var pendingPeripheral: BLEDiscoveredPeripheral?
@@ -99,6 +103,9 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     public func setBeacons(_ beacons: [UUID]) {
         guard beacons != self.beacons else { return }
         self.beacons = beacons
+        // A phone stays turned away only until the set of peers changes, which
+        // is what pairing that same phone again looks like from here.
+        shunned.removeAll()
         guard lifecycle == .scanning else { return }
         adapter.stopScan()
         scanForBeacons()
@@ -131,6 +138,23 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         }
         clearConnection()
         transition(to: .stopped)
+    }
+
+    /// Drops the peer on the link now and keeps it off until the beacons
+    /// change. Beacons decide which phones a scan answers, but a phone macOS is
+    /// already holding a connection to is adopted without one, so a phone this
+    /// Mac has forgotten can only be refused after it has named itself.
+    public func rejectCurrentPeer() {
+        guard let peripheral = connectedPeripheral ?? pendingPeripheral else { return }
+        shunned.insert(peripheral.identifier)
+        adapter.stopScan()
+        adapter.cancelConnection(peripheralID: peripheral.identifier)
+        clearConnection()
+        if adapter.state == .poweredOn {
+            start()
+        } else {
+            transition(to: .disconnected)
+        }
     }
 
     @discardableResult
@@ -240,7 +264,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     }
 
     private func handleDiscover(_ peripheral: BLEDiscoveredPeripheral) {
-        guard lifecycle == .scanning else { return }
+        guard lifecycle == .scanning, !shunned.contains(peripheral.identifier) else { return }
         adapter.stopScan()
         pendingPeripheral = peripheral
         pendingDeadline = now().addingTimeInterval(connectionTimeout)
