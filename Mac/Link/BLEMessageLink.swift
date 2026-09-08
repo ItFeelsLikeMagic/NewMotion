@@ -9,8 +9,10 @@ import NewMotionShared
 /// messages and four states.
 ///
 /// The scan asks the radio only for the beacons it has been given, so a phone
-/// addressed to another Mac is never seen, let alone connected to. The GATT
-/// service itself stays `NewMotionGATT.serviceUUID` on every phone.
+/// addressed to another Mac is never seen, let alone connected to, and a phone
+/// the system already holds a link to is taken up only once it has been seen on
+/// one of those beacons. The GATT service itself stays
+/// `NewMotionGATT.serviceUUID` on every phone.
 ///
 /// Core Bluetooth delivers every callback on the main queue and the link's own
 /// timer runs there too, so the connection state below is single-threaded.
@@ -106,9 +108,22 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         // A phone stays turned away only until the set of peers changes, which
         // is what pairing that same phone again looks like from here.
         shunned.removeAll()
-        guard lifecycle == .scanning else { return }
-        adapter.stopScan()
-        scanForBeacons()
+        guard adapter.state == .poweredOn else { return }
+        switch lifecycle {
+        case .scanning:
+            adapter.stopScan()
+            scanForBeacons()
+        // A QR issued with nothing on the air has nobody looking for it until
+        // something else calls `start()`, and the phone gives up first. An
+        // empty list is the opposite case: nobody to look for, so saying we
+        // are searching would be a lie.
+        case .disconnected, .waitingForBluetooth:
+            if !beacons.isEmpty { start() }
+        // A link on its way up is already the one the user picked, an idle one
+        // was never started, and a stopped one was stopped on purpose.
+        case .idle, .connecting, .discovering, .subscribing, .ready, .stopped:
+            break
+        }
     }
 
     public func start() {
@@ -239,6 +254,13 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     /// quits, and a peripheral the system is connected to never shows up in a
     /// scan; it only appears here once the relaunched app republishes the
     /// service.
+    ///
+    /// The beacon cannot be read back from a link the system already holds, so
+    /// adoption cannot check the address the way a scan does. It does not have
+    /// to: a phone that is not ours gets no further than its hello, which
+    /// `turnAwayUnknownPhone` refuses and shuns. Requiring an address here
+    /// instead would strand the case this exists for, because a phone that
+    /// still believes in a dead subscriber never advertises again.
     private func adoptSystemConnectedPeripheral() {
         for peripheral in adapter.connectedPeripherals(for: serviceUUID) {
             handleDiscover(peripheral)

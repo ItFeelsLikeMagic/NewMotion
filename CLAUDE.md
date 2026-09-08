@@ -52,7 +52,8 @@ touches building, installing, packaging, or releasing. Each script also takes
 - **Typing stops at a password field.** `SecureInput.isActive()` gates both
   injection and the word-boost walk. Keep it that way.
 - **Accessibility is tied to the exact app path and signature.** Only the copy
-  in `~/Applications` is trusted, and an unsigned rebuild drops the grant.
+  in `/Applications` is trusted, and an unsigned rebuild drops the grant.
+  That is the path `install.sh` ships to, so `install-mac.sh` writes there too.
   This is also why every release has to carry the same Developer ID: an update
   that swaps the app in place keeps the grant only if the signature matches.
 - **The iPhone app ships only through TestFlight.**

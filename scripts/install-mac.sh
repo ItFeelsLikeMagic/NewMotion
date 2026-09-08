@@ -5,14 +5,14 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 PROJECT="$ROOT_DIR/NewMotion.xcodeproj"
 DERIVED_DATA="${NEWMOTION_DERIVED_DATA:-$ROOT_DIR/DerivedData}"
-INSTALL_DIR="${NEWMOTION_MAC_INSTALL_DIR:-$HOME/Applications}"
+INSTALL_DIR="${NEWMOTION_MAC_INSTALL_DIR:-/Applications}"
 INSTALL_APP="$INSTALL_DIR/NewMotion.app"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'
 Usage: ./scripts/install-mac.sh
 
-Build the Mac companion and replace ~/Applications/NewMotion.app, then
+Build the Mac companion and replace /Applications/NewMotion.app, then
 launch only that copy. Do not open DerivedData or /tmp builds; macOS ties
 Accessibility to the exact app path and signature.
 
@@ -21,8 +21,11 @@ set NEWMOTION_SIGNING=1 and NEWMOTION_DEVELOPMENT_TEAM locally
 (optionally NEWMOTION_CODE_SIGN_IDENTITY; defaults to "Apple Development").
 Those values are never written to the repository.
 
+/Applications is where install.sh puts the release copy, so the dev copy
+lands on the same path and inherits the same Accessibility grant.
+
 Override NEWMOTION_MAC_INSTALL_DIR only if you must use a different stable
-folder. Keep it a user Applications folder, not a throwaway build directory.
+folder. Keep it an Applications folder, not a throwaway build directory.
 HELP
     exit 0
 fi
@@ -44,7 +47,11 @@ xcodebuild -project "$PROJECT" -configuration Debug -derivedDataPath "$DERIVED_D
 APP_PATH="$DERIVED_DATA/Build/Products/Debug/NewMotion.app"
 [ -d "$APP_PATH" ] || { echo "error: expected app not found at $APP_PATH" >&2; exit 1; }
 
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+[ -w "$INSTALL_DIR" ] || {
+    echo "error: cannot write to $INSTALL_DIR. Re-run with NEWMOTION_MAC_INSTALL_DIR=\"\$HOME/Applications\"." >&2
+    exit 1
+}
 if pgrep -x NewMotion >/dev/null 2>&1; then
     pkill -x NewMotion || true
     i=0
@@ -65,10 +72,25 @@ if [ "${NEWMOTION_SIGNING:-0}" = "1" ]; then
         exit 2
     }
     SIGNING_IDENTITY="${NEWMOTION_CODE_SIGN_IDENTITY:-Apple Development}"
-    FRAMEWORK="$INSTALL_APP/Contents/Frameworks/NewMotionShared.framework/Versions/A"
-    if [ -d "$FRAMEWORK" ]; then
-        codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$FRAMEWORK"
-    fi
+
+    # Nested code is sealed by whatever encloses it, so it signs inside out.
+    # Sparkle carries its own helper app and XPC services; re-signing only the
+    # outer app leaves their signatures sealed under the old one and the
+    # --deep verify below rejects the result.
+    sign() {
+        # An early return, not a guard: under set -e a false test here would
+        # end the install silently, with the app already replaced.
+        [ -e "$1" ] || return 0
+        codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$1"
+    }
+
+    SPARKLE="$INSTALL_APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+    sign "$SPARKLE/XPCServices/Downloader.xpc"
+    sign "$SPARKLE/XPCServices/Installer.xpc"
+    sign "$SPARKLE/Autoupdate"
+    sign "$SPARKLE/Updater.app"
+    sign "$SPARKLE"
+    sign "$INSTALL_APP/Contents/Frameworks/NewMotionShared.framework/Versions/A"
     codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$INSTALL_APP"
     codesign --verify --deep --strict "$INSTALL_APP"
 else

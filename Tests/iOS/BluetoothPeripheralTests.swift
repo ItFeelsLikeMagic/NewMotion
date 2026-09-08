@@ -317,7 +317,10 @@ final class BluetoothPeripheralTests: XCTestCase {
         XCTAssertEqual(adapter.advertisedService, other)
     }
 
-    func testSettingTheBeaconWhileReadyLeavesTheLinkAlone() {
+    /// Pairing with a second Mac while the first is still subscribed. The old
+    /// Mac never hangs up, so unless the phone drops the service here it never
+    /// advertises the new beacon and the new Mac scans forever.
+    func testSettingTheBeaconWhileReadyDropsTheLinkAndReadvertises() {
         let adapter = FakePeripheralAdapter(state: .poweredOn)
         let transport = IPhoneBLEPeripheralTransport(adapter: adapter)
         transport.setBeacon(Self.beacon)
@@ -329,13 +332,11 @@ final class BluetoothPeripheralTests: XCTestCase {
 
         let other = UUID()
         transport.setBeacon(other)
-        XCTAssertEqual(transport.state, .ready)
         XCTAssertEqual(transport.beacon, other)
-        XCTAssertEqual(adapter.startAdvertisingCount, 1)
-        XCTAssertFalse(adapter.stopAdvertisingCalled)
+        XCTAssertTrue(adapter.removeAllServicesCalled)
+        XCTAssertTrue(transport.subscriberIDs.isEmpty)
 
-        // The next advertisement, once the Mac lets go, carries the new beacon.
-        adapter.emitUnsubscribe("mac-test", characteristic: NewMotionGATT.phoneToMacDataUUID)
+        adapter.emitServicePublished(NewMotionGATT.serviceUUID)
         XCTAssertEqual(transport.state, .advertising)
         XCTAssertEqual(adapter.advertisedService, other)
     }

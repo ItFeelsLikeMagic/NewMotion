@@ -23,12 +23,13 @@ XcodeGen (`brew install xcodegen`).
 
 | Script | What it does |
 | --- | --- |
-| `install-mac.sh` | Builds the Mac companion and replaces `~/Applications/NewMotion.app`, then launches that copy. |
+| `install-mac.sh` | Builds the Mac companion and replaces `/Applications/NewMotion.app`, then launches that copy. |
 | `install-phone.sh` | Builds the iPhone app and installs it on a paired device with `devicectl`. |
 | `launch-phone.sh` | Launches the app already on the phone. |
 
 macOS ties the Accessibility grant to the exact app path and signature, so the
-copy you click has to be the one in `~/Applications`. Never `open` a build from
+copy you click has to be the one in `/Applications`, the same path the
+public installer uses. Never `open` a build from
 `/tmp` or `DerivedData`. Set `NEWMOTION_SIGNING=1` and
 `NEWMOTION_DEVELOPMENT_TEAM` for the local install, or the grant is dropped on
 every rebuild and you re-approve it each time.
