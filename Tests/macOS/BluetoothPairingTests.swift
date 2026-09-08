@@ -362,70 +362,81 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.writes.first?.1, NewMotionGATT.macToPhoneControlUUID)
     }
 
-    func testLinkConnectsAPeripheralTheSystemAlreadyHoldsOnStart() {
+    /// The phone app quit and the system kept the link, so the phone never
+    /// advertises again. It was seen on this Mac's beacon before that, which is
+    /// what makes it safe to take back up.
+    func testLinkAdoptsAPhoneItAlreadySawOnOneOfItsBeacons() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+
+        adapter.preconnected = [peripheral]
+        adapter.emitDisconnected(peripheral.identifier)
+
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(link.peerName, "Phone")
+        XCTAssertEqual(adapter.connectCount, 2)
+    }
+
+    /// A system-held link says only that the phone offers the NewMotion
+    /// service, which every NewMotion phone does. Adopting on that alone takes
+    /// a phone addressed to another Mac.
+    func testLinkLeavesASystemHeldPhoneItHasNeverSeenAlone() {
         let adapter = FakeCentralAdapter()
         let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
         adapter.preconnected = [peripheral]
-        let link = BLEMessageLink(adapter: adapter)
-        link.setBeacons([Self.beacon])
-        link.start()
-        XCTAssertEqual(link.state, .connecting)
-        XCTAssertEqual(link.peerName, "Phone")
-        XCTAssertEqual(adapter.connectCount, 1)
-    }
-
-    func testLinkTickAdoptsPeripheralTheSystemConnectedWhileScanning() {
-        let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
         link.setBeacons([Self.beacon])
         link.start()
         XCTAssertEqual(link.state, .searching)
-        link.tick()
         XCTAssertEqual(adapter.connectCount, 0)
 
-        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
-        adapter.preconnected = [peripheral]
         link.tick()
-        XCTAssertEqual(link.state, .connecting)
-        XCTAssertEqual(link.peerName, "Phone")
-        XCTAssertEqual(adapter.connectCount, 1)
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.connectCount, 0)
+        XCTAssertNil(link.peerName)
     }
 
-    func testLinkWithNoBeaconsSearchesWithoutScanningAndStillAdoptsASystemPeripheral() {
+    func testLinkWithNoBeaconsSearchesWithoutScanningOrAdopting() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
         link.start()
         XCTAssertEqual(link.state, .searching)
         XCTAssertEqual(adapter.scanCount, 0)
 
-        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
-        adapter.preconnected = [peripheral]
+        adapter.preconnected = [BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")]
         link.tick()
-        XCTAssertEqual(link.state, .connecting)
-        XCTAssertEqual(adapter.connectCount, 1)
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.connectCount, 0)
         XCTAssertEqual(adapter.scanCount, 0)
     }
 
     func testRejectedPeerIsNotTakenBackUntilTheBeaconsChange() {
         let adapter = FakeCentralAdapter()
-        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
-        adapter.preconnected = [peripheral]
         let link = BLEMessageLink(adapter: adapter)
         link.setBeacons([Self.beacon])
         link.start()
+        // The phone names this Mac on the air first. A link the system already
+        // holds carries no address, so that is what makes it adoptable later.
+        let peripheral = BLEDiscoveredPeripheral(identifier: UUID(), name: "Phone")
+        adapter.emitDiscover(peripheral)
         XCTAssertEqual(adapter.connectCount, 1)
 
         link.rejectCurrentPeer()
         XCTAssertEqual(adapter.cancelledConnections, [peripheral.identifier])
         XCTAssertEqual(link.state, .searching)
+        adapter.preconnected = [peripheral]
         link.tick()
         link.tick()
         XCTAssertEqual(adapter.connectCount, 1)
 
         // Pairing the same phone again is a new beacon, and that is what lets
-        // it be taken back.
+        // it be taken back. It has to name the new beacon on the air before the
+        // poll will have it, because the new list cleared the old address too.
         link.setBeacons([UUID()])
         link.tick()
+        XCTAssertEqual(adapter.connectCount, 1)
+        adapter.emitDiscover(peripheral)
         XCTAssertEqual(adapter.connectCount, 2)
     }
 
@@ -455,6 +466,20 @@ final class BluetoothPairingTests: XCTestCase {
 
         let second = try mac.issueOffer(displayName: "Mac", lifetime: 60)
         XCTAssertNoThrow(try mac.makeOneTimeServer(pairingID: second.token.pairingID))
+    }
+
+    func testANewBeaconListMakesASystemHeldPhoneProveItsAddressAgain() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        adapter.emitDisconnected(peripheral.identifier)
+        adapter.preconnected = [peripheral]
+
+        link.setBeacons([UUID()])
+        link.tick()
+
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.connectCount, 1)
     }
 
     func testLinkScansForExactlyTheBeaconsItIsGiven() {
@@ -503,6 +528,55 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.stopScanCount, stops)
         XCTAssertTrue(adapter.cancelledConnections.isEmpty)
         XCTAssertEqual(link.send(Data([1]), on: .data, delivery: .unreliableQueued), .sent)
+    }
+
+    /// The QR code is up for a minute. A beacon nobody is listening for is a
+    /// code that cannot work, so a fresh offer has to put the link back on the
+    /// air itself.
+    func testANewBeaconStartsScanningAfterTheLinkWentDown() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        adapter.state = .poweredOff
+        adapter.emitDisconnected(peripheral.identifier)
+        XCTAssertEqual(link.state, .unavailable)
+
+        adapter.state = .poweredOn
+        let offered = [Self.beacon, UUID()]
+        link.setBeacons(offered)
+
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.scannedFor.last, offered)
+    }
+
+    /// Bluetooth coming back and a fresh offer can land in either order.
+    func testANewBeaconStartsScanningOnceBluetoothIsBack() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        adapter.state = .poweredOff
+        adapter.emitStateChange(.poweredOff)
+        XCTAssertEqual(link.state, .unavailable)
+
+        adapter.state = .poweredOn
+        link.setBeacons([Self.beacon])
+
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.scannedFor.last, [Self.beacon])
+    }
+
+    func testANewBeaconLeavesAStoppedLinkStopped() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
+        link.start()
+        link.stop()
+        let scans = adapter.scanCount
+
+        link.setBeacons([UUID()])
+
+        XCTAssertEqual(link.state, .unavailable)
+        XCTAssertEqual(adapter.scanCount, scans)
     }
 }
 
@@ -553,6 +627,7 @@ private final class FakeCentralAdapter: MacCentralManagerAdapter {
     }
     func maximumWriteValueLength(peripheralID: UUID, characteristicUUID: UUID) -> Int { 20 }
 
+    func emitStateChange(_ state: BLEPeripheralManagerState) { onStateChange?(state) }
     func emitDiscover(_ peripheral: BLEDiscoveredPeripheral) { onDiscoverPeripheral?(peripheral) }
     func emitConnected(_ id: UUID) { onConnected?(id) }
     func emitServices(_ id: UUID, services: Set<UUID>) { onServicesDiscovered?(id, services, nil) }

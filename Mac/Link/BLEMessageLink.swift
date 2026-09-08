@@ -9,8 +9,10 @@ import NewMotionShared
 /// messages and four states.
 ///
 /// The scan asks the radio only for the beacons it has been given, so a phone
-/// addressed to another Mac is never seen, let alone connected to. The GATT
-/// service itself stays `NewMotionGATT.serviceUUID` on every phone.
+/// addressed to another Mac is never seen, let alone connected to, and a phone
+/// the system already holds a link to is taken up only once it has been seen on
+/// one of those beacons. The GATT service itself stays
+/// `NewMotionGATT.serviceUUID` on every phone.
 ///
 /// Core Bluetooth delivers every callback on the main queue and the link's own
 /// timer runs there too, so the connection state below is single-threaded.
@@ -52,6 +54,13 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     /// adopts a system-held connection does not pick the same one straight
     /// back up.
     private var shunned: Set<UUID> = []
+    /// Phones seen advertising one of the current beacons. A phone the system
+    /// is connected to is not advertising, so this is the only address it
+    /// carries by the time it can be adopted. A forgotten phone is addressed
+    /// here too, which is why `shunned` is a separate answer to a separate
+    /// question: this one asks who the phone was talking to, that one whether
+    /// this Mac still wants it.
+    private var addressedPeripherals: Set<UUID> = []
     private var lifecycle: BLECentralLifecycleState = .idle
     private var connectedPeripheral: BLEDiscoveredPeripheral?
     private var pendingPeripheral: BLEDiscoveredPeripheral?
@@ -84,7 +93,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
             uniqueKeysWithValues: LinkChannel.allCases.map { ($0, Self.makeReassembler()) }
         )
         adapter.onStateChange = { [weak self] state in self?.handleAdapterState(state) }
-        adapter.onDiscoverPeripheral = { [weak self] peripheral in self?.handleDiscover(peripheral) }
+        adapter.onDiscoverPeripheral = { [weak self] peripheral in self?.handleAdvertisement(peripheral) }
         adapter.onConnected = { [weak self] peripheralID in self?.handleConnected(peripheralID) }
         adapter.onConnectionFailed = { [weak self] peripheralID, _ in self?.handleConnectionFailure(peripheralID) }
         adapter.onDisconnected = { [weak self] peripheralID, _ in self?.handleDisconnected(peripheralID) }
@@ -106,9 +115,23 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         // A phone stays turned away only until the set of peers changes, which
         // is what pairing that same phone again looks like from here.
         shunned.removeAll()
-        guard lifecycle == .scanning else { return }
-        adapter.stopScan()
-        scanForBeacons()
+        // A phone proved its address against the old list, which says nothing
+        // about this one.
+        addressedPeripherals.removeAll()
+        guard adapter.state == .poweredOn else { return }
+        switch lifecycle {
+        case .scanning:
+            adapter.stopScan()
+            scanForBeacons()
+        // A QR issued with nothing on the air has nobody looking for it until
+        // something else calls `start()`, and the phone gives up first.
+        case .disconnected, .waitingForBluetooth:
+            start()
+        // A link on its way up is already the one the user picked, an idle one
+        // was never started, and a stopped one was stopped on purpose.
+        case .idle, .connecting, .discovering, .subscribing, .ready, .stopped:
+            break
+        }
     }
 
     public func start() {
@@ -123,8 +146,7 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         startPolling()
     }
 
-    /// With no beacons there is nobody to look for, but a phone the system
-    /// already holds a link to is still adopted by polling.
+    /// With no beacons there is nobody to look for.
     private func scanForBeacons() {
         guard !beacons.isEmpty else { return }
         adapter.scan(for: beacons)
@@ -141,9 +163,9 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     }
 
     /// Drops the peer on the link now and keeps it off until the beacons
-    /// change. Beacons decide which phones a scan answers, but a phone macOS is
-    /// already holding a connection to is adopted without one, so a phone this
-    /// Mac has forgotten can only be refused after it has named itself.
+    /// change. Beacons decide which phones this Mac answers, but a forgotten
+    /// phone is addressed here as legitimately as any other, so being wanted
+    /// is a separate question from being addressed and is answered here.
     public func rejectCurrentPeer() {
         guard let peripheral = connectedPeripheral ?? pendingPeripheral else { return }
         shunned.insert(peripheral.identifier)
@@ -239,8 +261,17 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     /// quits, and a peripheral the system is connected to never shows up in a
     /// scan; it only appears here once the relaunched app republishes the
     /// service.
+    ///
+    /// The system knows only the GATT service, which every NewMotion phone
+    /// offers, so the beacon that names the one Mac a phone means to reach
+    /// cannot be read back from a link the system already holds. Adopting on
+    /// the service alone would take a phone addressed to another Mac, so only a
+    /// phone this Mac has already seen on one of its beacons is adopted. A
+    /// phone it has not seen is left alone, and once nothing here holds the
+    /// link the system drops it and the phone advertises again.
     private func adoptSystemConnectedPeripheral() {
         for peripheral in adapter.connectedPeripherals(for: serviceUUID) {
+            guard addressedPeripherals.contains(peripheral.identifier) else { continue }
             handleDiscover(peripheral)
             if lifecycle != .scanning { break }
         }
@@ -261,6 +292,14 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
             transition(to: .waitingForBluetooth)
             if wasUp { onError?(.unavailable) }
         }
+    }
+
+    /// The radio was asked for this Mac's beacons and nothing else, so anything
+    /// an advertisement turns up is addressed here. That is worth remembering:
+    /// the same phone carries no address at all once the system holds the link.
+    private func handleAdvertisement(_ peripheral: BLEDiscoveredPeripheral) {
+        addressedPeripherals.insert(peripheral.identifier)
+        handleDiscover(peripheral)
     }
 
     private func handleDiscover(_ peripheral: BLEDiscoveredPeripheral) {
