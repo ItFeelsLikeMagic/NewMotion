@@ -10,8 +10,9 @@ import NewMotionShared
 /// fires the lit one.  The Mac holds nothing down while it lasts, so a press
 /// that never ends leaves nothing stuck.
 ///
-/// Like the delete keys, the press says nothing until the finger actually
-/// moves, so a stray tap costs no message and fires nothing.
+/// Like the delete keys, the press announces itself the moment the key goes
+/// down, so the card is already up by the time the finger starts to move.  A
+/// stray tap therefore costs one message, and still fires nothing.
 struct CommandPickerKey: View {
     let picker: (KeyPickerPhase, HotkeyAction?) -> Void
 
@@ -59,6 +60,7 @@ struct CommandPickerKey: View {
             tracker = SlideStepTracker()
             press = KeyPickerPress()
             litName = ""
+            if let message = press.begin() { picker(message.phase, message.cell) }
             Haptics.play(.press)
         case let .moved(translationX, translationY):
             guard isHeld else { return }
@@ -78,8 +80,8 @@ struct CommandPickerKey: View {
         }
     }
 
-    /// A press that never lit a cell has nothing to close and nothing to fire,
-    /// which is what makes a stray tap on this key free.
+    /// Every press closes the card it opened.  A commit that lit no cell fires
+    /// nothing, which is what keeps a stray tap on this key harmless.
     private func finish(committing: Bool) {
         guard isHeld else { return }
         isHeld = false
