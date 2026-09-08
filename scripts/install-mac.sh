@@ -72,10 +72,20 @@ if [ "${NEWMOTION_SIGNING:-0}" = "1" ]; then
         exit 2
     }
     SIGNING_IDENTITY="${NEWMOTION_CODE_SIGN_IDENTITY:-Apple Development}"
-    FRAMEWORK="$INSTALL_APP/Contents/Frameworks/NewMotionShared.framework/Versions/A"
-    if [ -d "$FRAMEWORK" ]; then
-        codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$FRAMEWORK"
-    fi
+
+    # Nested code is sealed by whatever encloses it, so it signs inside out.
+    # Sparkle carries its own helper app and XPC services; re-signing only the
+    # outer app leaves their signatures sealed under the old one and the
+    # --deep verify below rejects the result.
+    sign() { [ -e "$1" ] && codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$1"; }
+
+    SPARKLE="$INSTALL_APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+    sign "$SPARKLE/XPCServices/Downloader.xpc"
+    sign "$SPARKLE/XPCServices/Installer.xpc"
+    sign "$SPARKLE/Autoupdate"
+    sign "$SPARKLE/Updater.app"
+    sign "$SPARKLE"
+    sign "$INSTALL_APP/Contents/Frameworks/NewMotionShared.framework/Versions/A"
     codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$INSTALL_APP"
     codesign --verify --deep --strict "$INSTALL_APP"
 else
