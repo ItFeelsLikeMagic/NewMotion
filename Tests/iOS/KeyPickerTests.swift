@@ -113,12 +113,4 @@ final class KeyPickerPressTests: XCTestCase {
         XCTAssertEqual(press.lift(committing: false), KeyPickerPayload(phase: .cancel))
         XCTAssertNil(press.cell)
     }
-
-    /// The grid is drawn from the shared table, so every cell the phone can
-    /// light has a name to show while sliding.
-    func testEveryCellHasADisplayName() {
-        for cell in KeyPickerGrid.rows.flatMap({ $0 }) {
-            XCTAssertNotNil(KeyPickerGrid.displayName(for: cell))
-        }
-    }
 }

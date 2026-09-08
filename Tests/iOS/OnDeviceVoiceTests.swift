@@ -81,6 +81,37 @@ final class OnDeviceVoiceTests: XCTestCase {
     }
 }
 
+/// An utterance can end having produced no words at all, and until it says so
+/// nothing takes back the preview it left behind.
+@MainActor
+final class VoicePreviewEndTests: XCTestCase {
+    /// The same clear that empties the banner is the one that empties the
+    /// throttle and owes the Mac its empty message, so a silent utterance
+    /// leaving the banner up means the next one's opening partial would be
+    /// swallowed as a repeat.
+    func testAnUtteranceThatProducedNoTextStillEndsThePreview() async throws {
+        let link = FakeMessageLink()
+        let model = NewMotionFeatureModel(
+            link: link,
+            pairingCoordinator: try IPhonePairingCoordinator(store: InMemoryTrustedDeviceStore())
+        )
+
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        XCTAssertEqual(model.voicePreview, "hello there")
+
+        // No `onText`: the analyser settled without a sentence.
+        model.onDeviceVoice.onUtteranceFinished?()
+        try await settle()
+        XCTAssertEqual(model.voicePreview, "")
+    }
+
+    /// The model answers its recogniser through a main-actor hop.
+    private func settle() async throws {
+        try await Task.sleep(for: .milliseconds(80))
+    }
+}
+
 /// The Mac's screen words and the owner's typed words become one list, and a
 /// finished sentence has to fit the wire.
 final class VoiceBoostMergeTests: XCTestCase {

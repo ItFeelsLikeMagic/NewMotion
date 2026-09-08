@@ -77,9 +77,8 @@ final class InputUplink {
     /// behind it.  It holds nothing down either, so it stays out of the held
     /// set, and out of the latency window where an expected refusal would bury
     /// a real one.
-    @discardableResult
-    func sendTranscriptPreview(_ payload: TranscriptPreviewPayload) -> Bool {
-        link.send(.payload(.transcriptPreview(payload)), delivery: .latestWins) == .sent
+    func sendTranscriptPreview(_ payload: TranscriptPreviewPayload) {
+        _ = link.send(.payload(.transcriptPreview(payload)), delivery: .latestWins)
     }
 
     /// Puts one message on the link and folds it into the held set.  The beat

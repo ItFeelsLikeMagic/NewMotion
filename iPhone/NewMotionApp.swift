@@ -148,7 +148,7 @@ final class NewMotionFeatureModel: ObservableObject {
     private var reconnectFailures = 0
     /// Speech becomes text here and travels as text; nothing the microphone
     /// hears ever leaves the phone.
-    private let onDeviceVoice = OnDeviceVoice()
+    let onDeviceVoice = OnDeviceVoice()
     private let voiceBoost = VoiceBoostBox()
     /// Holds back the partials the Mac's card does not need. It keeps the last
     /// preview so it can tell a revision from a repeat; nothing is stored past
@@ -274,6 +274,13 @@ final class NewMotionFeatureModel: ObservableObject {
         }
         onDeviceVoice.onPartialText = { [weak self] text in
             Task { @MainActor in self?.showVoicePreview(text) }
+        }
+        // An utterance can end having produced no text at all: silence, or a
+        // recogniser that failed.  Nothing else takes the preview back on that
+        // path, and a throttle still holding the last partial would swallow
+        // the next utterance's identical opening one as a repeat.
+        onDeviceVoice.onUtteranceFinished = { [weak self] in
+            Task { @MainActor in self?.clearVoicePreview() }
         }
         onDeviceVoice.onReadiness = { [weak self] readiness in
             Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
@@ -1141,18 +1148,15 @@ final class NewMotionFeatureModel: ObservableObject {
             latestAction = "Pair before using shortcuts"
             return
         }
-        guard inputUplink.send(.keyPicker(KeyPickerPayload(phase: phase, cell: cell))) else {
-            latestAction = "Shortcut send failed"
-            return
-        }
-        // Quiet on the highlights, like the delete notches.  Narrating each one
-        // republishes the model, which rebuilds the whole trackpad screen under
-        // the finger that is still sliding.
+        let sent = inputUplink.send(.keyPicker(KeyPickerPayload(phase: phase, cell: cell)))
+        // Silent on begin as well as on the highlights.  Begin lands on the
+        // first notch, with the finger already sliding, so narrating it - or
+        // narrating a failure to send it - republishes the model, which
+        // rebuilds the whole trackpad screen under that finger.
         switch phase {
-        case .begin: latestAction = "Choosing a shortcut"
-        case .commit: latestAction = "Sent a shortcut"
-        case .cancel: latestAction = "Shortcut cancelled"
-        case .highlight: break
+        case .begin, .highlight: break
+        case .commit: latestAction = sent ? "Sent a shortcut" : "Shortcut send failed"
+        case .cancel: latestAction = sent ? "Shortcut cancelled" : "Shortcut send failed"
         }
     }
 

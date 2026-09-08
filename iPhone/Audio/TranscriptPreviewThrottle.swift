@@ -35,12 +35,15 @@ public struct TranscriptPreviewThrottle: Sendable {
 
     /// The text to put on the wire for this partial, or nil to send nothing.
     public mutating func partial(_ text: String, at now: Double) -> String? {
+        // The clock first: trimming and the tail walk both run the length of
+        // the whole utterance, and this is called on the main actor for every
+        // revision the analyser makes, most of which are held back anyway.
+        if let lastSentAt, now - lastSentAt < minimumInterval { return nil }
         let tail = Self.tail(
             of: text.trimmingCharacters(in: .whitespacesAndNewlines),
             maximumUTF8Bytes: maximumUTF8Bytes
         )
         guard tail != lastSent else { return nil }
-        if let lastSentAt, now - lastSentAt < minimumInterval { return nil }
         lastSent = tail
         lastSentAt = now
         sentCount += 1
