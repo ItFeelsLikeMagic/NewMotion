@@ -1,9 +1,10 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
-/// The upright layout: trackpad on top, keys under both thumbs.  Each cluster
-/// keeps its frequent keys in the column nearest the hold bar, so the same
-/// reach finds the same kind of key whichever hand holds the phone.
+/// The upright layout: trackpad on top, keys under both thumbs.  Every key is
+/// in one of the two clusters, so nothing needs a stretch past the row a thumb
+/// rests on, and each cluster keeps its frequent keys in the column nearest
+/// the hold bar.
 struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     @ObservedObject var pushToTalk: PushToTalkController
     let keys: RemoteKeys
@@ -11,69 +12,51 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     @ViewBuilder let controls: Controls
 
     var body: some View {
-        VStack(spacing: 12) {
-            trackpad
-                .overlay { controls }
-                // The scroll strips are the thing a thumb reaches for without
-                // looking, so they run to the side of the screen rather than
-                // stopping short of it and leaving a dead margin.
-                .padding(.horizontal, -RemoteKeyMetrics.contentPadding)
+        // The pad is pulled out to the glass by hand rather than by ignoring
+        // the safe area: inside a padded stack that modifier leaves it where
+        // it was, and the inset has to be cancelled to reach the top anyway.
+        GeometryReader { proxy in
+            VStack(spacing: 12) {
+                // Only the pad goes out to the edges.  The controls floating on
+                // it stay in the safe area, clear of the notch, and stay
+                // against the bottom of the pad when a keyboard shortens it.
+                ZStack {
+                    trackpad
+                        .padding(.horizontal, -RemoteKeyMetrics.contentPadding)
+                        .padding(.top, -(RemoteKeyMetrics.contentPadding + proxy.safeAreaInsets.top))
+                    controls
+                        .clearOfKeyboard()
+                }
 
-            VStack(spacing: RemoteKeyMetrics.spacing) {
-                chordRow
                 thumbClusters
             }
-        }
-        .padding(RemoteKeyMetrics.contentPadding)
-    }
-
-    /// Whole-window and whole-tab keys.  They are reached for far less often
-    /// than the thumb keys, so they take the row a thumb has to stretch for and
-    /// leave the corners to return and delete.  The three that are held and
-    /// dragged sit in the middle, where a thumb lands squarely enough to drag
-    /// from.
-    private var chordRow: some View {
-        HStack(spacing: RemoteKeyMetrics.spacing) {
-            chordSlot { keys.newItem }
-            chordSlot { keys.selectAll }
-            chordSlot { keys.appSwitcher }
-            chordSlot { keys.select }
-            chordSlot { keys.nextTab }
-            chordSlot { keys.newTab }
-            chordSlot { keys.closeWindow }
+            .padding(RemoteKeyMetrics.contentPadding)
         }
     }
 
-    /// One stretched cell of the chord row.  The row is wider than it is tall,
-    /// so its keys take the width they are given rather than a fixed one.
-    private func chordSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity)
-            .frame(height: RemoteKeyMetrics.keyHeight)
-    }
-
+    /// The inner column of each cluster is the one a thumb finds first, so
+    /// return and delete sit against the hold bar on the right and copy and
+    /// paste on the left.  The three keys that are held and dragged take the
+    /// outer half, where a thumb has room to travel without leaving the phone.
     private var thumbClusters: some View {
         HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
             cluster {
                 slot { keys.escape }
-                slot { keys.nextWindow }
-            } bottom: {
                 slot { keys.copy }
+            } bottom: {
+                slot { keys.appSwitcher }
                 slot { keys.paste }
             }
 
             PushToTalkButton(controller: pushToTalk)
                 .frame(maxWidth: .infinity)
 
-            // Return takes the inner top corner: it is the key that follows a
-            // dictated line, so it sits right against the hold bar.  The three
-            // deletes fill the rest, growing outward from the character.
             cluster {
                 slot { keys.returnKey }
-                slot { keys.deleteLine }
+                slot { keys.nextTab }
             } bottom: {
-                slot { keys.deleteCharacter }
-                slot { keys.deleteWord }
+                slot { keys.delete }
+                slot { keys.select }
             }
         }
     }

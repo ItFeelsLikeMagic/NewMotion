@@ -1209,25 +1209,20 @@ extension RemoteHotkey {
         case .return: return "return"
         case .deleteBackward: return "delete"
         case .deleteWordBackward: return "⌥⌫"
-        case .deleteLineBackward: return "⌘⌫"
         case .copy: return "copy"
         case .paste: return "paste"
         case .undo: return "undo"
         case .redo: return "redo"
-        case .selectAll: return "⌘A"
         case .tab: return "tab"
         case .arrowUp: return "up"
         case .arrowDown: return "down"
         case .arrowLeft: return "left"
         case .arrowRight: return "right"
-        case .nextWindow: return "⌘`"
-        case .newItem: return "⌘N"
-        case .newTab: return "⌘T"
-        case .closeWindow: return "⌘W"
         case .selectLeft: return "⇧←"
         case .selectRight: return "⇧→"
         case .selectUp: return "⇧↑"
         case .selectDown: return "⇧↓"
+        case .controlCenter: return "control"
         }
     }
 
@@ -1237,14 +1232,9 @@ extension RemoteHotkey {
         case .return: return "Return"
         case .deleteBackward: return "Backspace"
         case .deleteWordBackward: return "Backspace word"
-        case .deleteLineBackward: return "Backspace line"
         case .copy: return "Copy"
         case .paste: return "Paste"
-        case .selectAll: return "Select all"
-        case .nextWindow: return "Next window"
-        case .newItem: return "New"
-        case .newTab: return "New tab"
-        case .closeWindow: return "Close window"
+        case .controlCenter: return "Control Center"
         default: return buttonTitle
         }
     }
@@ -1443,6 +1433,8 @@ private struct RemoteControlScreen: View {
         ZStack {
             SettingsButton { isSettingsShowing = true }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            ControlCenterButton { model.sendHotkey(.controlCenter) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 LayoutToggleButton(mode: model.layoutMode) {
                     model.setLayoutMode(model.layoutMode.next)
@@ -1475,6 +1467,26 @@ private struct SettingsButton: View {
         .foregroundStyle(Color.primary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel("Settings")
+    }
+}
+
+/// Opens the Mac's Control Centre, which is the one place brightness, volume,
+/// and Wi-Fi all live.  It rides on the trackpad rather than taking a key,
+/// because it opens a panel the trackpad then has to point at.
+private struct ControlCenterButton: View {
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: Haptics.tap(open)) {
+            Image(systemName: "switch.2")
+                .font(.title3)
+                .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.tertiarySystemFill))
+        .foregroundStyle(Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("Control Center")
     }
 }
 

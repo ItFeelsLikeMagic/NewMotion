@@ -89,6 +89,55 @@ final class DeleteScrubTests: XCTestCase {
         XCTAssertEqual(DeleteScrubStep.delete.phase, .delete)
         XCTAssertEqual(DeleteScrubStep.restore.phase, .restore)
     }
+
+    // MARK: - Sliding up for words
+
+    func testSlidingUpEngagesWordsAndSlidingBackDisengages() {
+        var latch = DeleteGranularityLatch()
+        let travel = DeleteGranularityLatch.travel
+
+        XCTAssertFalse(latch.advance(translationY: -travel + 1))
+        XCTAssertFalse(latch.isWord)
+        XCTAssertTrue(latch.advance(translationY: -travel))
+        XCTAssertTrue(latch.isWord)
+        XCTAssertFalse(latch.advance(translationY: -travel + 1))
+        XCTAssertTrue(latch.advance(translationY: 0))
+        XCTAssertFalse(latch.isWord)
+    }
+
+    /// A slide across is the other thing this key does, so travel along it
+    /// must never change what a notch takes off.
+    func testSlidingSidewaysNeverChangesTheUnit() {
+        var latch = DeleteGranularityLatch()
+
+        XCTAssertFalse(latch.advance(translationY: 4))
+        XCTAssertFalse(latch.advance(translationY: -8))
+        XCTAssertFalse(latch.isWord)
+    }
+
+    /// The way back is one full travel from wherever the flip happened, not
+    /// from where the finger landed.
+    func testTheWayBackIsMeasuredFromTheFlip() {
+        var latch = DeleteGranularityLatch()
+        let travel = DeleteGranularityLatch.travel
+
+        XCTAssertTrue(latch.advance(translationY: -travel * 3))
+        XCTAssertFalse(latch.advance(translationY: -travel * 2.5))
+        XCTAssertTrue(latch.advance(translationY: -travel * 2))
+        XCTAssertFalse(latch.isWord)
+    }
+
+    /// The mode is the point of the key, so it survives the press that set it;
+    /// only the travel it is measured against starts over.
+    func testTheUnitOutlivesThePress() {
+        var latch = DeleteGranularityLatch()
+        XCTAssertTrue(latch.advance(translationY: -DeleteGranularityLatch.travel))
+
+        latch.reset()
+
+        XCTAssertTrue(latch.isWord)
+        XCTAssertFalse(latch.advance(translationY: -DeleteGranularityLatch.travel))
+    }
 }
 
 /// The two-axis drag behind the selection key and the arrow pad.  It runs on

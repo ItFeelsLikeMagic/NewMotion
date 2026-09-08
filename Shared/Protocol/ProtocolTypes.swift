@@ -460,6 +460,7 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case selectRight = 26
     case selectUp = 27
     case selectDown = 28
+    case controlCenter = 29
 }
 
 /// Holding a modifier and walking with Tab: Command for the app switcher,
