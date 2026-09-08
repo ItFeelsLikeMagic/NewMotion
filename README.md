@@ -27,7 +27,7 @@ hardware but has not been through its release checklist.
 **Mac companion, one line.** Paste this into Terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ItFeelsLikeMagic/NewMotion/main/install.sh | sh
+curl -fsSL https://itfeelslikemagic.github.io/NewMotion/install.sh | sh
 ```
 
 It downloads the latest release, refuses to go on unless Apple signed and

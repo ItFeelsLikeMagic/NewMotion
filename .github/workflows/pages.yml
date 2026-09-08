@@ -1,0 +1,49 @@
+# Publishes install.sh to GitHub Pages so the one-liner has a stable, short URL
+# that never mentions a branch. The file here is a copy of the one in the repo
+# root; that root copy stays the only one anyone edits.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp install.sh site/install.sh
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>NewMotion</title>
+          <meta http-equiv="refresh" content="0; url=https://github.com/ItFeelsLikeMagic/NewMotion">
+          <a href="https://github.com/ItFeelsLikeMagic/NewMotion">NewMotion</a>
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
