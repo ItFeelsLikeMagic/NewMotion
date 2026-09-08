@@ -1,0 +1,95 @@
+#if canImport(SwiftUI) && os(iOS)
+import SwiftUI
+
+#if canImport(NewMotionShared)
+import NewMotionShared
+#endif
+
+/// The Command key that is also a menu.  Hold it and slide, and a card on the
+/// Mac lights its way across the shared grid of shortcuts; lift, and the Mac
+/// fires the lit one.  The Mac holds nothing down while it lasts, so a press
+/// that never ends leaves nothing stuck.
+///
+/// Like the delete keys, the press says nothing until the finger actually
+/// moves, so a stray tap costs no message and fires nothing.
+struct CommandPickerKey: View {
+    let picker: (KeyPickerPhase, HotkeyAction?) -> Void
+
+    @State private var tracker = SlideStepTracker()
+    @State private var press = KeyPickerPress()
+    @State private var isHeld = false
+    /// The lit cell's name, kept here rather than on the model: the model is
+    /// published, and a write per notch would rebuild the screen under the
+    /// finger that is still sliding.
+    @State private var litName = ""
+
+    var body: some View {
+        Text("⌘")
+            .heldKeyStyle(isHeld: isHeld)
+            // The name is always in the tree and only fades, because swapping
+            // it in and out rebuilds the surface below: the removed view
+            // leaves the window, which reads as a cancelled press, and the
+            // slide dies after its first notch.
+            .overlay(alignment: .bottom) { name }
+            .holdSlide(
+                "key_picker",
+                spokenName: "Command shortcuts. Hold and slide to choose.",
+                onPhase: handle
+            )
+    }
+
+    /// The phone's own copy of what is lit.  The Mac's card is the display
+    /// this gesture is aimed at, but it must not be the only one.
+    private var name: some View {
+        Text(litName)
+            .font(.caption2)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .padding(.horizontal, 3)
+            .background(Color.black.opacity(0.35), in: Capsule())
+            .padding(2)
+            .opacity(litName.isEmpty ? 0 : 1)
+    }
+
+    private func handle(_ phase: HoldSlidePhase) {
+        switch phase {
+        case .began:
+            guard !isHeld else { return }
+            isHeld = true
+            tracker = SlideStepTracker()
+            press = KeyPickerPress()
+            litName = ""
+            Haptics.play(.press)
+        case let .moved(translationX, translationY):
+            guard isHeld else { return }
+            for step in tracker.advance(translationX: translationX, translationY: translationY) {
+                let messages = press.notch(step)
+                guard !messages.isEmpty else { continue }
+                for message in messages { picker(message.phase, message.cell) }
+                litName = press.cell.flatMap { KeyPickerGrid.displayName(for: $0) } ?? ""
+                // The tick is how a thumb counts cells off a screen it is not
+                // looking at.
+                Haptics.play(.step)
+            }
+        case .ended:
+            finish(committing: true)
+        case .cancelled:
+            finish(committing: false)
+        }
+    }
+
+    /// A press that never lit a cell has nothing to close and nothing to fire,
+    /// which is what makes a stray tap on this key free.
+    private func finish(committing: Bool) {
+        guard isHeld else { return }
+        isHeld = false
+        if let message = press.lift(committing: committing) {
+            picker(message.phase, message.cell)
+            Haptics.play(.release)
+            IPhoneDebugLog.emit("key_picker", ["end": committing ? "commit" : "cancel"])
+        }
+        tracker = SlideStepTracker()
+        litName = ""
+    }
+}
+#endif

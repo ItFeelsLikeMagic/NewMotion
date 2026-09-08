@@ -71,6 +71,17 @@ final class InputUplink {
         return deliver(payload)
     }
 
+    /// A preview never queues, for the same reason a beat does not: ten a
+    /// second on the ordered path would sit ahead of the very typing they are
+    /// previewing, and a partial that arrives late is worth less than the one
+    /// behind it.  It holds nothing down either, so it stays out of the held
+    /// set, and out of the latency window where an expected refusal would bury
+    /// a real one.
+    @discardableResult
+    func sendTranscriptPreview(_ payload: TranscriptPreviewPayload) -> Bool {
+        link.send(.payload(.transcriptPreview(payload)), delivery: .latestWins) == .sent
+    }
+
     /// Puts one message on the link and folds it into the held set.  The beat
     /// is settled by the caller, once, after the whole event has gone out: a
     /// click is a press and a release together, and nothing is held in between.

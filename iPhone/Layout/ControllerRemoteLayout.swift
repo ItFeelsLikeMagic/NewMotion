@@ -56,12 +56,15 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
         VStack(spacing: RemoteKeyMetrics.spacing) {
             // The keys a thumb reaches for least sit furthest from the hold
             // bar, and the two that are held and dragged sit beside it, so a
-            // drag starts from where the thumb already rests.
+            // drag starts from where the thumb already rests.  The picker is
+            // the other Command chord chooser, so it sits beside the app
+            // switcher rather than among the keys that fire on a tap.
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 slot { keys.escape }
                 slot { keys.copy }
                 slot { keys.paste }
                 slot { keys.appSwitcher }
+                slot { keys.commandPicker }
             }
 
             // The hold bar is the point of the whole column, so it takes every

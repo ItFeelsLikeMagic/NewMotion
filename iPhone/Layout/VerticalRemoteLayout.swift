@@ -1,10 +1,10 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
-/// The upright layout: trackpad on top, keys under both thumbs.  Every key is
-/// in one of the two clusters, so nothing needs a stretch past the row a thumb
-/// rests on, and each cluster keeps its frequent keys in the column nearest
-/// the hold bar.
+/// The upright layout: trackpad on top, keys under both thumbs.  Every key a
+/// thumb taps is in one of the two clusters, so nothing needs a stretch past
+/// the row a thumb rests on, and each cluster keeps its frequent keys in the
+/// column nearest the hold bar.
 struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     @ObservedObject var pushToTalk: PushToTalkController
     let keys: RemoteKeys
@@ -29,9 +29,20 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
                 }
 
                 thumbClusters
+                pickerRow
             }
             .padding(RemoteKeyMetrics.contentPadding)
         }
+    }
+
+    /// The picker is a grid, not a key: it wants more room to slide across
+    /// than a cluster cell gives it, and it belongs to neither thumb.  A row
+    /// of its own under both clusters is the widest space left, and either
+    /// thumb reaches it without leaving the phone.
+    private var pickerRow: some View {
+        keys.commandPicker
+            .frame(maxWidth: .infinity)
+            .frame(height: RemoteKeyMetrics.keyHeight)
     }
 
     /// The inner column of each cluster is the one a thumb finds first, so

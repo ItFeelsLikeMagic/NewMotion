@@ -150,6 +150,10 @@ final class NewMotionFeatureModel: ObservableObject {
     /// hears ever leaves the phone.
     private let onDeviceVoice = OnDeviceVoice()
     private let voiceBoost = VoiceBoostBox()
+    /// Holds back the partials the Mac's card does not need. It keeps the last
+    /// preview so it can tell a revision from a repeat; nothing is stored past
+    /// the utterance.
+    private var previewThrottle = TranscriptPreviewThrottle()
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     /// The coordinator is a parameter so a caller can hand in one over its own
@@ -263,13 +267,13 @@ final class NewMotionFeatureModel: ObservableObject {
         audioController.onUtteranceEnd = { onDevice.end() }
         audioController.onUtteranceCancel = { [weak self] in
             onDevice.cancel()
-            Task { @MainActor in self?.voicePreview = "" }
+            Task { @MainActor in self?.clearVoicePreview() }
         }
         onDeviceVoice.onText = { [weak self] text in
             Task { @MainActor in self?.typeTranscribedText(text) }
         }
         onDeviceVoice.onPartialText = { [weak self] text in
-            Task { @MainActor in self?.voicePreview = text }
+            Task { @MainActor in self?.showVoicePreview(text) }
         }
         onDeviceVoice.onReadiness = { [weak self] readiness in
             Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
@@ -1015,11 +1019,35 @@ final class NewMotionFeatureModel: ObservableObject {
         cursorMixer.handle(events)
     }
 
+    /// The rough words so far, on the phone's own banner and on the Mac's
+    /// card.  They are never stored and never logged: each one replaces the
+    /// last, and the debug line counts characters rather than carrying any.
+    private func showVoicePreview(_ text: String) {
+        voicePreview = text
+        guard isControllable,
+              let tail = previewThrottle.partial(text, at: ProcessInfo.processInfo.systemUptime),
+              let payload = try? TranscriptPreviewPayload(text: tail) else { return }
+        inputUplink.sendTranscriptPreview(payload)
+    }
+
+    /// The utterance is over, so the preview goes.  The empty message only
+    /// makes the common case instant; the Mac clears itself if it never lands.
+    private func clearVoicePreview() {
+        voicePreview = ""
+        let previews = previewThrottle.sentCount
+        let characters = previewThrottle.characterCount
+        guard previewThrottle.clear() else { return }
+        if isControllable, let payload = try? TranscriptPreviewPayload(text: "") {
+            inputUplink.sendTranscriptPreview(payload)
+        }
+        IPhoneDebugLog.emit("voice_preview", ["sent": "\(previews)", "chars": "\(characters)"])
+    }
+
     /// The on-device route's one delivery point.  A finished sentence crosses
     /// four places it can be dropped without a word, so this one says which;
     /// counts only, never the text.
     private func typeTranscribedText(_ text: String) {
-        voicePreview = ""
+        clearVoicePreview()
         guard isControllable else {
             IPhoneDebugLog.emit("ondevice_drop", ["why": "notReady", "link": linkState.label])
             latestAction = "Pair before typing"
@@ -1102,6 +1130,29 @@ final class NewMotionFeatureModel: ObservableObject {
         case .begin: latestAction = "Erasing"
         case .end: latestAction = "Erased"
         case .delete, .restore: break
+        }
+    }
+
+    /// One phase of a held Command picker.  Nothing is held down on the Mac
+    /// between them: the chord is fired once, at commit, from the cell that
+    /// message carries.
+    func sendKeyPicker(_ phase: KeyPickerPhase, cell: HotkeyAction?) {
+        guard isControllable else {
+            latestAction = "Pair before using shortcuts"
+            return
+        }
+        guard inputUplink.send(.keyPicker(KeyPickerPayload(phase: phase, cell: cell))) else {
+            latestAction = "Shortcut send failed"
+            return
+        }
+        // Quiet on the highlights, like the delete notches.  Narrating each one
+        // republishes the model, which rebuilds the whole trackpad screen under
+        // the finger that is still sliding.
+        switch phase {
+        case .begin: latestAction = "Choosing a shortcut"
+        case .commit: latestAction = "Sent a shortcut"
+        case .cancel: latestAction = "Shortcut cancelled"
+        case .highlight: break
         }
     }
 
@@ -1467,7 +1518,8 @@ private struct RemoteControlScreen: View {
         RemoteKeys(
             send: { model.sendHotkey($0) },
             walk: { model.sendTabWalk($0, holding: $1) },
-            scrub: { model.sendDeleteScrub($0, granularity: $1) }
+            scrub: { model.sendDeleteScrub($0, granularity: $1) },
+            picker: { model.sendKeyPicker($0, cell: $1) }
         )
     }
 
