@@ -399,10 +399,13 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
         }
     }
 
+    /// A reliable frame that did not land leaves the far side waiting on the
+    /// rest of its message and everything queued behind it stalled, so the
+    /// link is over rather than merely bruised.
     private func handleWriteComplete(_ error: Error?) {
         reliableWriteInFlight = false
         guard error == nil else {
-            onError?(.peerDisconnected)
+            failLink(error: .peerDisconnected)
             return
         }
         flushWrites()
