@@ -96,7 +96,7 @@ The Xcode project is generated from [`project.yml`](project.yml) and is not
 checked in, so change that file rather than the project. Signing values come
 only from the environment and are never committed.
 
-The Mac companion you click must live at `~/Applications/NewMotion.app`.
+The Mac companion you click must live at `/Applications/NewMotion.app`.
 `./scripts/install-mac.sh` builds it, replaces that copy, and launches it. Do
 not `open` a build from `/tmp` or `DerivedData`, or the Accessibility grant
 will not follow the app.

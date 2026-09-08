@@ -332,6 +332,24 @@ final class DeleteScrubTests: XCTestCase {
         XCTAssertEqual(submitter.commands.count, 2)
     }
 
+    /// The unit can be slid from characters to words part way through a press,
+    /// so a notch that waited has to remember which one it was taken in.
+    func testHeldNotchesKeepTheUnitTheyWereTakenIn() {
+        let clock = Clock()
+        let (coordinator, submitter) = make(StubField(unavailable: "focus:-25212"), clock: clock)
+
+        coordinator.handle(scrub(.begin))
+        coordinator.handle(scrub(.delete, .character)); clock.advance()
+        coordinator.handle(scrub(.delete, .word)); clock.advance()
+        coordinator.handle(scrub(.delete, .word))
+        coordinator.handle(scrub(.end, .word))
+
+        XCTAssertEqual(submitter.commands, [
+            .hotkeyRun(.deleteBackward, times: 1),
+            .hotkeyRun(.deleteWordBackward, times: 2)
+        ])
+    }
+
     /// A press the link never ended cannot erase into whatever comes next.
     func testAbandoningThePressDropsWhatItWasHolding() {
         let (coordinator, submitter) = make(StubField(unavailable: "focus:-25212"))

@@ -139,9 +139,14 @@ final class NewMotionFeatureModel: ObservableObject {
     private let voiceBoost = VoiceBoostBox()
     private var audioSessionObservers: [NSObjectProtocol] = []
 
-    init(link: MessageLink = BLEMessageLink(
-        peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
-    )) {
+    /// The coordinator is a parameter so a caller can hand in one over its own
+    /// trust store; the app's own is the Keychain, which a test cannot reach.
+    init(
+        link: MessageLink = BLEMessageLink(
+            peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
+        ),
+        pairingCoordinator: IPhonePairingCoordinator? = nil
+    ) {
         let audioController = LocalPushToTalkAudioController(
             microphone: AVAudioMicrophoneInput(),
             permissionGranted: AVAudioApplication.shared.recordPermission == .granted
@@ -173,9 +178,9 @@ final class NewMotionFeatureModel: ObservableObject {
             permission: AVFoundationCameraPermissionAdapter(),
             capture: capture
         )
-        pairingCoordinator = try? IPhonePairingCoordinator(
+        self.pairingCoordinator = pairingCoordinator ?? (try? IPhonePairingCoordinator(
             store: KeychainTrustedDeviceStore(service: Self.trustedDeviceService)
-        )
+        ))
         _ = lifecycle.handle(.startup)
 
         link.onStateChange = { [weak self] state in
@@ -192,7 +197,7 @@ final class NewMotionFeatureModel: ObservableObject {
                 self?.pairingState = state
             }
         }
-        if let pairingCoordinator {
+        if let pairingCoordinator = self.pairingCoordinator {
             pairingCoordinator.onPairingReady = { [weak self] token, _, client in
                 Task { @MainActor [weak self] in
                     self?.beginPairingHandshake(token: token, client: client)
@@ -345,15 +350,22 @@ final class NewMotionFeatureModel: ObservableObject {
     /// Dropping the session is what makes the current Mac let go; the beacon
     /// then names the new one before the link comes back up.
     func selectMac(_ id: UUID) {
-        guard id != selectedMacID else { return }
+        // The picker shows `selectedMac`, which falls back to the newest
+        // pairing while nothing has been chosen, so re-picking the Mac already
+        // in use arrives here as a change. Record the choice, but do not drop a
+        // live session over it.
+        let alreadyInUse = id == selectedMac?.deviceID
         selectedMacID = id
-        if authenticatedSession != nil || pairingClient != nil {
+        if !alreadyInUse, authenticatedSession != nil || pairingClient != nil {
             authenticatedSession = nil
             pairingClient = nil
             handshakeHelloSent = false
             awaitingMacName = nil
             link.stop()
         }
+        // Still worth a reconnect when the row was already ticked: tapping the
+        // Mac you are on is how someone retries a link that is down. It is a
+        // no-op while a session is up.
         beginTrustedReconnect()
     }
 
@@ -880,6 +892,10 @@ final class NewMotionFeatureModel: ObservableObject {
             pairingConfirmed = false
             link.stop()
             latestAction = "Pairing failed; scan a new Mac QR code"
+            // A scan that failed is no reason to give up the Mac this phone
+            // already trusts. Without this the fallback waits for the next
+            // scene change, and the phone sits dark until the app is reopened.
+            resumeReconnectIfNeeded()
             return
         }
         if hadTrust {
@@ -1209,25 +1225,20 @@ extension RemoteHotkey {
         case .return: return "return"
         case .deleteBackward: return "delete"
         case .deleteWordBackward: return "⌥⌫"
-        case .deleteLineBackward: return "⌘⌫"
         case .copy: return "copy"
         case .paste: return "paste"
         case .undo: return "undo"
         case .redo: return "redo"
-        case .selectAll: return "⌘A"
         case .tab: return "tab"
         case .arrowUp: return "up"
         case .arrowDown: return "down"
         case .arrowLeft: return "left"
         case .arrowRight: return "right"
-        case .nextWindow: return "⌘`"
-        case .newItem: return "⌘N"
-        case .newTab: return "⌘T"
-        case .closeWindow: return "⌘W"
         case .selectLeft: return "⇧←"
         case .selectRight: return "⇧→"
         case .selectUp: return "⇧↑"
         case .selectDown: return "⇧↓"
+        case .controlCenter: return "control"
         }
     }
 
@@ -1237,14 +1248,9 @@ extension RemoteHotkey {
         case .return: return "Return"
         case .deleteBackward: return "Backspace"
         case .deleteWordBackward: return "Backspace word"
-        case .deleteLineBackward: return "Backspace line"
         case .copy: return "Copy"
         case .paste: return "Paste"
-        case .selectAll: return "Select all"
-        case .nextWindow: return "Next window"
-        case .newItem: return "New"
-        case .newTab: return "New tab"
-        case .closeWindow: return "Close window"
+        case .controlCenter: return "Control Center"
         default: return buttonTitle
         }
     }
@@ -1443,6 +1449,8 @@ private struct RemoteControlScreen: View {
         ZStack {
             SettingsButton { isSettingsShowing = true }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            ControlCenterButton { model.sendHotkey(.controlCenter) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 LayoutToggleButton(mode: model.layoutMode) {
                     model.setLayoutMode(model.layoutMode.next)
@@ -1475,6 +1483,26 @@ private struct SettingsButton: View {
         .foregroundStyle(Color.primary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel("Settings")
+    }
+}
+
+/// Opens the Mac's Control Centre, which is the one place brightness, volume,
+/// and Wi-Fi all live.  It rides on the trackpad rather than taking a key,
+/// because it opens a panel the trackpad then has to point at.
+private struct ControlCenterButton: View {
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: Haptics.tap(open)) {
+            Image(systemName: "switch.2")
+                .font(.title3)
+                .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
+                .contentShape(Rectangle())
+        }
+        .background(Color(.tertiarySystemFill))
+        .foregroundStyle(Color.primary)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("Control Center")
     }
 }
 

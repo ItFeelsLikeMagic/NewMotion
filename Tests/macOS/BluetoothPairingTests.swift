@@ -429,6 +429,51 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.connectCount, 2)
     }
 
+    func testANewBeaconStartsScanningAfterTheLinkWentDown() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        adapter.state = .poweredOff
+        adapter.emitDisconnected(peripheral.identifier)
+        XCTAssertEqual(link.state, .unavailable)
+
+        adapter.state = .poweredOn
+        let offered = [Self.beacon, UUID()]
+        link.setBeacons(offered)
+
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.scannedFor.last, offered)
+    }
+
+    func testANewBeaconStartsScanningOnceBluetoothIsBack() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.start()
+        adapter.state = .poweredOff
+        adapter.emitStateChange(.poweredOff)
+        XCTAssertEqual(link.state, .unavailable)
+
+        adapter.state = .poweredOn
+        link.setBeacons([Self.beacon])
+
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.scannedFor.last, [Self.beacon])
+    }
+
+    func testANewBeaconLeavesAStoppedLinkStopped() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        link.setBeacons([Self.beacon])
+        link.start()
+        link.stop()
+        let scans = adapter.scanCount
+
+        link.setBeacons([UUID()])
+
+        XCTAssertEqual(link.state, .unavailable)
+        XCTAssertEqual(adapter.scanCount, scans)
+    }
+
     func testForgottenPhoneCannotReconnectAndCanBePairedAgain() throws {
         let store = InMemoryTrustedDeviceStore()
         let mac = try MacPairingCoordinator(store: store)
@@ -558,6 +603,7 @@ private final class FakeCentralAdapter: MacCentralManagerAdapter {
     func emitServices(_ id: UUID, services: Set<UUID>) { onServicesDiscovered?(id, services, nil) }
     func emitCharacteristics(_ id: UUID, serviceUUID: UUID, characteristics: Set<UUID>) { onCharacteristicsDiscovered?(id, serviceUUID, characteristics, nil) }
     func emitNotification(_ id: UUID, characteristicUUID: UUID) { onNotificationState?(id, characteristicUUID, true, nil) }
+    func emitStateChange(_ state: BLEPeripheralManagerState) { onStateChange?(state) }
     func emitDisconnected(_ id: UUID) { onDisconnected?(id, nil) }
     func emitServicesInvalidated(_ id: UUID, services: Set<UUID>) { onServicesInvalidated?(id, services) }
     func emitValue(_ id: UUID, characteristicUUID: UUID, data: Data) { onValue?(id, characteristicUUID, data, nil) }

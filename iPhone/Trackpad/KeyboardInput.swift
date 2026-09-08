@@ -76,7 +76,6 @@ public enum RemoteHotkey: String, CaseIterable, Equatable, Hashable, Sendable {
     case paste
     case undo
     case redo
-    case selectAll
     case escape
     case `return`
     case tab
@@ -86,15 +85,11 @@ public enum RemoteHotkey: String, CaseIterable, Equatable, Hashable, Sendable {
     case arrowRight
     case deleteBackward
     case deleteWordBackward
-    case deleteLineBackward
-    case nextWindow
-    case newItem
-    case newTab
-    case closeWindow
     case selectLeft
     case selectRight
     case selectUp
     case selectDown
+    case controlCenter
 }
 
 public enum KeyboardOutput: Equatable, Sendable {

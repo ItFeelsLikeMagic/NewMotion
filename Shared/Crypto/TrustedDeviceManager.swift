@@ -4,11 +4,16 @@ public struct TrustedDeviceSummary: Equatable {
     public let deviceID: UUID
     public let displayName: String
     public let pairedAt: Date
+    /// The peer's long-term identity key, and the only thing here that names
+    /// the same physical device across pairings. `deviceID` is the pairing ID,
+    /// which is minted fresh for every QR code.
+    public let peerIdentityPublicKey: Data
 
-    public init(deviceID: UUID, displayName: String, pairedAt: Date) {
+    public init(deviceID: UUID, displayName: String, pairedAt: Date, peerIdentityPublicKey: Data) {
         self.deviceID = deviceID
         self.displayName = displayName
         self.pairedAt = pairedAt
+        self.peerIdentityPublicKey = peerIdentityPublicKey
     }
 }
 
@@ -50,8 +55,18 @@ public final class TrustedDeviceManager {
             localIdentityPrivateKey: localIdentity.rawPrivateKey,
             pairedAt: clock.now
         )
+        // Re-pairing the same peer supersedes the old record rather than
+        // adding one. Each stale record is a beacon the other side keeps
+        // scanning for, and a duplicate row in the device picker.
+        //
+        // Save first. A store that throws on the way in would otherwise leave
+        // the peer with no record at all, losing a pairing that was working.
         try store.save(record)
-        return TrustedDeviceSummary(deviceID: record.deviceID, displayName: record.displayName, pairedAt: record.pairedAt)
+        for superseded in try store.allRecords()
+        where superseded.peerIdentityPublicKey == peerIdentityPublicKey && superseded.deviceID != deviceID {
+            try store.delete(deviceID: superseded.deviceID)
+        }
+        return Self.summary(record)
     }
 
     public func reconnectContext(for deviceID: UUID) throws -> (identity: PairingIdentity, mode: HandshakeMode) {
@@ -63,14 +78,43 @@ public final class TrustedDeviceManager {
         )
     }
 
+    /// One entry per peer, newest pairing winning. Records written before
+    /// `remember` began superseding them are collapsed here, so an existing
+    /// pile of duplicates does not have to be re-paired away to disappear.
+    /// The surviving `deviceID` is the newest, which is the beacon the peer
+    /// most recently issued.
     public func list() throws -> [TrustedDeviceSummary] {
-        try store.allRecords().map { TrustedDeviceSummary(deviceID: $0.deviceID, displayName: $0.displayName, pairedAt: $0.pairedAt) }
+        var newestByPeer: [Data: TrustedDeviceRecord] = [:]
+        for record in try store.allRecords() {
+            let incumbent = newestByPeer[record.peerIdentityPublicKey]
+            if incumbent == nil || record.pairedAt > incumbent!.pairedAt {
+                newestByPeer[record.peerIdentityPublicKey] = record
+            }
+        }
+        return newestByPeer.values.sorted { $0.pairedAt < $1.pairedAt }.map(Self.summary)
     }
 
     public func isTrusted(deviceID: UUID) throws -> Bool {
         try store.record(for: deviceID) != nil
     }
 
-    public func revoke(deviceID: UUID) throws { try store.delete(deviceID: deviceID) }
+    /// Revoking a device drops every record for that peer, not just the one
+    /// row the picker showed, so a forgotten Mac cannot come back through a
+    /// stale duplicate.
+    public func revoke(deviceID: UUID) throws {
+        guard let record = try store.record(for: deviceID) else { return }
+        for sibling in try store.allRecords()
+        where sibling.peerIdentityPublicKey == record.peerIdentityPublicKey {
+            try store.delete(deviceID: sibling.deviceID)
+        }
+    }
 
+    private static func summary(_ record: TrustedDeviceRecord) -> TrustedDeviceSummary {
+        TrustedDeviceSummary(
+            deviceID: record.deviceID,
+            displayName: record.displayName,
+            pairedAt: record.pairedAt,
+            peerIdentityPublicKey: record.peerIdentityPublicKey
+        )
+    }
 }

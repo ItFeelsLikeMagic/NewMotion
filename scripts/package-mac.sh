@@ -49,7 +49,7 @@ Environment:
 result runs on this Mac and is refused by Gatekeeper on any other, so use it
 only to check the signing half.
 
-This does not touch ~/Applications. Use install-mac.sh for the local dev copy;
+This does not touch /Applications. Use install-mac.sh for the local dev copy;
 that one signs for development, which is a different certificate.
 HELP
     exit 0

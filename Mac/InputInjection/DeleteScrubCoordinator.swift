@@ -79,8 +79,10 @@ public final class DeleteScrubCoordinator {
     /// notch always gives back exactly what its own delete took.
     private var removed: [String] = []
     /// Notches that have pressed nothing yet, because the field had not
-    /// answered when they arrived.
-    private var held = 0
+    /// answered when they arrived, each with the unit it was taken in.  The
+    /// key can be slid from characters to words part way through a press, so a
+    /// held notch cannot be told what it meant after the fact.
+    private var held: [DeleteScrubGranularity] = []
     private var reads = 0
     private var lastReadAt: TimeInterval?
     /// What each notch of the last press did, for the debug surface.  Counts
@@ -130,7 +132,7 @@ public final class DeleteScrubCoordinator {
         case .restore:
             return restore()
         case .end:
-            let outcome = flush(payload.granularity)
+            let outcome = flush()
             reset()
             return outcome
         }
@@ -145,27 +147,27 @@ public final class DeleteScrubCoordinator {
     }
 
     private func delete(_ granularity: DeleteScrubGranularity) -> String {
-        held += 1
+        held.append(granularity)
         takeSnapshotIfDue()
-        guard hasSnapshot else { return "deleteScrub delete held \(held)" }
-        return press(granularity)
+        guard hasSnapshot else { return "deleteScrub delete held \(held.count)" }
+        return press()
     }
 
     /// Presses everything this notch is now able to count, oldest held notch
     /// first.  Until the field answered there was nothing to count against, so
     /// a press that has been waiting comes out here rather than at its notch.
-    private func press(_ granularity: DeleteScrubGranularity) -> String {
+    private func press() -> String {
         var outcome = "deleteScrub delete start"
-        while held > 0 {
+        while let granularity = held.first {
             let length = min(Self.runLength(in: remaining, granularity: granularity), Self.maximumRun)
             // Past the start of the text.  Pressing nothing is what makes an
             // overshoot free: the notches already taken are still restorable,
             // and the ones still held ask for nothing.
             guard length > 0 else {
-                held = 0
+                held = []
                 return "deleteScrub delete start"
             }
-            held -= 1
+            held.removeFirst()
             guard deleteBackward(length) else { return "deleteScrub delete failed" }
             removed.append(String(remaining.suffix(length)))
             remaining.removeLast(length)
@@ -178,9 +180,9 @@ public final class DeleteScrubCoordinator {
         // A held notch pressed nothing, so taking one back types nothing.  That
         // makes it the only restore a password field ever gets.
         if removed.isEmpty {
-            guard held > 0 else { return "deleteScrub nothing to restore" }
-            held -= 1
-            return "deleteScrub restore held \(held)"
+            guard !held.isEmpty else { return "deleteScrub nothing to restore" }
+            held.removeLast()
+            return "deleteScrub restore held \(held.count)"
         }
         // Secure input can come on mid-press, so the typing side is guarded as
         // well as the reading side.
@@ -197,19 +199,23 @@ public final class DeleteScrubCoordinator {
     /// against, so it goes out now as the key a plain tap would have sent and
     /// the app decides what each press takes.  Nothing knew what left, so
     /// nothing was restorable, and nothing was erased before the count settled.
-    private func flush(_ granularity: DeleteScrubGranularity) -> String {
-        guard held > 0, let hotkey = Self.blindHotkey[granularity] else {
-            return "deleteScrub end"
-        }
-        var left = held
-        while left > 0 {
-            let run = min(left, Self.maximumRun)
-            guard submitter.submit(.hotkeyRun(hotkey, times: run)) == .applied else {
+    private func flush() -> String {
+        guard !held.isEmpty else { return "deleteScrub end" }
+        let taken = held.count
+        var index = 0
+        while index < held.count {
+            let granularity = held[index]
+            var run = 0
+            while index < held.count, held[index] == granularity, run < Self.maximumRun {
+                run += 1
+                index += 1
+            }
+            guard let hotkey = Self.blindHotkey[granularity],
+                  submitter.submit(.hotkeyRun(hotkey, times: run)) == .applied else {
                 return "deleteScrub end failed"
             }
-            left -= run
         }
-        return "deleteScrub end blind:\(held):\(readFailure)"
+        return "deleteScrub end blind:\(taken):\(readFailure)"
     }
 
     /// The text in front of the caret before this press erases anything.  A
@@ -251,7 +257,7 @@ public final class DeleteScrubCoordinator {
         remaining = []
         hasSnapshot = false
         removed = []
-        held = 0
+        held = []
         reads = 0
         lastReadAt = nil
         readFailure = ""
