@@ -137,6 +137,7 @@ public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendabl
     case selectRight
     case selectUp
     case selectDown
+    case controlCenter
 }
 
 public struct MacPointerDelta: Equatable, Sendable {

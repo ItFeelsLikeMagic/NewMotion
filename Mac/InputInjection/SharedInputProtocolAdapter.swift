@@ -177,6 +177,7 @@ public enum SharedInputProtocolAdapter {
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp
         case .selectDown: return .selectDown
+        case .controlCenter: return .controlCenter
         }
     }
 
@@ -208,6 +209,7 @@ public enum SharedInputProtocolAdapter {
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp
         case .selectDown: return .selectDown
+        case .controlCenter: return .controlCenter
         }
     }
 }

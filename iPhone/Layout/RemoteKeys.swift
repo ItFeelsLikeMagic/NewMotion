@@ -7,8 +7,8 @@ import NewMotionShared
 
 /// The size every layout draws a key at.
 enum RemoteKeyMetrics {
-    static let keyWidth: Double = 48
-    static let keyHeight: Double = 46
+    static let keyWidth: Double = 56
+    static let keyHeight: Double = 64
     static let spacing: Double = 8
     static let clusterWidth = keyWidth * 2 + spacing
     static let clusterHeight = keyHeight * 2 + spacing
@@ -27,10 +27,6 @@ struct RemoteKeys {
     let walk: (TabWalkPhase, HeldModifier) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
-    var newItem: some View { titledKey(.newItem) }
-
-    var selectAll: some View { titledKey(.selectAll) }
-
     var appSwitcher: some View { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
 
     /// Hold and drag to pick up text.
@@ -38,13 +34,7 @@ struct RemoteKeys {
 
     var nextTab: some View { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
 
-    var newTab: some View { titledKey(.newTab) }
-
-    var closeWindow: some View { titledKey(.closeWindow) }
-
     var escape: some View { titledKey(.escape) }
-
-    var nextWindow: some View { titledKey(.nextWindow) }
 
     var copy: some View { key(.copy) { Image(systemName: "doc.on.doc") } }
 
@@ -52,15 +42,8 @@ struct RemoteKeys {
 
     var returnKey: some View { key(.return) { Image(systemName: "return") } }
 
-    var deleteLine: some View { titledKey(.deleteLineBackward) }
-
-    var deleteCharacter: some View {
-        deleteKey(.deleteBackward, .character) { Image(systemName: "delete.left") }
-    }
-
-    var deleteWord: some View {
-        deleteKey(.deleteWordBackward, .word) { Text(RemoteHotkey.deleteWordBackward.buttonTitle) }
-    }
+    /// Tap to rub out, hold and slide across to run, slide up for whole words.
+    var delete: some View { DeleteScrubKey(send: send, scrub: scrub) }
 
     /// A key that says what it sends.
     private func titledKey(_ hotkey: RemoteHotkey) -> some View {
@@ -77,7 +60,7 @@ struct RemoteKeys {
     }
 
     /// Drawn like the hold-and-slide keys rather than with `.bordered`, whose
-    /// padding leaves a 48pt cell too little room for a two-glyph label.
+    /// padding leaves a small cell too little room for a two-glyph label.
     private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
         Button(action: Haptics.tap { send(hotkey) }) {
             label()
@@ -90,20 +73,6 @@ struct RemoteKeys {
         .foregroundStyle(Color.accentColor)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel(hotkey.spokenName)
-    }
-
-    private func deleteKey<Label: View>(
-        _ hotkey: RemoteHotkey,
-        _ granularity: DeleteScrubGranularity,
-        @ViewBuilder label: () -> Label
-    ) -> some View {
-        DeleteScrubKey(
-            hotkey: hotkey,
-            granularity: granularity,
-            send: send,
-            scrub: scrub,
-            label: label()
-        )
     }
 }
 #endif

@@ -17,55 +17,51 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
         // Nothing pads the whole screen: a padded ancestor would sit inside
         // the safe area and stop passing it down, and the trackpad needs it
         // to know how far past the content edge the glass goes.
+        // The keyboard does not resize this layout.  Sideways there is no room
+        // to shrink into: the pad would lose a third of its height and the keys
+        // would still end up under the keyboard, so the keyboard covers the
+        // bottom of both and the controls floating on the pad step over it.
         GeometryReader { proxy in
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 if mirrored {
-                    edgeToEdgeTrackpad(outerEdge: .leading, safeArea: proxy.safeAreaInsets)
+                    edgeToEdgeTrackpad(outerEdge: .leading)
                     keyColumn(width: proxy.size.width, screenEdge: .trailing)
                 } else {
                     keyColumn(width: proxy.size.width, screenEdge: .leading)
-                    edgeToEdgeTrackpad(outerEdge: .trailing, safeArea: proxy.safeAreaInsets)
+                    edgeToEdgeTrackpad(outerEdge: .trailing)
                 }
             }
         }
+        .ignoresSafeArea(.keyboard)
     }
 
     /// The trackpad runs to the physical edge on every side but the keys',
-    /// under the safe area included; the controls floating on it are padded
-    /// back inside the safe area so nothing sits under the notch or the home
-    /// indicator.
-    private func edgeToEdgeTrackpad(outerEdge: Edge, safeArea: EdgeInsets) -> some View {
+    /// under the safe area included, while the controls floating on it stay in
+    /// the safe area of the same cell.  Only the pad ignores it: padding the
+    /// controls back by hand would count a raised keyboard twice, once in the
+    /// shrunken layout and again in the inset, and lift them off the pad.
+    private func edgeToEdgeTrackpad(outerEdge: Edge) -> some View {
         let outer = Edge.Set(outerEdge)
-        return trackpad
-            .overlay {
-                controls
-                    .padding(outer, outerEdge == .leading ? safeArea.leading : safeArea.trailing)
-                    .padding(.top, safeArea.top)
-                    .padding(.bottom, safeArea.bottom)
-            }
-            .ignoresSafeArea(.container, edges: outer.union(.vertical))
+        return ZStack {
+            trackpad
+                .ignoresSafeArea(.container, edges: outer.union(.vertical))
+            controls
+                .clearOfKeyboard()
+        }
     }
 
     /// Keeps the content margin on its screen side and above and below, the
     /// margins the whole screen used to carry.
     private func keyColumn(width: Double, screenEdge: Edge) -> some View {
         VStack(spacing: RemoteKeyMetrics.spacing) {
-            HStack(spacing: RemoteKeyMetrics.spacing) {
-                slot { keys.newItem }
-                slot { keys.selectAll }
-                slot { keys.nextWindow }
-                slot { keys.deleteLine }
-                slot { keys.nextTab }
-                slot { keys.newTab }
-                slot { keys.closeWindow }
-            }
-            // The two drag keys sit beside the hold bar: sideways, that is the
-            // row the thumb rests on, so a drag starts from where it already is.
+            // The keys a thumb reaches for least sit furthest from the hold
+            // bar, and the two that are held and dragged sit beside it, so a
+            // drag starts from where the thumb already rests.
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 slot { keys.escape }
+                slot { keys.copy }
+                slot { keys.paste }
                 slot { keys.appSwitcher }
-                slot { keys.returnKey }
-                slot { keys.select }
             }
 
             // The hold bar is the point of the whole column, so it takes every
@@ -74,10 +70,10 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack(spacing: RemoteKeyMetrics.spacing) {
-                slot { keys.copy }
-                slot { keys.paste }
-                slot { keys.deleteCharacter }
-                slot { keys.deleteWord }
+                slot { keys.nextTab }
+                slot { keys.select }
+                slot { keys.returnKey }
+                slot { keys.delete }
             }
         }
         .frame(width: (width - 2 * RemoteKeyMetrics.contentPadding) * Self.keyColumnShare)
@@ -85,8 +81,8 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
         .padding(Edge.Set(screenEdge), RemoteKeyMetrics.contentPadding)
     }
 
-    /// One stretched cell.  The column is narrow and its rows differ in count,
-    /// so keys take the width they are given rather than a fixed one.
+    /// One stretched cell.  The column takes a share of the screen rather than
+    /// a fixed width, so keys take the width they are given.
     private func slot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .frame(maxWidth: .infinity)

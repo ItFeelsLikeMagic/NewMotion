@@ -22,11 +22,16 @@ public enum Haptics {
         case gestureEnded
         /// One notch of a continuous control, like walking the app switcher.
         case step
+        /// A control changed what it does.  The heaviest thing the remote
+        /// plays, because it is the one buzz that has to be felt through a
+        /// slide that is already ticking.
+        case modeChange
     }
 
     /// Warms the generators for a screen that is about to be touched.
     public static func prepare() {
         press.prepare()
+        modeChange.prepare()
         gestureBegan.prepare()
         gestureEnded.prepare()
         step.prepare()
@@ -45,6 +50,8 @@ public enum Haptics {
         case .step:
             step.selectionChanged()
             step.prepare()
+        case .modeChange:
+            impact(modeChange, intensity: 1.0)
         }
     }
 
@@ -61,6 +68,7 @@ public enum Haptics {
     private static let gestureBegan = UIImpactFeedbackGenerator(style: .rigid)
     private static let gestureEnded = UIImpactFeedbackGenerator(style: .soft)
     private static let step = UISelectionFeedbackGenerator()
+    private static let modeChange = UIImpactFeedbackGenerator(style: .heavy)
 
     private static func impact(_ generator: UIImpactFeedbackGenerator, intensity: CGFloat) {
         generator.impactOccurred(intensity: intensity)

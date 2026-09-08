@@ -5,24 +5,25 @@ import SwiftUI
 import NewMotionShared
 #endif
 
-/// A delete key that is also a dial.  A tap sends the key it always sent.
-/// Holding it and sliding left rubs out one notch of text at a time, with a
-/// tick for each; sliding back brings those characters back.  Both delete keys
-/// are this view, so what one notch removes is the only difference between
-/// them.
+/// The delete key, which is also a dial.  A tap rubs out one unit.  Holding it
+/// and sliding left rubs out one unit at a time, with a tick for each; sliding
+/// back brings that text back.  Sliding up switches the unit from a character
+/// to a word, sliding down switches it back, and the mode stays until it is
+/// slid the other way.
 ///
 /// A tap still costs exactly one message: the press says nothing until the
 /// finger actually moves.
-struct DeleteScrubKey<Label: View>: View {
-    let hotkey: RemoteHotkey
-    let granularity: DeleteScrubGranularity
+struct DeleteScrubKey: View {
     let send: (RemoteHotkey) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
-    let label: Label
 
     @State private var tracker = DeleteScrubTracker()
+    @State private var latch = DeleteGranularityLatch()
     @State private var isHeld = false
     @State private var hasBegun = false
+    /// A press that changed the unit was about the unit, not about deleting,
+    /// so it must not also rub a character out when the finger lifts.
+    @State private var hasChangedUnit = false
 
     var body: some View {
         label
@@ -34,9 +35,27 @@ struct DeleteScrubKey<Label: View>: View {
             .overlay(alignment: .topTrailing) { count }
             .holdSlide(
                 "delete_scrub",
-                spokenName: "\(hotkey.spokenName). Hold and slide left to erase, right to undo.",
+                spokenName: "\(hotkey.spokenName). Hold and slide left to erase, right to undo, up for words.",
                 onPhase: handle
             )
+    }
+
+    private var granularity: DeleteScrubGranularity {
+        latch.isWord ? .word : .character
+    }
+
+    private var hotkey: RemoteHotkey {
+        latch.isWord ? .deleteWordBackward : .deleteBackward
+    }
+
+    /// The unit is named on the key, because it is the one thing about the key
+    /// that changes and nothing else on screen says which way it is set.
+    private var label: some View {
+        VStack(spacing: 2) {
+            Image(systemName: "delete.left")
+            Text(latch.isWord ? "word" : "char")
+                .font(.caption2)
+        }
     }
 
     private var count: some View {
@@ -54,10 +73,18 @@ struct DeleteScrubKey<Label: View>: View {
             guard !isHeld else { return }
             isHeld = true
             hasBegun = false
+            hasChangedUnit = false
             tracker = DeleteScrubTracker()
+            latch.reset()
             Haptics.play(.press)
-        case let .moved(translationX, _):
+        case let .moved(translationX, translationY):
             guard isHeld else { return }
+            // The unit is settled before the notches are counted, so a slide
+            // that goes up and across erases what the key now says it will.
+            if latch.advance(translationY: translationY) {
+                hasChangedUnit = true
+                Haptics.play(.modeChange)
+            }
             let steps = tracker.advance(translationX: translationX)
             guard !steps.isEmpty else { return }
             beginIfNeeded()
@@ -70,7 +97,7 @@ struct DeleteScrubKey<Label: View>: View {
                 Haptics.play(step == .delete ? .step : .release)
             }
         case .ended:
-            finish(sendKey: !tracker.hasStepped)
+            finish(sendKey: !tracker.hasStepped && !hasChangedUnit)
         case .cancelled:
             finish(sendKey: false)
         }
@@ -93,7 +120,8 @@ struct DeleteScrubKey<Label: View>: View {
         if sendKey { send(hotkey) }
         IPhoneDebugLog.emit("delete_scrub", [
             "steps": "\(tracker.steps)",
-            "slid": tracker.hasStepped ? "yes" : "no"
+            "slid": tracker.hasStepped ? "yes" : "no",
+            "unit": latch.isWord ? "word" : "character"
         ])
         tracker = DeleteScrubTracker()
     }

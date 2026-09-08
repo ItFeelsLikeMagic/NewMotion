@@ -83,7 +83,6 @@ public enum SharedKeyboardProtocolAdapter {
         case .paste: return .paste
         case .undo: return .undo
         case .redo: return .redo
-        case .selectAll: return .selectAll
         case .escape: return .escape
         case .return: return .returnKey
         case .tab: return .tab
@@ -93,15 +92,11 @@ public enum SharedKeyboardProtocolAdapter {
         case .arrowRight: return .arrowRight
         case .deleteBackward: return .deleteBackward
         case .deleteWordBackward: return .deleteWordBackward
-        case .deleteLineBackward: return .deleteLineBackward
-        case .nextWindow: return .nextWindow
-        case .newItem: return .newItem
-        case .newTab: return .newTab
-        case .closeWindow: return .closeWindow
         case .selectLeft: return .selectLeft
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp
         case .selectDown: return .selectDown
+        case .controlCenter: return .controlCenter
         }
     }
 }

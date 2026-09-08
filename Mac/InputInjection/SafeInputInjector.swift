@@ -206,6 +206,9 @@ public enum HotkeyPhysicalSequence {
         case .selectRight: key = .code(124); modifiers = [56]
         case .selectUp: key = .code(126); modifiers = [56]
         case .selectDown: key = .code(125); modifiers = [56]
+        // Globe + C, the stock Control Center shortcut on Ventura and
+        // later.  There is no plain-modifier chord for it.
+        case .controlCenter: key = .letter("c", qwerty: 8); modifiers = [63]
         }
 
         let code = resolve(key, on: layout)
