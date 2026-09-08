@@ -437,16 +437,18 @@ final class MacRemoteAppModel: ObservableObject {
         switch state {
         case .unavailable: return .waitingForLink
         case .searching: return .scanning
-        case .connecting: return .connecting(deviceName: peerName)
+        case .connecting: return .connecting(deviceName: pairingDeviceName ?? Self.unknownPhoneName)
         case .connected:
             if authenticatedSession != nil {
-                return .paired(deviceName: pairingDeviceName ?? peerName)
+                return .paired(deviceName: pairingDeviceName ?? Self.unknownPhoneName)
             }
-            return .connected(deviceName: peerName)
+            return .connected(deviceName: pairingDeviceName ?? Self.unknownPhoneName)
         }
     }
 
-    private var peerName: String { link.peerName ?? "iPhone" }
+    /// Stands in until a hello carries the identity key the real name comes
+    /// from. The Bluetooth advertisement only ever says "NewMotion".
+    private static let unknownPhoneName = "iPhone"
 
     private func handleIncomingMessage(channel: LinkChannel, message: Data, arrival: LatencyClock) {
         // Anything at all counts, including a hello repeated under the prompt
@@ -513,7 +515,7 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func holdForApproval(_ hello: PairingClientHello) {
-        let name = peerName
+        let name = DeviceSlug.name(forIdentityKey: hello.clientIdentityPublicKey)
         pendingHello = hello
         pendingApprovalName = name
         pairingProgress = .awaitingApproval(deviceName: name)
@@ -539,10 +541,11 @@ final class MacRemoteAppModel: ObservableObject {
     /// is dropped by the silence deadline once it stops repeating its hello.
     func denyPendingPhone() {
         guard let hello = pendingHello else { return }
+        let name = pendingApprovalName ?? Self.unknownPhoneName
         dismissApproval()
         pairingOffer.cancel()
         _ = link.send(PairingServerDecline(pairingID: hello.pairingID).encode(), on: .control, delivery: .reliable)
-        lastApplicationMessage = "Declined \(peerName)"
+        lastApplicationMessage = "Declined \(name)"
     }
 
     private func dismissApproval() {
@@ -552,11 +555,12 @@ final class MacRemoteAppModel: ObservableObject {
     }
 
     private func startHandshake(server: PairingHandshakeServer, hello: PairingClientHello) throws {
+        let name = DeviceSlug.name(forIdentityKey: hello.clientIdentityPublicKey)
         pairingID = hello.pairingID
-        pairingDeviceName = peerName
+        pairingDeviceName = name
         pairingServer = server
         if authenticatedSession == nil {
-            pairingProgress = .authenticating(deviceName: peerName)
+            pairingProgress = .authenticating(deviceName: name)
         }
         let response = try server.accept(clientHelloData: hello.encode())
         try sendHandshake(response.response)
@@ -565,7 +569,7 @@ final class MacRemoteAppModel: ObservableObject {
     private func finishHandshake(server: PairingHandshakeServer, payload: Data) throws {
         guard let pairingCoordinator, let pairingID else { throw PairingError.invalidHandshake }
         let result = try server.accept(clientFinishData: payload)
-        let displayName = pairingDeviceName ?? peerName
+        let displayName = DeviceSlug.name(forIdentityKey: result.peerIdentityPublicKey)
         _ = try pairingCoordinator.rememberPairedPhone(
             deviceID: pairingID,
             displayName: displayName,
@@ -981,7 +985,7 @@ final class MacRemoteAppModel: ObservableObject {
             hasPairingQR: pairingQRImage != nil,
             pairingError: pairingError,
             lastPairingFailure: lastPairingFailure,
-            peerName: peerName,
+            peerName: link.peerName,
             lastApplicationMessage: lastApplicationMessage,
             deleteScrub: deleteScrub.lastSlide.isEmpty ? nil : deleteScrub.lastSlide,
             keyPostMs: inputSink.lastKeyBurstMilliseconds,
@@ -989,7 +993,10 @@ final class MacRemoteAppModel: ObservableObject {
             vocabulary: vocabularyLabel,
             appPath: (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath,
             pairedDevices: pairedDevices.map {
-                MacDebugPairedDevice(displayName: $0.displayName, pairedAt: $0.pairedAt)
+                MacDebugPairedDevice(
+                    displayName: DeviceSlug.name(forIdentityKey: $0.peerIdentityPublicKey),
+                    pairedAt: $0.pairedAt
+                )
             }
         )
     }
@@ -1002,21 +1009,25 @@ private struct SavedPhoneRow: View {
     let isConnected: Bool
     let forget: () -> Void
 
+    /// Derived rather than read from the record, so a phone saved before the
+    /// name came from its key reads the same as one saved after.
+    private var name: String { DeviceSlug.name(forIdentityKey: device.peerIdentityPublicKey) }
+
     var body: some View {
         HStack(spacing: 6) {
             Circle()
                 .fill(isConnected ? Color.green : Color.secondary.opacity(0.35))
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
-            Text(device.displayName)
+            Text(name)
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .accessibilityLabel(isConnected ? "\(device.displayName), connected" : device.displayName)
+                .accessibilityLabel(isConnected ? "\(name), connected" : name)
             Spacer(minLength: 6)
             Button("Forget", action: forget)
                 .font(.caption)
-                .accessibilityLabel("Forget \(device.displayName)")
+                .accessibilityLabel("Forget \(name)")
         }
     }
 }
