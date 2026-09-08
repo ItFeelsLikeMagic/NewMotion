@@ -796,6 +796,17 @@ final class MacRemoteAppModel: ObservableObject {
             // coordinator holds; every event it posts still goes through the
             // injector and the same policy checks.
             lastApplicationMessage = deleteScrub.handle(value)
+            // The card is told about the same press separately, because what
+            // it shows is the unit the key is set to, which the coordinator
+            // has no reason to remember.
+            switch value.phase {
+            case .begin:
+                overlay.beginDelete(granularity: value.granularity)
+            case .unitChanged, .delete, .restore:
+                overlay.updateDelete(granularity: value.granularity)
+            case .end:
+                overlay.endDelete()
+            }
         default:
             let isCursor = payload.messageType == .pointerDelta
                 || payload.messageType == .scrollDelta

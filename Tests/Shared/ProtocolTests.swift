@@ -79,6 +79,35 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    /// The unit flip is the one scrub phase that erases nothing, so a Mac that
+    /// dropped it would light the wrong half of its card for the rest of the
+    /// press.  Both units go round, because the phase and the unit are the
+    /// whole message.
+    func testDeleteScrubRoundTripsEveryPhaseAndUnit() throws {
+        var sequence: UInt64 = 0
+        for phase in DeleteScrubPhase.allCases {
+            for granularity in DeleteScrubGranularity.allCases {
+                sequence += 1
+                let payload = MessagePayload.deleteScrub(
+                    DeleteScrubPayload(phase: phase, granularity: granularity)
+                )
+                let envelope = ProtocolEnvelope(
+                    sessionID: sessionID,
+                    sequence: sequence,
+                    timestampMs: 1,
+                    payload: payload
+                )
+                let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+                XCTAssertEqual(decoded, envelope, "\(phase) \(granularity)")
+                guard case let .deleteScrub(value) = decoded.payload else {
+                    return XCTFail("wrong payload for \(phase)")
+                }
+                XCTAssertEqual(value.phase, phase)
+                XCTAssertEqual(value.granularity, granularity)
+            }
+        }
+    }
+
     /// These numbers are the wire.  They were renumbered once already, when a
     /// rebase found 29 taken by `controlCenter`, and a phone and a Mac that
     /// disagree on them fire the wrong shortcut rather than fail.  Pinning them
@@ -91,6 +120,11 @@ final class ProtocolTests: XCTestCase {
 
         XCTAssertEqual(MessageType.keyPicker.rawValue, 19)
         XCTAssertEqual(MessageType.transcriptPreview.rawValue, 20)
+
+        // 5 is the next free number after `end`, and a retired one is never
+        // handed back out: an older Mac reads an unknown phase as a phase it
+        // once knew and acts on it.
+        XCTAssertEqual(DeleteScrubPhase.unitChanged.rawValue, 5)
     }
 
     /// Both apps draw this grid from the same table.  A reorder is a wire

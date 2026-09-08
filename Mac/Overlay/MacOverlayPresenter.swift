@@ -8,18 +8,24 @@ public enum MacOverlayContent: Equatable, Sendable {
     case nothing
     /// A picker is open. `cell` is the lit one, absent until a finger moves.
     case picker(cell: HotkeyAction?)
+    /// A delete key is held. `granularity` is the unit it will take off next.
+    case delete(granularity: DeleteScrubGranularity)
     /// The words the phone is hearing, on their way to being typed.
     case transcript(String)
     case hint(String)
 }
 
-/// The three things on the card that go away on their own. One timeout of each
-/// kind can be outstanding, so a scheduler holds one timer per kind rather than
-/// one per message.
+/// The waits the card runs on its own: what takes something down again, and
+/// the one that holds a delete card back until a tap has ruled itself out. One
+/// of each kind can be outstanding, so a scheduler holds one timer per kind
+/// rather than one per message.
 public enum MacOverlayTimeout: Hashable, Sendable {
     case picker
     case hint
     case transcript
+    case delete
+    /// The wait between a delete key going down and its card appearing.
+    case deleteOpen
 }
 
 /// Runs a block after a delay, at most one outstanding per kind: the newest
@@ -35,10 +41,10 @@ public protocol MacOverlayScheduling: AnyObject {
 
 /// Decides what belongs on the card and when it goes away.
 ///
-/// Three things share one piece of glass and only one can be on it: a picker
-/// beats a dictation preview, and a preview beats a hint. Keeping that
-/// ranking here, away from AppKit, is what lets the whole of it be tested
-/// without a window server.
+/// Four things share one piece of glass and only one can be on it: a picker
+/// beats a held delete key, a delete key beats a dictation preview, and a
+/// preview beats a hint. Keeping that ranking here, away from AppKit, is what
+/// lets the whole of it be tested without a window server.
 ///
 /// Everything timed is handed to the scheduler, so a test drives the clock
 /// instead of sleeping. A scheduled block is also tagged with the generation of
@@ -63,6 +69,14 @@ public final class MacOverlayPresenter {
     public static let deleteHintPresses = 3
     public static let deleteHintWindow: TimeInterval = 2
     public static let deleteSlideHint = "Hold delete and slide left to erase faster"
+    /// The same watchdog reason as the picker: a phone that suspends mid-press
+    /// sends no end, and the card would sit there for the rest of the session.
+    public static let deleteTimeout: TimeInterval = 10
+    /// A tap on the delete key is a whole press: it sends begin and end within
+    /// a few milliseconds. Waiting this long before opening means a tap never
+    /// flashes the card, while a real hold is still on screen before the finger
+    /// has travelled a notch.
+    public static let deleteOpenDelay: TimeInterval = 0.15
 
     /// What should be drawn. Only ever assigned when it actually differs, so
     /// a highlight that repeats the lit cell costs no redraw.
@@ -78,11 +92,17 @@ public final class MacOverlayPresenter {
     private let isSecureInputActive: () -> Bool
 
     private var litCell: HotkeyAction?
+    /// Set once the press has waited out `deleteOpenDelay`, or asked for
+    /// something that proves the finger is holding. Nil means no card.
+    private var deleteUnit: DeleteScrubGranularity?
+    /// What the press is set to before its card is allowed on screen.
+    private var pendingDeleteUnit: DeleteScrubGranularity?
     private var transcript: String?
     private var hint: String?
     private var pickerGeneration: UInt64 = 0
     private var transcriptGeneration: UInt64 = 0
     private var hintGeneration: UInt64 = 0
+    private var deleteGeneration: UInt64 = 0
     /// When the recent plain deletes landed, newest last.
     private var deletePresses: [TimeInterval] = []
 
@@ -115,6 +135,38 @@ public final class MacOverlayPresenter {
     /// the dispatch side's business; the card is gone either way.
     public func endPicker() {
         endPicker(generation: pickerGeneration)
+    }
+
+    /// The delete key went down. The card is only armed here, not shown: three
+    /// quick taps are three whole presses, and each would flash it.
+    public func beginDelete(granularity: DeleteScrubGranularity) {
+        deleteUnit = nil
+        pendingDeleteUnit = granularity
+        let generation = bump(&deleteGeneration)
+        scheduler.schedule(.deleteOpen, after: Self.deleteOpenDelay) { [weak self] in
+            self?.openDelete(generation: generation)
+        }
+        scheduler.schedule(.delete, after: Self.deleteTimeout) { [weak self] in
+            self?.endDelete(generation: generation)
+        }
+        refresh()
+    }
+
+    /// A notch or a unit flip. Either one is a finger that is plainly still
+    /// down, so it opens the card ahead of the delay rather than waiting it
+    /// out. Called with the unit the message carried, so a card that missed a
+    /// flip is put right by the next notch.
+    public func updateDelete(granularity: DeleteScrubGranularity) {
+        guard deleteUnit != nil || pendingDeleteUnit != nil else { return }
+        pendingDeleteUnit = nil
+        deleteUnit = granularity
+        refresh()
+    }
+
+    /// The key came up, however it came up. A press that never opened its card
+    /// leaves nothing behind.
+    public func endDelete() {
+        endDelete(generation: deleteGeneration)
     }
 
     /// The words the phone has heard so far. Empty means clear.
@@ -171,12 +223,31 @@ public final class MacOverlayPresenter {
     public func clearAll() {
         isPickerOpen = false
         litCell = nil
+        deleteUnit = nil
+        pendingDeleteUnit = nil
         transcript = nil
         hint = nil
         deletePresses.removeAll()
         _ = bump(&pickerGeneration)
         _ = bump(&transcriptGeneration)
         _ = bump(&hintGeneration)
+        _ = bump(&deleteGeneration)
+        refresh()
+    }
+
+    private func openDelete(generation: UInt64) {
+        guard generation == deleteGeneration, let pending = pendingDeleteUnit else { return }
+        pendingDeleteUnit = nil
+        deleteUnit = pending
+        refresh()
+    }
+
+    private func endDelete(generation: UInt64) {
+        guard generation == deleteGeneration else { return }
+        guard deleteUnit != nil || pendingDeleteUnit != nil else { return }
+        deleteUnit = nil
+        pendingDeleteUnit = nil
+        _ = bump(&deleteGeneration)
         refresh()
     }
 
@@ -206,6 +277,9 @@ public final class MacOverlayPresenter {
 
     private var wanted: MacOverlayContent {
         if isPickerOpen { return .picker(cell: litCell) }
+        // A held key outranks the words: the finger is on the delete key, so
+        // whatever was dictated a moment ago is not what is being looked at.
+        if let deleteUnit { return .delete(granularity: deleteUnit) }
         // Asked on every derivation, not only when a partial arrives, so a
         // redraw for any reason blanks the words. If nothing redraws at all,
         // the 2 second idle timeout is what takes them down.

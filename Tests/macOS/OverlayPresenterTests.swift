@@ -212,6 +212,148 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .nothing)
     }
 
+    // MARK: - The held delete key
+
+    /// A tap is a whole press, begin and end within a few milliseconds. Three
+    /// of them in a row would be three flashes of the card, so the card waits
+    /// out the open delay before it appears at all.
+    func testATapNeverFlashesTheDeleteCard() {
+        let (presenter, clock) = make()
+        var draws = 0
+        presenter.onChange = { _ in draws += 1 }
+
+        presenter.beginDelete(granularity: .character)
+        XCTAssertEqual(presenter.content, .nothing)
+
+        presenter.endDelete()
+        clock.fire(.deleteOpen)
+        XCTAssertEqual(presenter.content, .nothing)
+        XCTAssertEqual(draws, 0)
+    }
+
+    func testAHeldDeleteKeyShowsItsUnitOnceTheDelayHasPassed() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .character)
+
+        clock.fire(.deleteOpen)
+        XCTAssertEqual(presenter.content, .delete(granularity: .character))
+
+        presenter.endDelete()
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The finger slid up. The card relights on the other unit without the key
+    /// having erased anything.
+    func testAUnitChangeRelightsTheCard() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .character)
+        clock.fire(.deleteOpen)
+
+        presenter.updateDelete(granularity: .word)
+        XCTAssertEqual(presenter.content, .delete(granularity: .word))
+    }
+
+    /// A notch or a flip is a finger that is plainly still down, so it opens
+    /// the card ahead of the delay rather than waiting it out.
+    func testANotchInsideTheDelayOpensTheCardStraightAway() {
+        let (presenter, _) = make()
+        presenter.beginDelete(granularity: .character)
+
+        presenter.updateDelete(granularity: .word)
+        XCTAssertEqual(presenter.content, .delete(granularity: .word))
+    }
+
+    /// Nothing was held, so a notch belonging to no press has no card to light.
+    func testANotchWithNoPressBehindItShowsNothing() {
+        let (presenter, _) = make()
+        presenter.updateDelete(granularity: .word)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// A phone that suspends mid-press sends no end, and the card would sit
+    /// there for the rest of the session.
+    func testADeleteThatIsNeverEndedTimesOut() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .word)
+        clock.fire(.deleteOpen)
+        XCTAssertEqual(presenter.content, .delete(granularity: .word))
+
+        clock.fire(.delete)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The same unit arriving on every notch is the ordinary case, and it must
+    /// not cost a redraw per notch.
+    func testNotchesThatRepeatTheSameUnitDoNotRedraw() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .character)
+        clock.fire(.deleteOpen)
+        var draws = 0
+        presenter.onChange = { _ in draws += 1 }
+
+        presenter.updateDelete(granularity: .character)
+        presenter.updateDelete(granularity: .character)
+        XCTAssertEqual(draws, 0)
+    }
+
+    /// The picker is the only card that freezes the cursor, and a held delete
+    /// key must not: the phone is still sending notches, not travel.
+    func testAPickerOutranksAHeldDeleteKeyAndTheDeleteKeyDoesNotFreezeTheCursor() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .word)
+        clock.fire(.deleteOpen)
+        XCTAssertFalse(presenter.isPickerOpen)
+
+        presenter.beginPicker()
+        XCTAssertEqual(presenter.content, .picker(cell: nil))
+
+        presenter.endPicker()
+        XCTAssertEqual(presenter.content, .delete(granularity: .word))
+    }
+
+    /// The finger is on the delete key, so words dictated a moment ago are not
+    /// what is being looked at, and the hint the gesture teaches is beside the
+    /// point while the gesture is happening.
+    func testAHeldDeleteKeyOutranksTheTranscriptAndTheHint() {
+        let (presenter, clock) = make()
+        presenter.showHint(MacOverlayPresenter.deleteSlideHint)
+        presenter.showTranscript("some words")
+
+        presenter.beginDelete(granularity: .character)
+        clock.fire(.deleteOpen)
+        XCTAssertEqual(presenter.content, .delete(granularity: .character))
+
+        presenter.endDelete()
+        XCTAssertEqual(presenter.content, .transcript("some words"))
+    }
+
+    func testDisconnectClearsAHeldDeleteKeyToo() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .word)
+        clock.fire(.deleteOpen)
+
+        presenter.clearAll()
+        XCTAssertEqual(presenter.content, .nothing)
+
+        // And the press it cleared cannot light the card again from a notch
+        // that was already on its way.
+        presenter.updateDelete(granularity: .word)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// A press that ended before its watchdog must not take the next one down
+    /// with it when that timeout finally comes round.
+    func testATimeoutDoesNotCloseADeletePressOpenedAfterIt() {
+        let (presenter, clock) = make()
+        presenter.beginDelete(granularity: .character)
+        presenter.endDelete()
+        presenter.beginDelete(granularity: .word)
+        presenter.updateDelete(granularity: .word)
+
+        clock.fireOldest(.delete)
+        XCTAssertEqual(presenter.content, .delete(granularity: .word))
+    }
+
     /// Ten partials a second must not leave ten live timers behind, and the
     /// three kinds of timeout must not cancel each other.
     func testTheTimerBankKeepsOneTimerPerKindOfTimeout() {

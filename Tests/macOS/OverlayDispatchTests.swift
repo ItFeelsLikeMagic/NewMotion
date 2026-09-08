@@ -119,6 +119,48 @@ final class OverlayDispatchTests: XCTestCase {
         XCTAssertEqual(model.overlay.content, .nothing)
     }
 
+    /// The unit flip is for the card and nothing else: it presses no key, and
+    /// it must not disturb what the press has already taken. A notch is what
+    /// erases; this only says which unit the next one will take off.
+    func testAUnitChangeLightsTheCardAndInjectsNothing() throws {
+        let (model, sink) = controllableModel()
+        try model.dispatchApplication(.deleteScrub(
+            DeleteScrubPayload(phase: .begin, granularity: .character)
+        ))
+        // Still inside the open delay, which no timer can cross while this
+        // test holds the main actor.
+        XCTAssertEqual(model.overlay.content, .nothing)
+
+        try model.dispatchApplication(.deleteScrub(
+            DeleteScrubPayload(phase: .unitChanged, granularity: .word)
+        ))
+        XCTAssertEqual(model.lastApplicationMessage, "deleteScrub unit word")
+        XCTAssertEqual(model.overlay.content, .delete(granularity: .word))
+        XCTAssertTrue(sink.events.isEmpty)
+
+        try model.dispatchApplication(.deleteScrub(
+            DeleteScrubPayload(phase: .end, granularity: .word)
+        ))
+        XCTAssertEqual(model.overlay.content, .nothing)
+        XCTAssertTrue(sink.events.isEmpty)
+    }
+
+    /// The card belongs to the press, so a disconnect that abandons the press
+    /// has to take it down too.
+    func testADisconnectTakesTheDeleteCardDown() throws {
+        let model = MacRemoteAppModel()
+        try model.dispatchApplication(.deleteScrub(
+            DeleteScrubPayload(phase: .begin, granularity: .character)
+        ))
+        try model.dispatchApplication(.deleteScrub(
+            DeleteScrubPayload(phase: .unitChanged, granularity: .word)
+        ))
+        XCTAssertEqual(model.overlay.content, .delete(granularity: .word))
+
+        model.clearHandshakeState()
+        XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
     /// The words on the card must not reach the debug snapshot, which is what
     /// `lastApplicationMessage` feeds.
     func testAPreviewLeavesNoTraceInTheDebugState() throws {

@@ -37,6 +37,7 @@ struct MacOverlayView: View {
     private enum CardShape: Equatable {
         case nothing
         case picker(HotkeyAction?)
+        case delete(DeleteScrubGranularity)
         case transcript
         case hint(String)
     }
@@ -45,6 +46,7 @@ struct MacOverlayView: View {
         switch shown.content {
         case .nothing: return .nothing
         case let .picker(cell): return .picker(cell)
+        case let .delete(granularity): return .delete(granularity)
         case .transcript: return .transcript
         case let .hint(text): return .hint(text)
         }
@@ -57,6 +59,8 @@ struct MacOverlayView: View {
             EmptyView()
         case let .picker(cell):
             grid(lit: cell)
+        case let .delete(granularity):
+            deleteUnits(lit: granularity)
         case let .transcript(text):
             transcript(text)
         case let .hint(text):
@@ -83,6 +87,38 @@ struct MacOverlayView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The same capsules as the picker, because it is the same gesture: hold a
+    /// key and slide. Two of them, and a line saying what across does, since
+    /// the card is up before the finger has moved and that is the moment the
+    /// reminder is worth anything.
+    private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(DeleteScrubGranularity.allCases, id: \.self) { unit in
+                    Text(Self.unitName(unit))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .foregroundStyle(unit == lit ? Color.white : Color.primary)
+                        .background(
+                            Capsule().fill(unit == lit ? Color.accentColor : Color.primary.opacity(0.08))
+                        )
+                }
+            }
+            Text("Slide left to erase, right to restore")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private static func unitName(_ unit: DeleteScrubGranularity) -> String {
+        switch unit {
+        case .character: return "Character"
+        case .word: return "Word"
         }
     }
 

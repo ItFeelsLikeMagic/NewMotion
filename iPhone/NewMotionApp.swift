@@ -1208,7 +1208,7 @@ final class NewMotionFeatureModel: ObservableObject {
         switch phase {
         case .begin: latestAction = "Erasing"
         case .end: latestAction = "Erased"
-        case .delete, .restore: break
+        case .delete, .restore, .unitChanged: break
         }
     }
 

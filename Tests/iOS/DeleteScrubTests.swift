@@ -140,6 +140,110 @@ final class DeleteScrubTests: XCTestCase {
     }
 }
 
+/// One whole press of the delete key: what the phone owes the Mac between the
+/// finger landing and the finger lifting.
+final class DeleteScrubPressTests: XCTestCase {
+    private let width = SlideNotchCounter.baseStepWidth
+    private let travel = DeleteGranularityLatch.travel
+
+    /// Touch-down says so before anything has been asked for, so the Mac can
+    /// start waking a field that takes seconds to answer.
+    func testTheKeyGoingDownAnnouncesItselfAndOnlyOnce() {
+        var press = DeleteScrubPress()
+
+        XCTAssertEqual(press.begin(), [.scrub(.begin, .character)])
+        XCTAssertTrue(press.hasBegun)
+        XCTAssertEqual(press.begin(), [])
+    }
+
+    /// The reason the phase exists.  A flip erases nothing, so without a
+    /// message of its own the Mac's card would stay lit on characters for the
+    /// rest of the press.
+    func testAFlipDuringAHoldSaysTheUnitChangedOnce() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+
+        XCTAssertEqual(press.move(translationX: 0, translationY: -travel), [.scrub(.unitChanged, .word)])
+        XCTAssertTrue(press.isWord)
+        // Still up there, still in word mode: nothing changed, so nothing is
+        // said.
+        XCTAssertEqual(press.move(translationX: 0, translationY: -travel * 2), [])
+    }
+
+    func testSlidingBackDownSaysTheUnitChangedAgain() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+
+        _ = press.move(translationX: 0, translationY: -travel)
+        XCTAssertEqual(press.move(translationX: 0, translationY: 0), [.scrub(.unitChanged, .character)])
+        XCTAssertFalse(press.isWord)
+    }
+
+    /// The unit is settled before the notches are counted, so a slide that
+    /// goes up and across erases what the key now says it will.
+    func testAFlipAndANotchInOneMoveTakeTheNewUnit() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+
+        XCTAssertEqual(
+            press.move(translationX: -width, translationY: -travel),
+            [.scrub(.unitChanged, .word), .scrub(.delete, .word)]
+        )
+    }
+
+    /// A tap is the whole press with no travel in it: the Mac hears the end,
+    /// and the ordinary key does the erasing.
+    func testAPlainTapEndsWithTheKeyAndNoUnitChange() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+
+        XCTAssertEqual(
+            press.lift(committing: true),
+            [.scrub(.end, .character), .key(.deleteBackward)]
+        )
+        XCTAssertFalse(press.hasBegun)
+    }
+
+    /// A press that changed the unit was about the unit.  It must not also rub
+    /// a character out when the finger lifts.
+    func testAPressThatOnlyChangedTheUnitErasesNothingAtTheLift() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+        _ = press.move(translationX: 0, translationY: -travel)
+
+        XCTAssertEqual(press.lift(committing: true), [.scrub(.end, .word)])
+    }
+
+    /// A cancelled press closes the Mac's card and fires nothing.
+    func testACancelSendsTheEndAndNoKey() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+
+        XCTAssertEqual(press.lift(committing: false), [.scrub(.end, .character)])
+    }
+
+    /// A press with no touch behind it has nothing to say.
+    func testATouchThatNeverLandedSaysNothing() {
+        var press = DeleteScrubPress()
+
+        XCTAssertEqual(press.move(translationX: -width * 4, translationY: -travel), [])
+        XCTAssertEqual(press.lift(committing: true), [])
+    }
+
+    /// Every press starts back on characters, so a word slide can never carry
+    /// into the next press.
+    func testTheNextPressStartsBackOnCharacters() {
+        var press = DeleteScrubPress()
+        _ = press.begin()
+        _ = press.move(translationX: 0, translationY: -travel)
+        _ = press.lift(committing: true)
+
+        XCTAssertEqual(press.begin(), [.scrub(.begin, .character)])
+        XCTAssertEqual(press.steps, 0)
+        XCTAssertFalse(press.hasStepped)
+    }
+}
+
 /// The two-axis drag behind the selection key and the arrow pad.  It runs on
 /// the same notch counter as the delete keys, so these tests only cover what
 /// differs: two axes, and no floor at zero.

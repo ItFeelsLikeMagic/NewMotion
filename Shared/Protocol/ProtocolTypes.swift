@@ -614,6 +614,10 @@ public enum DeleteScrubPhase: UInt8, Codable, CaseIterable, Equatable, Sendable 
     case restore = 3
     /// The key came up, so what this press deleted can no longer be restored.
     case end = 4
+    /// The finger slid up or down and the key now takes off a different unit.
+    /// It erases nothing; it exists so the Mac's card can relight while the
+    /// press is still held, which a bare latch flip would otherwise never say.
+    case unitChanged = 5
 }
 
 /// What one notch stands for. The two delete keys differ in nothing else.
