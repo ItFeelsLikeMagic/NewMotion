@@ -56,7 +56,11 @@ touches building, installing, packaging, or releasing. Each script also takes
   That is the path `install.sh` ships to, so `install-mac.sh` writes there too.
   This is also why every release has to carry the same Developer ID: an update
   that swaps the app in place keeps the grant only if the signature matches.
-- **The iPhone app ships only through TestFlight.**
+- **A build for your own phone is `./scripts/install-phone.sh`.** It builds and
+  installs straight onto a paired device. "Put it on the phone", "roll it out
+  to the phone", and anything else short of naming TestFlight means this one.
+- **TestFlight is a release, not a test install.** It goes to Apple and to
+  every tester, so upload only when someone asks for TestFlight by name.
   `./scripts/testflight-phone.sh` archives, signs, and uploads in one command.
   Do not hand-roll `xcodebuild archive`; two traps are already handled there.
   Automatic signing picks the identity itself, so naming `Apple Distribution`
