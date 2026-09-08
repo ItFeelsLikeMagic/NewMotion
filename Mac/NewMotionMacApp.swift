@@ -69,7 +69,7 @@ final class MacRemoteAppModel: ObservableObject {
     private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
-    private let link: MessageLink
+    private let link: BLEMessageLink
     private let pairingOffer: MacPairingOfferController
     private let pairingCoordinator: MacPairingCoordinator?
     private let qrRenderer: MacPairingQRCodeRenderer
@@ -84,6 +84,11 @@ final class MacRemoteAppModel: ObservableObject {
     private var pairingDeviceName: String?
     private var authenticatedSession: PairingSession? {
         didSet {
+            // Only a finished handshake names the phone; before that the link
+            // has a peripheral and no identity.  `pairingID` is cleared ahead
+            // of the session on the way down, so the marker follows it here
+            // rather than at each teardown.
+            connectedDeviceID = authenticatedSession == nil ? nil : pairingID
             // A link can end in several places; it can only be authenticated
             // in one.  Following the session keeps the watchdog from having to
             // be started and stopped at each of them.
@@ -112,6 +117,8 @@ final class MacRemoteAppModel: ObservableObject {
     /// Set while the Allow/Deny prompt is up for a phone with this name.
     @Published private(set) var pendingApprovalName: String?
     @Published private(set) var pairedDevices: [TrustedDeviceSummary] = [] { didSet { publishDebugState() } }
+    /// Which saved phone is on the link right now, so the list can mark it.
+    @Published private(set) var connectedDeviceID: UUID?
     @Published private(set) var pairingError: String? { didSet { publishDebugState() } }
     @Published private(set) var pairingQRImage: NSImage? { didSet { publishDebugState() } }
     @Published private(set) var pairingExpiry: Date? { didSet { publishDebugState() } }
@@ -355,6 +362,31 @@ final class MacRemoteAppModel: ObservableObject {
         pairingOffer.cancel()
     }
 
+    /// Forgetting is the only way to keep a saved phone away: the link looks
+    /// again after every drop, so cutting the connection on its own would be
+    /// undone within a second.  The phone needs a new QR code to come back.
+    func forget(deviceID: UUID) {
+        guard let pairingCoordinator else { return }
+        let wasOnTheLink = pairingID == deviceID
+        do {
+            try pairingCoordinator.revoke(deviceID: deviceID)
+        } catch {
+            pairingError = "Could not forget that iPhone"
+            return
+        }
+        pairedDevices = pairingCoordinator.trustedDevices
+        pairingError = nil
+        if wasOnTheLink {
+            clearHandshakeState()
+            _ = lifecycle.handle(.disconnected)
+            updateStatus()
+        }
+        // Before the drop: the beacon list is what the link forgets a turned
+        // away phone on, and this phone has to stay turned away.
+        refreshBeacons()
+        if wasOnTheLink { link.rejectCurrentPeer() }
+    }
+
     /// The Mac listens for the phones it trusts and, while a QR code is up,
     /// for the phone that code will bring, and for nobody else.
     private func refreshBeacons() {
@@ -467,8 +499,19 @@ final class MacRemoteAppModel: ObservableObject {
             holdForApproval(hello)
             return
         }
-        let server = try pairingCoordinator.makeReconnectServer(for: hello.pairingID)
+        guard let server = try? pairingCoordinator.makeReconnectServer(for: hello.pairingID) else {
+            turnAwayUnknownPhone()
+            return
+        }
         try startHandshake(server: server, hello: hello)
+    }
+
+    /// A phone macOS already holds a connection to is adopted without matching
+    /// a beacon, so one this Mac has forgotten still gets as far as a hello.
+    /// Turning it away at the link is what stops the next poll taking it back.
+    private func turnAwayUnknownPhone() {
+        lastPairingFailure = "an iPhone this Mac does not know"
+        link.rejectCurrentPeer()
     }
 
     private func holdForApproval(_ hello: PairingClientHello) {
@@ -948,6 +991,32 @@ final class MacRemoteAppModel: ObservableObject {
     }
 }
 
+/// One saved phone: which it is, whether it is the one on the link, and the
+/// only way to send it away for good.
+private struct SavedPhoneRow: View {
+    let device: TrustedDeviceSummary
+    let isConnected: Bool
+    let forget: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isConnected ? Color.green : Color.secondary.opacity(0.35))
+                .frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+            Text(device.displayName)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityLabel(isConnected ? "\(device.displayName), connected" : device.displayName)
+            Spacer(minLength: 6)
+            Button("Forget", action: forget)
+                .font(.caption)
+                .accessibilityLabel("Forget \(device.displayName)")
+        }
+    }
+}
+
 struct MacRemoteStatusView: View {
     @ObservedObject var model: MacRemoteAppModel
     @ObservedObject var updates: SoftwareUpdateController
@@ -988,10 +1057,6 @@ struct MacRemoteStatusView: View {
                         .buttonStyle(.borderedProminent)
                     Button("Don't Allow") { model.denyPendingPhone() }
                 }
-            }
-            if let paired = model.pairedDevices.last {
-                LabeledContent("Paired device", value: paired.displayName)
-                    .font(.caption)
             }
             if let error = model.pairingError {
                 Text(error)
@@ -1045,13 +1110,22 @@ struct MacRemoteStatusView: View {
             }
 
             Divider()
-            if let paired = model.pairedDevices.last {
-                Text("Saved \(paired.displayName). Open the phone app to reconnect. QR is only for a new phone.")
+            if model.pairedDevices.isEmpty {
+                Text("Pair a foreground iPhone to enable authenticated control.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Pair a foreground iPhone to enable authenticated control.")
+                Text("Saved iPhones")
+                    .font(.caption.weight(.semibold))
+                ForEach(model.pairedDevices, id: \.deviceID) { device in
+                    SavedPhoneRow(
+                        device: device,
+                        isConnected: device.deviceID == model.connectedDeviceID,
+                        forget: { model.forget(deviceID: device.deviceID) }
+                    )
+                }
+                Text("Open the phone app to reconnect. Forgetting one needs a new QR code to undo.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
