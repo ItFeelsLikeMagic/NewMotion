@@ -62,6 +62,12 @@ final class NewMotionFeatureModel: ObservableObject {
         trustedMacs.first { $0.deviceID == selectedMacID } ?? trustedMacs.max { $0.pairedAt < $1.pairedAt }
     }
     var trustedMacName: String? { selectedMac?.displayName }
+    /// The two words the Mac files this phone under. Shown here so the person
+    /// holding it can tell which row over there is theirs.
+    var deviceName: String {
+        guard let pairingCoordinator else { return "iPhone" }
+        return DeviceSlug.name(forIdentityKey: pairingCoordinator.identity.publicKey)
+    }
     /// Round trip over the link, measured end to end from this app.
     @Published var linkLatency = "Not measured"
 
@@ -1643,6 +1649,7 @@ private struct RemoteSettingsSheet: View {
                         )
                     }
 
+                    LabeledContent("This iPhone", value: model.deviceName)
                     LabeledContent("Link", value: model.linkStatus)
                     LabeledContent("Link round trip", value: model.linkLatency)
                     if model.trustedMacs.count > 1 {
