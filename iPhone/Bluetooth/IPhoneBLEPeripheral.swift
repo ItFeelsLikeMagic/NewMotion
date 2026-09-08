@@ -95,8 +95,12 @@ public final class IPhoneBLEPeripheralTransport {
         handleManagerState(adapter.state)
     }
 
-    /// A live advertisement changes over in place; a connection keeps its
-    /// central and the next advertisement carries the new beacon.
+    /// A live advertisement changes over in place. A connection cannot: the
+    /// beacon names the one Mac this phone means to reach, so once it changes
+    /// the Mac on the other end is the wrong one, and it will not hang up on
+    /// its own. Dropping the service is the one thing a peripheral can do that
+    /// the central notices at once, and it is what frees the phone to
+    /// advertise the new beacon at all.
     public func setBeacon(_ beacon: UUID?) {
         guard beacon != self.beacon else { return }
         self.beacon = beacon
@@ -104,9 +108,12 @@ public final class IPhoneBLEPeripheralTransport {
         case .advertising:
             adapter.stopAdvertising()
             advertiseIfAddressed()
+        case .connected, .ready:
+            stop(reason: .stopped)
+            startIfAllowed()
         case .stopped:
             startIfAllowed()
-        case .idle, .waitingForBluetooth, .publishing, .connected, .ready:
+        case .idle, .waitingForBluetooth, .publishing:
             return
         }
     }
