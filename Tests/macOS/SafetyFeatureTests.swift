@@ -309,19 +309,35 @@ final class SafetyFeatureTests: XCTestCase {
     /// The picker's four new cells.  Each is a letter chord, so each has to
     /// follow the layout rather than a fixed QWERTY position.
     func testPickerChordsAreCommandLetters() {
-        let expected: [(MacAllowedHotkey, [UInt16], UInt16)] = [
-            (.cut, [55], 7),
-            (.save, [55], 1),
-            (.find, [55], 3),
-            (.previousWindow, [55, 56], 50)
+        let expected: [(MacAllowedHotkey, [PhysicalKeyTransition])] = [
+            (.cut, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 7, isDown: true),
+                PhysicalKeyTransition(keyCode: 7, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.save, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 1, isDown: true),
+                PhysicalKeyTransition(keyCode: 1, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.find, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 3, isDown: true),
+                PhysicalKeyTransition(keyCode: 3, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.previousWindow, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 56, isDown: true),
+                PhysicalKeyTransition(keyCode: 50, isDown: true),
+                PhysicalKeyTransition(keyCode: 50, isDown: false),
+                PhysicalKeyTransition(keyCode: 56, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ])
         ]
-        for (hotkey, modifiers, key) in expected {
-            var transitions = modifiers.map { PhysicalKeyTransition(keyCode: $0, isDown: true) }
-            transitions.append(PhysicalKeyTransition(keyCode: key, isDown: true))
-            transitions.append(PhysicalKeyTransition(keyCode: key, isDown: false))
-            transitions.append(
-                contentsOf: modifiers.reversed().map { PhysicalKeyTransition(keyCode: $0, isDown: false) }
-            )
+        for (hotkey, transitions) in expected {
             XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: hotkey), transitions, "\(hotkey)")
 
             let payload = try? SharedInputProtocolAdapter.payload(for: .hotkey(hotkey))
@@ -356,16 +372,18 @@ final class SafetyFeatureTests: XCTestCase {
 
     /// The picker never reaches the injector as a picker: the cell it commits
     /// is submitted as an ordinary hotkey, so it takes the same policy path.
-    func testPickerAndPreviewMessagesAreNotCommands() {
+    func testPickerAndPreviewMessagesAreNotCommands() throws {
         XCTAssertThrowsError(
             try SharedInputProtocolAdapter.command(
                 for: .keyPicker(KeyPickerPayload(phase: .commit, cell: .save))
             )
         )
+
+        // Built outside the assertion: a throw from the constructor would
+        // otherwise satisfy it without the adapter ever being asked.
+        let preview = try TranscriptPreviewPayload(text: "hello")
         XCTAssertThrowsError(
-            try SharedInputProtocolAdapter.command(
-                for: .transcriptPreview(try TranscriptPreviewPayload(text: "hello"))
-            )
+            try SharedInputProtocolAdapter.command(for: .transcriptPreview(preview))
         )
     }
 

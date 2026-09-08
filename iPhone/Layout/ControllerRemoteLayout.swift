@@ -4,7 +4,8 @@ import SwiftUI
 /// The sideways layout: every key under one thumb, the whole trackpad under
 /// the other.  Mirrored, the two swap sides for a left-handed hold.
 struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
-    /// Enough width for four keys and their gaps; the trackpad takes the rest.
+    /// Enough width for the top row's five keys and their gaps; the trackpad
+    /// takes the rest.
     private static var keyColumnShare: Double { 0.42 }
 
     @ObservedObject var pushToTalk: PushToTalkController

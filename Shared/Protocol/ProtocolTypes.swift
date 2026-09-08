@@ -856,7 +856,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
                 throw ProtocolError.invalidUTF8
             }
         // A cell riding along on `begin` or `cancel` is ignored rather than
-        // refused: only what `commit` names is ever fired.
+        // refused: only what `commit` names is ever fired.  A commit cell is
+        // not checked against `KeyPickerGrid` either, because a plain hotkey
+        // already carries every `HotkeyAction`, and refusing an off-grid cell
+        // would only make an older Mac reject a newer phone's grid.
         case .hotkey, .tabWalk, .deleteScrub, .vocabulary, .keyPicker:
             break
         case .spokenText(let value):

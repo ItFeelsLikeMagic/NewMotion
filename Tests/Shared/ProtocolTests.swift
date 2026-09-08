@@ -79,6 +79,20 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    /// These numbers are the wire.  They were renumbered once already, when a
+    /// rebase found 29 taken by `controlCenter`, and a phone and a Mac that
+    /// disagree on them fire the wrong shortcut rather than fail.  Pinning them
+    /// here means a reorder of either enum has to be a deliberate edit.
+    func testNewWireRawValuesArePinned() {
+        XCTAssertEqual(HotkeyAction.cut.rawValue, 30)
+        XCTAssertEqual(HotkeyAction.save.rawValue, 31)
+        XCTAssertEqual(HotkeyAction.find.rawValue, 32)
+        XCTAssertEqual(HotkeyAction.previousWindow.rawValue, 33)
+
+        XCTAssertEqual(MessageType.keyPicker.rawValue, 19)
+        XCTAssertEqual(MessageType.transcriptPreview.rawValue, 20)
+    }
+
     /// Both apps draw this grid from the same table.  A reorder is a wire
     /// change, because the phone lights a cell the Mac then fires.
     func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
