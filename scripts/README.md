@@ -24,7 +24,7 @@ XcodeGen (`brew install xcodegen`).
 | Script | What it does |
 | --- | --- |
 | `install-mac.sh` | Builds the Mac companion and replaces `/Applications/NewMotion.app`, then launches that copy. |
-| `install-phone.sh` | Builds the iPhone app and installs it on a paired device with `devicectl`. |
+| `install-phone.sh` | Builds the iPhone app and installs it on a paired device with `devicectl`. This is how a phone gets a test build; TestFlight is not. |
 | `launch-phone.sh` | Launches the app already on the phone. |
 
 macOS ties the Accessibility grant to the exact app path and signature, so the
@@ -92,8 +92,12 @@ build. The one-liner people paste points at
 [`.github/workflows/pages.yml`](../.github/workflows/pages.yml) republishes
 whenever the root `install.sh` changes on `main`. Edit the root copy only.
 
-The iPhone app ships through TestFlight instead, because Apple allows nothing
-else. On a Mac signed in to Xcode that is the whole command:
+The iPhone app ships to other people through TestFlight instead, because Apple
+allows nothing else. Uploading is a release, not a way to try a change: it goes
+to Apple and to every tester, so run it only when someone asks for a TestFlight
+build by name. Putting a build on your own phone is `install-phone.sh`, above.
+
+On a Mac signed in to Xcode the upload is the whole command:
 
 ```sh
 NEWMOTION_DEVELOPMENT_TEAM=4B8P47VZGT ./scripts/testflight-phone.sh
