@@ -343,6 +343,23 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.writes.map { $0.0.suffix(1) }, [Data([1]), Data([2])])
     }
 
+    func testAReliableWriteThatFailsDropsTheLinkRatherThanStallingIt() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        var failures: [LinkError] = []
+        let peripheral = bringLinkToConnected(link, adapter: adapter)
+        link.onError = { failures.append($0) }
+        XCTAssertEqual(link.send(Data([1]), on: .control, delivery: .reliable), .sent)
+        XCTAssertEqual(link.send(Data([2]), on: .control, delivery: .reliable), .sent)
+
+        adapter.emitWriteComplete(error: NSError(domain: "test", code: 1))
+
+        XCTAssertEqual(failures, [.peerDisconnected])
+        XCTAssertEqual(link.state, .searching)
+        XCTAssertEqual(adapter.cancelledConnections, [peripheral.identifier])
+        XCTAssertEqual(adapter.writes.count, 1, "the frame behind the failure must not be sent into a dead link")
+    }
+
     func testLinkWritesControlBeforeTheSubscriptionsFinish() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
@@ -557,7 +574,7 @@ private final class MutablePairingClock: PairingClock {
     var now: Date { nowValue }
 }
 
-private final class FakeCentralAdapter: MacCentralManagerAdapter {
+final class FakeCentralAdapter: MacCentralManagerAdapter {
     var state: BLEPeripheralManagerState = .poweredOn
     var onStateChange: ((BLEPeripheralManagerState) -> Void)?
     var onDiscoverPeripheral: ((BLEDiscoveredPeripheral) -> Void)?

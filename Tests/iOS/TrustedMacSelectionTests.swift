@@ -130,23 +130,3 @@ private final class MutableClock: PairingClock {
     init(_ now: Date) { nowValue = now }
     var now: Date { nowValue }
 }
-
-private final class FakeMessageLink: MessageLink {
-    // Searching, not connected: the handshake hello and its retry timer stay
-    // out of the way of what these tests are watching.
-    var state: RemoteLinkState = .searching
-    var peerName: String?
-    var maximumMessageBytes = 512
-    var onStateChange: ((RemoteLinkState) -> Void)?
-    var onMessage: ((LinkChannel, Data) -> Void)?
-    var onReadyToSend: (() -> Void)?
-    var onError: ((LinkError) -> Void)?
-    private(set) var beacons: [UUID] = []
-    private(set) var startCount = 0
-    private(set) var stopCount = 0
-
-    func send(_ message: Data, on channel: LinkChannel, delivery: LinkDelivery) -> LinkSendResult { .sent }
-    func setBeacons(_ beacons: [UUID]) { self.beacons = beacons }
-    func start() { startCount += 1 }
-    func stop() { stopCount += 1 }
-}

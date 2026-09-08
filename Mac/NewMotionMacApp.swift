@@ -44,13 +44,17 @@ final class MacRemoteAppModel: ObservableObject {
     /// held button that outlives the phone is a nuisance for this long; a
     /// selection dropped mid-drag by an impatient watchdog is worse.
     private static let heartbeatTimeout: TimeInterval = 1.0
-    /// How often the watchdog is asked whether its window has passed.  It only
-    /// decides the delay between the window closing and the release.
-    private static let watchdogPollInterval: TimeInterval = 0.25
-    /// How long a connected phone has to finish the handshake. Nothing below
-    /// can tell a healthy idle link from a stale one, so the deadline lives
-    /// here, beside the session it is waiting for.
-    private static let authenticationTimeout: TimeInterval = 12
+    /// How often the two clocks below are asked whether their window has
+    /// passed.  It only decides the delay between the window closing and the
+    /// response.
+    private static let phonePollInterval: TimeInterval = 0.25
+    /// A connected phone is never quiet for long: it repeats its hello every
+    /// two seconds until the handshake is done, and pings every two seconds
+    /// after, whether or not anyone is touching it.  Nothing below can tell a
+    /// healthy idle link from one whose phone has gone, so the deadline lives
+    /// here.  It is generous because a beat runs late under load, and
+    /// dropping a healthy link costs more than noticing a dead one slowly.
+    private static let phoneSilenceTimeout: TimeInterval = 12
 
     /// Owned here so it can be told when a phone comes and goes; that is what
     /// decides when a downloaded update is allowed to apply itself.
@@ -58,10 +62,13 @@ final class MacRemoteAppModel: ObservableObject {
 
     private let injector: SafeInputInjector
     private let reliableInput: ReliableInputCoordinator
-    /// Runs only while a phone is authenticated.  The watchdog itself stays
-    /// disarmed until a heartbeat arrives, so a remote that holds nothing is
-    /// never at risk of a release it did not need.
-    private var watchdogTimer: Timer?
+    private let now: () -> Date
+    /// Runs only while a phone is on the link.  It polls the held-input
+    /// watchdog, which stays disarmed until a heartbeat arrives so a remote
+    /// that holds nothing is never at risk of a release it did not need, and
+    /// the silence deadline.
+    private var phoneTimer: Timer?
+    private var lastHeardFromPhone: Date?
     /// Runs only while Accessibility is missing.  macOS posts nothing when the
     /// switch is flipped in System Settings, so the grant is noticed by asking
     /// again; once granted the poll stops and stays off the input path.
@@ -79,7 +86,6 @@ final class MacRemoteAppModel: ObservableObject {
     /// that gives up first leaves the code usable.
     private var pendingHello: PairingClientHello?
     private let approvalWindow = MacPhoneApprovalWindow()
-    private var authenticationDeadline: Date?
     private var pairingID: UUID?
     private var pairingDeviceName: String?
     private var authenticatedSession: PairingSession? {
@@ -89,22 +95,15 @@ final class MacRemoteAppModel: ObservableObject {
             // of the session on the way down, so the marker follows it here
             // rather than at each teardown.
             connectedDeviceID = authenticatedSession == nil ? nil : pairingID
-            // A link can end in several places; it can only be authenticated
-            // in one.  Following the session keeps the watchdog from having to
-            // be started and stopped at each of them.
             if authenticatedSession == nil {
-                stopWatchdog()
                 // Releases anything still held.  This runs before the
                 // lifecycle transition, so the button comes up immediately
                 // rather than on the way through the unsafe state.
                 reliableInput.disconnect()
-            } else if oldValue == nil {
-                startWatchdog()
             }
             // A staged update waits for a stretch with no phone on the link,
             // because this app is never quit and Sparkle installs on quit.
             softwareUpdates.phoneSessionChanged(active: authenticatedSession != nil)
-            refreshAuthenticationDeadline()
         }
     }
     private var nextApplicationSequence: UInt64 = 1
@@ -143,7 +142,10 @@ final class MacRemoteAppModel: ObservableObject {
     private let focusedTextReader = AXFocusedTextReader()
     private let deleteScrub: DeleteScrubCoordinator
 
-    init() {
+    /// Both parameters exist so a test can put a fake radio and a fake clock
+    /// under the whole model; the app passes neither.
+    init(centralAdapter: MacCentralManagerAdapter? = nil, now: @escaping () -> Date = Date.init) {
+        self.now = now
         let latency = MacLatencyProbes()
         self.latency = latency
         let vocabularyCache = VocabularyCache()
@@ -160,9 +162,9 @@ final class MacRemoteAppModel: ObservableObject {
         self.pointerSmoothing = smoothing
         let injector = SafeInputInjector(sink: smoothing, accessibility: trust)
         let inert = MacHostRuntime.isInert
-        let adapter: MacCentralManagerAdapter = inert
+        let adapter = centralAdapter ?? (inert
             ? InertCentralManagerAdapter()
-            : CoreBluetoothCentralManagerAdapter()
+            : CoreBluetoothCentralManagerAdapter())
         let link = BLEMessageLink(adapter: adapter, latency: latency.linkSend)
         let pairingOffer = MacPairingOfferController()
         let store: TrustedDeviceStore = inert
@@ -254,7 +256,9 @@ final class MacRemoteAppModel: ObservableObject {
         // its own dialog, and only ever once, which is why the poll apply()
         // starts is what actually catches the grant.
         apply(injector.refreshAccessibility(prompt: !inert))
-        if !inert { link.start() }
+        // The inert adapter reports no radio, so under tests this is a no-op
+        // until a test hands in a fake that is powered on.
+        link.start()
         publishDebugState()
         startDebugServerIfNeeded()
     }
@@ -397,12 +401,6 @@ final class MacRemoteAppModel: ObservableObject {
 
     func tick() {
         pairingOffer.tick()
-        guard let deadline = authenticationDeadline, Date() >= deadline else { return }
-        // A connected phone that never finishes the handshake leaves a link
-        // that looks live and carries nothing. Drop it and look again.
-        authenticationDeadline = nil
-        link.stop()
-        link.start()
     }
 
     private func updateStatus() {
@@ -422,7 +420,13 @@ final class MacRemoteAppModel: ObservableObject {
             dismissApproval()
             pairingProgress = .waitingForScan
         }
-        refreshAuthenticationDeadline()
+        if state == .connected {
+            lastHeardFromPhone = now()
+            startPhonePoll()
+        } else {
+            lastHeardFromPhone = nil
+            stopPhonePoll()
+        }
         // A live QR offer is its own progress; the link looking behind it is
         // not news.
         if case .active = pairingOffer.state, state == .searching { return }
@@ -442,19 +446,13 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    /// Paused while the prompt is up: there the Mac's user is the one being
-    /// waited on, and a phone dropped mid-decision would only scan again.
-    private func refreshAuthenticationDeadline() {
-        guard link.state == .connected, authenticatedSession == nil, pendingHello == nil else {
-            authenticationDeadline = nil
-            return
-        }
-        authenticationDeadline = Date().addingTimeInterval(Self.authenticationTimeout)
-    }
-
     private var peerName: String { link.peerName ?? "iPhone" }
 
     private func handleIncomingMessage(channel: LinkChannel, message: Data, arrival: LatencyClock) {
+        // Anything at all counts, including a hello repeated under the prompt
+        // and a ping this Mac will not answer: the question is whether the
+        // phone is there, not whether it is welcome.
+        lastHeardFromPhone = now()
         switch channel {
         case .data:
             guard authenticatedSession != nil else { return }
@@ -518,7 +516,6 @@ final class MacRemoteAppModel: ObservableObject {
         let name = peerName
         pendingHello = hello
         pendingApprovalName = name
-        refreshAuthenticationDeadline()
         pairingProgress = .awaitingApproval(deviceName: name)
         approvalWindow.show(
             deviceName: name,
@@ -538,14 +535,13 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    /// The phone drops the link when it reads the decline; the authentication
-    /// deadline, resumed here, drops it for a phone that does not.
+    /// The phone drops the link when it reads the decline; one that does not
+    /// is dropped by the silence deadline once it stops repeating its hello.
     func denyPendingPhone() {
         guard let hello = pendingHello else { return }
         dismissApproval()
         pairingOffer.cancel()
         _ = link.send(PairingServerDecline(pairingID: hello.pairingID).encode(), on: .control, delivery: .reliable)
-        refreshAuthenticationDeadline()
         lastApplicationMessage = "Declined \(peerName)"
     }
 
@@ -771,32 +767,40 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    /// The watchdog needs a clock of its own: a phone that has stopped talking
+    /// The poll needs a clock of its own: a phone that has stopped talking
     /// sends nothing to notice, which is the whole point of it.
-    private func startWatchdog() {
-        stopWatchdog()
-        watchdogTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.watchdogPollInterval,
+    private func startPhonePoll() {
+        guard phoneTimer == nil else { return }
+        phoneTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.phonePollInterval,
             repeats: true
         ) { [weak self] timer in
             let stillOwned = MainActor.assumeIsolated { () -> Bool in
                 guard let self else { return false }
-                self.pollWatchdog()
+                self.pollPhone()
                 return true
             }
             if !stillOwned { timer.invalidate() }
         }
     }
 
-    private func stopWatchdog() {
-        watchdogTimer?.invalidate()
-        watchdogTimer = nil
+    private func stopPhonePoll() {
+        phoneTimer?.invalidate()
+        phoneTimer = nil
     }
 
-    private func pollWatchdog() {
-        guard reliableInput.poll().contains(.watchdogExpired) else { return }
-        lastApplicationMessage = "held input released: no heartbeat"
-        publishDebugState()
+    func pollPhone() {
+        if reliableInput.poll().contains(.watchdogExpired) {
+            lastApplicationMessage = "held input released: no heartbeat"
+            publishDebugState()
+        }
+        guard let lastHeard = lastHeardFromPhone,
+              now().timeIntervalSince(lastHeard) >= Self.phoneSilenceTimeout else { return }
+        // Letting go is what frees the phone to advertise again, and scanning
+        // is what finds it when it does.
+        link.stop()
+        link.start()
+        lastPairingFailure = "the iPhone went quiet"
     }
 
     /// Transcription moved to the phone, so the boost list has to arrive

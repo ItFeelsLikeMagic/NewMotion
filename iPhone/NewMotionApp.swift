@@ -76,6 +76,13 @@ final class NewMotionFeatureModel: ObservableObject {
     /// A pong that has not come back by now never will.
     private static let pingTimeout: TimeInterval = 3
     private static let maxOutstandingPings = 8
+    /// A Mac that owes an answer and has said nothing for this long is gone,
+    /// whatever iOS still believes about the subscriber.  Generous, because a
+    /// beat runs late under load and dropping a healthy link costs more than
+    /// noticing a dead one slowly.
+    private static let macSilenceTimeout: TimeInterval = 10
+    private let uptime: () -> TimeInterval
+    private var lastHeardFromMac: TimeInterval = 0
     /// Sends still waiting for a pong, oldest first.
     private var pingSentAt: [TimeInterval] = []
     private var pingSamples: [Double] = []
@@ -141,12 +148,15 @@ final class NewMotionFeatureModel: ObservableObject {
 
     /// The coordinator is a parameter so a caller can hand in one over its own
     /// trust store; the app's own is the Keychain, which a test cannot reach.
+    /// The clock is one so a test can let the Mac fall silent without waiting.
     init(
         link: MessageLink = BLEMessageLink(
             peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
         ),
-        pairingCoordinator: IPhonePairingCoordinator? = nil
+        pairingCoordinator: IPhonePairingCoordinator? = nil,
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
+        self.uptime = uptime
         let audioController = LocalPushToTalkAudioController(
             microphone: AVAudioMicrophoneInput(),
             permissionGranted: AVAudioApplication.shared.recordPermission == .granted
@@ -555,6 +565,7 @@ final class NewMotionFeatureModel: ObservableObject {
             }
         case .connected:
             _ = lifecycle.handle(.transportAvailable)
+            lastHeardFromMac = uptime()
             if authenticatedSession != nil {
                 latestAction = "Paired with Mac"
                 refreshAirMouse()
@@ -621,6 +632,9 @@ final class NewMotionFeatureModel: ObservableObject {
             pairingConfirmed = true
             pairingToken = nil
             handshakeHelloSent = false
+            // The Mac's clock starts with the question, not with whatever it
+            // last said before the retry delay.
+            lastHeardFromMac = uptime()
             _ = lifecycle.handle(.trustAdded)
             latestAction = "Reconnecting to \(device.displayName)"
             IPhoneDebugLog.emit("reconnect", ["path": "trust", "link": linkState.label])
@@ -695,7 +709,7 @@ final class NewMotionFeatureModel: ObservableObject {
 
     private func sendOnePing(manual: Bool) {
         guard isControllable else { return }
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = uptime()
         expireOutstandingPings(now: now)
         pingSentAt.append(now)
         guard inputUplink.send(.ping(PingPayload())) else {
@@ -724,7 +738,7 @@ final class NewMotionFeatureModel: ObservableObject {
     }
 
     private func recordPong() {
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = uptime()
         expireOutstandingPings(now: now)
         guard !pingSentAt.isEmpty else { return }
         let sent = pingSentAt.removeFirst()
@@ -756,9 +770,42 @@ final class NewMotionFeatureModel: ObservableObject {
         }
         guard telemetryTimers.isEmpty else { return }
         telemetryTimers = [
-            repeatingTimer(every: Self.autoPingInterval) { $0.sendAutomaticPing() },
+            repeatingTimer(every: Self.autoPingInterval) { $0.beat() },
             repeatingTimer(every: Self.latencySummaryInterval) { PhoneLatency.emitSummary(link: $0.linkState.label) }
         ]
+    }
+
+    /// One beat of the link: notice a Mac that has stopped answering, else ask
+    /// it again.  The automatic ping is the beat while a session is up, and
+    /// the repeated hello is the beat before one.
+    func beat() {
+        guard !macHasGoneQuiet else {
+            dropQuietMac()
+            return
+        }
+        sendAutomaticPing()
+    }
+
+    /// Only a Mac that owes an answer can be silent.  A session answers every
+    /// ping and a trusted Mac answers a hello at once, so those are judged.  A
+    /// QR pairing is the one wait with nobody to hurry, because the Mac's
+    /// user is deciding; the code's own expiry bounds it instead.
+    private var macHasGoneQuiet: Bool {
+        guard link.state == .connected,
+              authenticatedSession != nil || (pairingClient != nil && pairingToken == nil) else { return false }
+        return uptime() - lastHeardFromMac >= Self.macSilenceTimeout
+    }
+
+    /// A peripheral cannot hang up on a central, and iOS says nothing about
+    /// a Mac whose app has gone while the system keeps the link.  Dropping the
+    /// service is the one thing the phone can do that the Mac notices at
+    /// once, and it is what frees the beacon to advertise again for a Mac
+    /// that has already restarted and is scanning for it.  The trip through
+    /// `.searching` drops the session and starts the handshake over.
+    private func dropQuietMac() {
+        IPhoneDebugLog.emit("mac_quiet", ["auth": authenticatedSession != nil ? "yes" : "no"])
+        link.stop()
+        link.start()
     }
 
     private func repeatingTimer(
@@ -778,6 +825,9 @@ final class NewMotionFeatureModel: ObservableObject {
     }
 
     private func handleMessage(channel: LinkChannel, message: Data) {
+        // Anything at all counts, even a message this phone cannot open: the
+        // question is whether the Mac is there, not whether it makes sense.
+        lastHeardFromMac = uptime()
         switch channel {
         case .data:
             handleApplicationMessage(message)
