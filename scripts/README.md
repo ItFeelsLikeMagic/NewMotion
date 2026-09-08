@@ -86,7 +86,10 @@ commits, which is thinner than the install help the last release carried.
 
 [`install.sh`](../install.sh) installs from the newest release's
 `NewMotion.dmg`, so publishing the release is the step that hands people the
-build.
+build. The one-liner people paste points at
+`https://itfeelslikemagic.github.io/NewMotion/install.sh`, a copy that
+[`.github/workflows/pages.yml`](../.github/workflows/pages.yml) republishes
+whenever the root `install.sh` changes on `main`. Edit the root copy only.
 
 The iPhone app ships through TestFlight instead, because Apple allows nothing
 else. On a Mac signed in to Xcode that is the whole command:

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install NewMotion for Mac.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ItFeelsLikeMagic/NewMotion/main/install.sh | sh
+#   curl -fsSL https://itfeelslikemagic.github.io/NewMotion/install.sh | sh
 #
 # Downloads the latest release, checks Apple signed and notarized it and that
 # it came from us, then puts it in Applications and starts it.
@@ -29,8 +29,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# A bar rather than silence: the disk image is tens of megabytes, and a slow
+# link with no output on screen reads as a hang. Only when someone is watching;
+# piped into a log the bar would be noise.
+if [ -t 2 ]; then PROGRESS=--progress-bar; else PROGRESS=-s; fi
+
 printf 'Downloading NewMotion...\n'
-curl -fsSL --retry 3 -o "$WORK/NewMotion.dmg" "$DMG_URL" \
+curl -fL $PROGRESS --retry 3 -o "$WORK/NewMotion.dmg" "$DMG_URL" \
     || die "could not download $DMG_URL"
 
 # Checked before anything is mounted or copied. A script fetched over the
