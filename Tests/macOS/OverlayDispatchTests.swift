@@ -8,6 +8,20 @@ import XCTest
 /// can move the real cursor or press a real key.
 @MainActor
 final class OverlayDispatchTests: XCTestCase {
+    /// A model whose injector answers to this test: the sink is the only place
+    /// the key a commit actually fired can be seen. Startup puts the injector
+    /// back to unauthenticated, so control is granted after the model is built.
+    private func controllableModel() -> (MacRemoteAppModel, MockInputEventSink) {
+        let sink = MockInputEventSink()
+        let injector = SafeInputInjector(sink: sink)
+        let model = MacRemoteAppModel(injector: injector)
+        _ = injector.transition(to: InputControlState(
+            authentication: .authenticated,
+            accessibility: .granted
+        ))
+        return (model, sink)
+    }
+
     func testAnOpenPickerDropsCursorPacketsAndCancelFiresNothing() throws {
         let model = MacRemoteAppModel()
         try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .begin)))
@@ -17,6 +31,11 @@ final class OverlayDispatchTests: XCTestCase {
         // the last word on what happened is still the picker opening.
         try model.dispatchApplication(.pointerDelta(PointerDeltaPayload(deltaX: 7, deltaY: -3)))
         try model.dispatchApplication(.scrollDelta(ScrollDeltaPayload(deltaX: 0, deltaY: 4)))
+        try model.dispatchApplication(.motionPointerDelta(MotionPointerDeltaPayload(
+            deltaX: 3,
+            deltaY: 2,
+            sampleRateHz: 60
+        )))
         XCTAssertEqual(model.lastApplicationMessage, "keyPicker begin")
 
         // A cancel closes the card and asks the injector for nothing at all.
@@ -39,12 +58,65 @@ final class OverlayDispatchTests: XCTestCase {
         XCTAssertEqual(model.overlay.content, .nothing)
     }
 
+    /// The commit fires the cell it names, not the last one lit: a highlight
+    /// lost on the way costs a stale card, never the wrong shortcut.
+    func testACommitFiresTheCellItNamesRatherThanTheLitOne() throws {
+        let (model, sink) = controllableModel()
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .begin)))
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .highlight, cell: .copy)))
+        XCTAssertEqual(model.overlay.content, .picker(cell: .copy))
+
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .commit, cell: .save)))
+        // Through the live layout, the same way the injector resolved it: on a
+        // non-QWERTY keyboard ⌘S is not the QWERTY key code.
+        XCTAssertEqual(sink.events, [.hotkey(HotkeyPhysicalSequence.transitions(
+            for: .save,
+            layout: ActiveKeyboardLayout.shared
+        ))])
+        XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
     func testThreePlainDeletesPutTheHintOnTheCard() throws {
-        let model = MacRemoteAppModel()
+        let (model, _) = controllableModel()
         for _ in 0..<3 {
             try model.dispatchApplication(.hotkey(HotkeyPayload(action: .deleteBackward)))
         }
         XCTAssertEqual(model.overlay.content, .hint(MacOverlayPresenter.deleteSlideHint))
+    }
+
+    /// Deletes that erased nothing are nobody wishing the gesture were faster.
+    func testDeletesThatWereRefusedPaintNoHint() throws {
+        let model = MacRemoteAppModel()
+        for _ in 0..<3 {
+            try model.dispatchApplication(.hotkey(HotkeyPayload(action: .deleteBackward)))
+        }
+        XCTAssertEqual(model.lastApplicationMessage, "hotkey blocked")
+        XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
+    /// The watchdog is the only thing that notices a phone which suspended
+    /// mid-press, so it has to reach the card and not just the held buttons.
+    func testAWatchdogExpiryTakesTheCardDown() throws {
+        let model = MacRemoteAppModel()
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .begin)))
+        XCTAssertEqual(model.overlay.content, .picker(cell: nil))
+
+        // Heard from long enough ago that the next poll is past the timeout.
+        model.reliableInput.receive(heartbeat: InputHeartbeat(), at: 0)
+        model.pollPhone()
+        XCTAssertEqual(model.overlay.content, .nothing)
+        XCTAssertFalse(model.overlay.isPickerOpen)
+    }
+
+    /// Nothing on the card outlives the session it belongs to.
+    func testADisconnectTakesTheCardDown() throws {
+        let model = MacRemoteAppModel()
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .begin)))
+        try model.dispatchApplication(.keyPicker(KeyPickerPayload(phase: .highlight, cell: .undo)))
+        XCTAssertEqual(model.overlay.content, .picker(cell: .undo))
+
+        model.clearHandshakeState()
+        XCTAssertEqual(model.overlay.content, .nothing)
     }
 
     /// The words on the card must not reach the debug snapshot, which is what

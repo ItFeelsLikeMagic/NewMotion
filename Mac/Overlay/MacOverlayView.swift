@@ -5,8 +5,16 @@ import SwiftUI
 import NewMotionShared
 #endif
 
-/// The card itself: one thing at a time, sized to what it says.
+/// The card itself: one thing at a time, sized to what it says, centred in a
+/// pane of one fixed size.
 struct MacOverlayView: View {
+    /// The pane the card floats in. Fixed, and comfortably bigger than the
+    /// widest thing the card can say, so the panel never has to be measured or
+    /// resized: measuring it meant reading a view that was still animating, and
+    /// the first card of a session came up the size of an empty one. Everything
+    /// around the card is clear and click-through, so the spare room costs
+    /// nothing.
+    static let panelSize = CGSize(width: 560, height: 220)
     /// Long enough for a line of dictation without reaching across a display.
     private static let maximumWidth: CGFloat = 460
     private static let fade: Animation = .easeInOut(duration: 0.12)
@@ -19,8 +27,8 @@ struct MacOverlayView: View {
             .padding(.vertical, 14)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .fixedSize()
-            .padding(8)
             .animation(Self.fade, value: shown.content)
+            .frame(width: Self.panelSize.width, height: Self.panelSize.height)
     }
 
     @ViewBuilder

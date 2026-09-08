@@ -14,16 +14,19 @@ final class MacScreenOverlayWindow {
 
     private let shown = MacOverlayContentBox()
     private var panel: NSPanel?
-    private var hosting: NSHostingView<MacOverlayView>?
+    /// What the card is meant to be doing, which `alphaValue` cannot say: a tap
+    /// short enough to begin and commit inside the 120 ms fade would otherwise
+    /// hide a card that is still on its way in, and leave it up for good.
+    private var isShowing = false
 
     func show(_ content: MacOverlayContent) {
         let panel = panel ?? makePanel()
         shown.content = content
-        guard let hosting else { return }
-        // The card is sized to what it says, so it is measured after the
-        // content lands and before the panel is placed.
-        hosting.layoutSubtreeIfNeeded()
-        panel.setContentSize(hosting.fittingSize)
+        // Already up: the card redraws itself and nothing else happens. Placing
+        // and fading a panel per dictation partial would be a screen scan and
+        // an animation ten times a second for a card that has not moved.
+        guard !isShowing else { return }
+        isShowing = true
         position(panel)
         // Ordered front without activating: a menu bar app that activated here
         // would pull focus off the window being typed into.
@@ -32,13 +35,14 @@ final class MacScreenOverlayWindow {
     }
 
     func hide() {
-        guard let panel, panel.alphaValue > 0 else { return }
+        guard let panel, isShowing else { return }
+        isShowing = false
         fade(panel, to: 0)
     }
 
     private func makePanel() -> NSPanel {
         let panel = NonFocusingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 120),
+            contentRect: NSRect(origin: .zero, size: MacOverlayView.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -55,26 +59,26 @@ final class MacScreenOverlayWindow {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.alphaValue = 0
-        let hosting = NSHostingView(rootView: MacOverlayView(shown: shown))
-        panel.contentView = hosting
-        self.hosting = hosting
+        panel.contentView = NSHostingView(rootView: MacOverlayView(shown: shown))
         self.panel = panel
         return panel
     }
 
     /// The screen the pointer is on, not `NSScreen.main`: for a menu bar app
     /// that is the screen with the key window, which is rarely the one being
-    /// worked on. A fifth of the way up keeps the card clear of what is being
-    /// clicked, and it is placed again on every show because the pointer may
-    /// have moved to another display since the last one.
+    /// worked on. The card sits a fifth of the way up, clear of what is being
+    /// clicked, and is placed again on every show because the pointer may have
+    /// moved to another display since the last one.
     private func position(_ panel: NSPanel) {
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.screens.first
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
+        // The panel is one fixed size and the card is centred in it, so it is
+        // the middle of the panel that is aimed a fifth of the way up.
         panel.setFrameOrigin(NSPoint(
             x: (visible.midX - size.width / 2).rounded(),
-            y: (visible.minY + visible.height / 5).rounded()
+            y: (visible.minY + visible.height / 5 - size.height / 2).rounded()
         ))
     }
 
@@ -88,9 +92,9 @@ final class MacScreenOverlayWindow {
     }
 
     /// A show that arrives during a fade out wins: the panel is only taken off
-    /// screen if it is still invisible when the fade lands.
+    /// screen if it is still meant to be gone when the fade lands.
     private func orderOutIfFadedAway() {
-        guard let panel, panel.alphaValue == 0 else { return }
+        guard let panel, !isShowing else { return }
         panel.orderOut(nil)
     }
 }

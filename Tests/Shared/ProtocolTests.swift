@@ -107,7 +107,10 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(Set(cells).count, cells.count, "a cell appears twice")
         for cell in cells {
             XCTAssertNotNil(KeyPickerGrid.displayName(for: cell), "\(cell)")
+            XCTAssertEqual(KeyPickerGrid.cell(named: KeyPickerGrid.displayName(for: cell) ?? ""), cell)
         }
+        XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .newTab)
+        XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
     }
 
     /// The preview is unreliable on purpose, and an empty one is the message

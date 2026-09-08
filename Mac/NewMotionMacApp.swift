@@ -61,7 +61,7 @@ final class MacRemoteAppModel: ObservableObject {
     let softwareUpdates = SoftwareUpdateController()
 
     private let injector: SafeInputInjector
-    private let reliableInput: ReliableInputCoordinator
+    let reliableInput: ReliableInputCoordinator
     private let now: () -> Date
     /// Runs only while a phone is on the link.  It polls the held-input
     /// watchdog, which stays disarmed until a heartbeat arrives so a remote
@@ -147,9 +147,14 @@ final class MacRemoteAppModel: ObservableObject {
     let overlay = MacOverlayPresenter()
     private var overlayWindow: MacScreenOverlayWindow?
 
-    /// Both parameters exist so a test can put a fake radio and a fake clock
-    /// under the whole model; the app passes neither.
-    init(centralAdapter: MacCentralManagerAdapter? = nil, now: @escaping () -> Date = Date.init) {
+    /// The parameters exist so a test can put a fake radio, a fake clock, and
+    /// an injector whose sink it can read under the whole model; the app passes
+    /// none of them.
+    init(
+        centralAdapter: MacCentralManagerAdapter? = nil,
+        now: @escaping () -> Date = Date.init,
+        injector: SafeInputInjector? = nil
+    ) {
         self.now = now
         let latency = MacLatencyProbes()
         self.latency = latency
@@ -165,7 +170,7 @@ final class MacRemoteAppModel: ObservableObject {
             scroll: UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
         )
         self.pointerSmoothing = smoothing
-        let injector = SafeInputInjector(sink: smoothing, accessibility: trust)
+        let injector = injector ?? SafeInputInjector(sink: smoothing, accessibility: trust)
         let inert = MacHostRuntime.isInert
         let adapter = centralAdapter ?? (inert
             ? InertCentralManagerAdapter()
@@ -800,13 +805,21 @@ final class MacRemoteAppModel: ObservableObject {
             // flight, and it must not slide the pointer out from under the
             // shortcut that is about to fire. One boolean per packet.
             if isCursor, overlay.isPickerOpen { return }
-            if !isCursor, case let .hotkey(value) = payload, value.action == .deleteBackward {
-                overlay.noteDeleteBackward(at: ProcessInfo.processInfo.systemUptime)
-            }
             if let command = try? SharedInputProtocolAdapter.command(for: payload) {
                 switch injector.submit(command) {
                 case .applied:
-                    if isCursor { countCursorEvent() } else { lastApplicationMessage = String(describing: payload.messageType) }
+                    if isCursor {
+                        countCursorEvent()
+                    } else {
+                        lastApplicationMessage = String(describing: payload.messageType)
+                        // Counted only once a delete has actually landed: three
+                        // presses refused at a password field, or while paused,
+                        // or with Accessibility gone, erased nothing and are
+                        // nobody wishing the gesture were faster.
+                        if case let .hotkey(value) = payload, value.action == .deleteBackward {
+                            overlay.noteDeleteBackward(at: ProcessInfo.processInfo.systemUptime)
+                        }
+                    }
                 case .denied:
                     lastApplicationMessage = "\(payload.messageType) blocked"
                 case .failed:
@@ -943,7 +956,7 @@ final class MacRemoteAppModel: ObservableObject {
         }
     }
 
-    private func clearHandshakeState() {
+    func clearHandshakeState() {
         // A press whose end never arrived must not restore its characters into
         // whatever the next session is pointed at.
         deleteScrub.abandon()
@@ -989,8 +1002,7 @@ final class MacRemoteAppModel: ObservableObject {
                 overlay.endPicker()
                 return ["picker": "closed"]
             }
-            guard let cell = KeyPickerGrid.rows.flatMap({ $0 })
-                .first(where: { String(describing: $0) == name }) else {
+            guard let cell = KeyPickerGrid.cell(named: name) else {
                 return ["error": "unknown cell"]
             }
             if !overlay.isPickerOpen { overlay.beginPicker() }

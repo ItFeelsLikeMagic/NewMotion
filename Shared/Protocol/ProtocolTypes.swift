@@ -516,6 +516,18 @@ public enum KeyPickerGrid {
         displayNames[cell]
     }
 
+    /// The cell a name stands for, matched on the display name ignoring case
+    /// and spaces, so the Mac's debug route can light one by name. Matching the
+    /// case names instead would break silently the day a case is renamed.
+    public static func cell(named name: String) -> HotkeyAction? {
+        let wanted = folded(name)
+        return displayNames.first { folded($0.value) == wanted }?.key
+    }
+
+    private static func folded(_ name: String) -> String {
+        name.lowercased().filter { !$0.isWhitespace }
+    }
+
     private static let displayNames: [HotkeyAction: String] = [
         .cut: "Cut",
         .copy: "Copy",

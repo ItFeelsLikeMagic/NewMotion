@@ -13,6 +13,26 @@ public enum MacOverlayContent: Equatable, Sendable {
     case hint(String)
 }
 
+/// The three things on the card that go away on their own. One timeout of each
+/// kind can be outstanding, so a scheduler holds one timer per kind rather than
+/// one per message.
+public enum MacOverlayTimeout: Hashable, Sendable {
+    case picker
+    case hint
+    case transcript
+}
+
+/// Runs a block after a delay, at most one outstanding per kind: the newest
+/// scheduling of a kind replaces the one before it.
+@MainActor
+public protocol MacOverlayScheduling: AnyObject {
+    func schedule(
+        _ kind: MacOverlayTimeout,
+        after delay: TimeInterval,
+        _ work: @escaping MacOverlayPresenter.Work
+    )
+}
+
 /// Decides what belongs on the card and when it goes away.
 ///
 /// Three things share one piece of glass and only one can be on it: a picker
@@ -20,14 +40,13 @@ public enum MacOverlayContent: Equatable, Sendable {
 /// ranking here, away from AppKit, is what lets the whole of it be tested
 /// without a window server.
 ///
-/// Everything timed is handed to `schedule`, so a test drives the clock
-/// instead of sleeping. A scheduled block is tagged with the generation of the
-/// thing it was scheduled for and does nothing once that generation has moved
-/// on, which is cheaper and less error-prone than cancelling timers.
+/// Everything timed is handed to the scheduler, so a test drives the clock
+/// instead of sleeping. A scheduled block is also tagged with the generation of
+/// the thing it was scheduled for, so a block that survives its subject anyway
+/// does nothing.
 @MainActor
 public final class MacOverlayPresenter {
     public typealias Work = @MainActor @Sendable () -> Void
-    public typealias Scheduler = @MainActor @Sendable (TimeInterval, @escaping Work) -> Void
 
     /// The phone records nothing about a picker, so the watchdog cannot see
     /// one. A phone that suspends mid-press would otherwise leave the card up
@@ -45,14 +64,6 @@ public final class MacOverlayPresenter {
     public static let deleteHintWindow: TimeInterval = 2
     public static let deleteSlideHint = "Hold delete and slide left to erase faster"
 
-    /// Runs a block after a delay. Injected so tests do not wait.
-    public static let timerScheduler: Scheduler = { delay, work in
-        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
-            MainActor.assumeIsolated { work() }
-        }
-        timer.tolerance = delay / 4
-    }
-
     /// What should be drawn. Only ever assigned when it actually differs, so
     /// a highlight that repeats the lit cell costs no redraw.
     public private(set) var content: MacOverlayContent = .nothing
@@ -63,7 +74,7 @@ public final class MacOverlayPresenter {
     /// shortcut about to be fired.
     public private(set) var isPickerOpen = false
 
-    private let schedule: Scheduler
+    private let scheduler: MacOverlayScheduling
     private let isSecureInputActive: () -> Bool
 
     private var litCell: HotkeyAction?
@@ -76,10 +87,10 @@ public final class MacOverlayPresenter {
     private var deletePresses: [TimeInterval] = []
 
     public init(
-        schedule: @escaping Scheduler = MacOverlayPresenter.timerScheduler,
+        scheduler: MacOverlayScheduling = MacOverlayTimerBank(),
         isSecureInputActive: @escaping () -> Bool = SecureInput.isActive
     ) {
-        self.schedule = schedule
+        self.scheduler = scheduler
         self.isSecureInputActive = isSecureInputActive
     }
 
@@ -87,7 +98,7 @@ public final class MacOverlayPresenter {
         isPickerOpen = true
         litCell = nil
         let generation = bump(&pickerGeneration)
-        schedule(Self.pickerTimeout) { [weak self] in
+        scheduler.schedule(.picker, after: Self.pickerTimeout) { [weak self] in
             self?.endPicker(generation: generation)
         }
         refresh()
@@ -111,15 +122,15 @@ public final class MacOverlayPresenter {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Dictation is already held back at a password field; a preview of it
         // has to be too, or a spoken password paints itself on the screen.
-        // Checked on every partial, so secure input turning on mid-sentence
-        // takes the words that are already up with the next one.
+        // Checked here so the words are not even held, and again in `wanted`
+        // so anything that redraws takes down a preview already on screen.
         guard !trimmed.isEmpty, !isSecureInputActive() else {
             clearTranscript()
             return
         }
         transcript = trimmed
         let generation = bump(&transcriptGeneration)
-        schedule(Self.transcriptIdleTimeout) { [weak self] in
+        scheduler.schedule(.transcript, after: Self.transcriptIdleTimeout) { [weak self] in
             self?.expireTranscript(generation: generation)
         }
         refresh()
@@ -135,7 +146,7 @@ public final class MacOverlayPresenter {
     public func showHint(_ text: String) {
         hint = text
         let generation = bump(&hintGeneration)
-        schedule(Self.hintDuration) { [weak self] in
+        scheduler.schedule(.hint, after: Self.hintDuration) { [weak self] in
             self?.expireHint(generation: generation)
         }
         refresh()
@@ -195,7 +206,10 @@ public final class MacOverlayPresenter {
 
     private var wanted: MacOverlayContent {
         if isPickerOpen { return .picker(cell: litCell) }
-        if let transcript { return .transcript(transcript) }
+        // Asked on every derivation, not only when a partial arrives, so a
+        // redraw for any reason blanks the words. If nothing redraws at all,
+        // the 2 second idle timeout is what takes them down.
+        if let transcript, !isSecureInputActive() { return .transcript(transcript) }
         if let hint { return .hint(hint) }
         return .nothing
     }
@@ -205,6 +219,39 @@ public final class MacOverlayPresenter {
         guard next != content else { return }
         content = next
         onChange?(next)
+    }
+}
+
+/// The presenter's own timers: one per kind of timeout, replaced rather than
+/// piled up, because ten dictation partials a second would otherwise leave ten
+/// live timers behind for every one that fires.
+///
+/// Added to the run loop in `.common` mode on purpose: a menu bar app spends
+/// real time tracking its own menu, and `.default` mode stops dead while it
+/// does, which would hold the picker open and the cursor frozen behind it.
+@MainActor
+public final class MacOverlayTimerBank: MacOverlayScheduling {
+    private var timers: [MacOverlayTimeout: Timer] = [:]
+
+    public init() {}
+
+    public func schedule(
+        _ kind: MacOverlayTimeout,
+        after delay: TimeInterval,
+        _ work: @escaping MacOverlayPresenter.Work
+    ) {
+        timers[kind]?.invalidate()
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in
+            MainActor.assumeIsolated { work() }
+        }
+        timer.tolerance = delay / 4
+        RunLoop.main.add(timer, forMode: .common)
+        timers[kind] = timer
+    }
+
+    /// What the test that pins one timer per kind counts.
+    public var liveTimers: Int {
+        timers.values.filter(\.isValid).count
     }
 }
 #endif

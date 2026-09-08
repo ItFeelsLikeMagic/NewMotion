@@ -68,7 +68,8 @@ public enum MacDebugHTTP {
         // `/keyburst?count=40` presses Delete that many times in one burst.
         let count = query.split(separator: "&").first { $0.hasPrefix("count=") }
             .flatMap { Int(String($0.dropFirst("count=".count))) }
-        // `/picker?cell=save` lights one cell of the grid.
+        // `/picker?cell=save` lights one cell of the grid, by display name,
+        // ignoring case and spaces.
         let cell = query.split(separator: "&").first { $0.hasPrefix("cell=") }
             .map { String($0.dropFirst("cell=".count)) }
         guard method == "GET" else {
@@ -95,8 +96,8 @@ public enum MacDebugHTTP {
         case "/keyburst":
             return json(status: 200, object: keyBurst(count ?? 20))
         // Drives the card with no phone on the link.  A cell of the picker
-        // grid by name, or the delete hint; a request with no cell closes the
-        // picker.  Nothing here can put arbitrary words on the screen.
+        // grid by display name, or the delete hint; a request with no cell
+        // closes the picker.  Nothing here puts arbitrary words on the screen.
         case "/picker":
             return json(status: 200, object: card(.picker(cell: cell?.isEmpty == false ? cell : nil)))
         case "/hint":
