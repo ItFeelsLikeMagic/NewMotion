@@ -203,6 +203,25 @@ final class BluetoothPeripheralTests: XCTestCase {
         XCTAssertEqual(transport.queuedFrameCount, 0, "a preview never queues")
     }
 
+    /// A cursor delta is one fragment, so there is no half of it to lose. It
+    /// asks the wire even with the queue full, because that is the only thing
+    /// that can tell it whether the wire is free.
+    func testASingleFragmentLatestWinsMessageAsksTheWireWithNoQueueLeft() {
+        let adapter = FakePeripheralAdapter(state: .poweredOn, updateResult: false)
+        let transport = readyTransport(adapter: adapter, queueLimit: 1)
+        let link = BLEMessageLink(peripheral: transport)
+        // A refused frame fills the one slot, which is the only way to reach a
+        // full queue while the wire is free again afterwards.
+        XCTAssertEqual(transport.send(Data([1]), on: .data), .queued)
+        adapter.updateResult = true
+        XCTAssertEqual(transport.queueCapacity(on: .data), 0)
+
+        let result = link.send(Data(repeating: 7, count: 4), on: .data, delivery: .latestWins)
+
+        XCTAssertEqual(result, .sent)
+        XCTAssertEqual(adapter.updates.count, 1)
+    }
+
     private func readyTransport(
         adapter: FakePeripheralAdapter,
         queueLimit: Int
