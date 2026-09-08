@@ -127,16 +127,16 @@ final class DeleteScrubTests: XCTestCase {
         XCTAssertFalse(latch.isWord)
     }
 
-    /// The mode is the point of the key, so it survives the press that set it;
-    /// only the travel it is measured against starts over.
-    func testTheUnitOutlivesThePress() {
+    /// Every press starts back on characters, so a word slide from an earlier
+    /// press can never carry into the next one.
+    func testResetReturnsToCharacters() {
         var latch = DeleteGranularityLatch()
         XCTAssertTrue(latch.advance(translationY: -DeleteGranularityLatch.travel))
 
         latch.reset()
 
-        XCTAssertTrue(latch.isWord)
-        XCTAssertFalse(latch.advance(translationY: -DeleteGranularityLatch.travel))
+        XCTAssertFalse(latch.isWord)
+        XCTAssertTrue(latch.advance(translationY: -DeleteGranularityLatch.travel))
     }
 }
 
