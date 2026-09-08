@@ -138,6 +138,10 @@ public enum MacAllowedHotkey: String, CaseIterable, Hashable, Equatable, Sendabl
     case selectUp
     case selectDown
     case controlCenter
+    case cut
+    case save
+    case find
+    case previousWindow
 }
 
 public struct MacPointerDelta: Equatable, Sendable {

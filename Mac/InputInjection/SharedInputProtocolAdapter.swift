@@ -112,7 +112,11 @@ public enum SharedInputProtocolAdapter {
         // `spokenText` is deliberately absent: dictation takes the transcript
         // path, which feeds the vocabulary cache and checks secure input first.
         // `vocabulary` only ever travels Mac to phone, so inbound it is junk.
+        // `keyPicker` and `transcriptPreview` draw the on-screen card; they
+        // are a gesture and content, never a command, and the picker's chosen
+        // cell reaches the injector only as an ordinary `hotkey`.
         case .heartbeat, .tabWalk, .deleteScrub, .spokenText, .vocabulary,
+             .keyPicker, .transcriptPreview,
              .acknowledgement, .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
         }
@@ -151,6 +155,7 @@ public enum SharedInputProtocolAdapter {
 
     private static func sharedHotkey(_ hotkey: MacAllowedHotkey) -> HotkeyAction {
         switch hotkey {
+        case .cut: return .cut
         case .copy: return .copy
         case .paste: return .paste
         case .undo: return .undo
@@ -170,9 +175,12 @@ public enum SharedInputProtocolAdapter {
         case .missionControl: return .missionControl
         case .appExpose: return .appExpose
         case .nextWindow: return .nextWindow
+        case .previousWindow: return .previousWindow
         case .newItem: return .newItem
         case .newTab: return .newTab
         case .closeWindow: return .closeWindow
+        case .save: return .save
+        case .find: return .find
         case .selectLeft: return .selectLeft
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp
@@ -183,6 +191,7 @@ public enum SharedInputProtocolAdapter {
 
     private static func localHotkey(_ hotkey: HotkeyAction) -> MacAllowedHotkey {
         switch hotkey {
+        case .cut: return .cut
         case .copy: return .copy
         case .paste: return .paste
         case .undo: return .undo
@@ -202,9 +211,12 @@ public enum SharedInputProtocolAdapter {
         case .missionControl: return .missionControl
         case .appExpose: return .appExpose
         case .nextWindow: return .nextWindow
+        case .previousWindow: return .previousWindow
         case .newItem: return .newItem
         case .newTab: return .newTab
         case .closeWindow: return .closeWindow
+        case .save: return .save
+        case .find: return .find
         case .selectLeft: return .selectLeft
         case .selectRight: return .selectRight
         case .selectUp: return .selectUp

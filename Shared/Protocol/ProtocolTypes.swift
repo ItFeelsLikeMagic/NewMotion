@@ -38,14 +38,19 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case deleteScrub = 16
     case vocabulary = 17
     case spokenText = 18
+    case keyPicker = 19
+    case transcriptPreview = 20
 
     public var deliveryClass: DeliveryClass {
         switch self {
-        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta:
+        // A lost preview is repaired by the next one a tenth of a second
+        // later, and re-sending stale words is worse than dropping them.
+        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta,
+             .transcriptPreview:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
-             .deleteScrub, .vocabulary, .spokenText, .acknowledgement,
-             .connectionStatus, .error, .ping, .pong:
+             .deleteScrub, .vocabulary, .spokenText, .keyPicker,
+             .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
     }
@@ -461,6 +466,102 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case selectUp = 27
     case selectDown = 28
     case controlCenter = 29
+    case cut = 30
+    case save = 31
+    case find = 32
+    case previousWindow = 33
+}
+
+/// A held press on the phone's Command key, aimed across the picker grid.
+/// Unlike the tab walk, the Mac holds nothing down while it lasts: the chord
+/// is one atomic hotkey fired at `commit`, so a press that never ends can
+/// leave nothing stuck.
+public enum KeyPickerPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    case begin = 1
+    case highlight = 2
+    case commit = 3
+    case cancel = 4
+}
+
+public struct KeyPickerPayload: Codable, Equatable, Sendable {
+    public let phase: KeyPickerPhase
+    /// `begin` and `cancel` name no cell. `highlight` names the newly lit one.
+    /// `commit` names the cell to fire, or none if the finger never moved.
+    /// Commit carrying its own cell is what makes a dropped highlight cost a
+    /// stale card rather than the wrong shortcut.
+    public let cell: HotkeyAction?
+
+    public init(phase: KeyPickerPhase, cell: HotkeyAction? = nil) {
+        self.phase = phase
+        self.cell = cell
+    }
+}
+
+/// The picker's keyboard: the cells, in the order they are drawn.
+///
+/// Both apps read this table and neither may reorder it alone. The wire says
+/// which cell is lit, never where a finger is, so a phone and a Mac drawing
+/// different grids would still agree on every message and quietly light and
+/// fire different things.
+public enum KeyPickerGrid {
+    public static let rows: [[HotkeyAction]] = [
+        [.cut, .copy, .paste, .undo, .redo],
+        [.newItem, .newTab, .save, .closeWindow, .find],
+        [.selectAll, .deleteLineBackward, .nextWindow, .previousWindow]
+    ]
+
+    /// Every cell in `rows` has one. Nothing outside the grid does, because no
+    /// other hotkey is ever drawn.
+    public static func displayName(for cell: HotkeyAction) -> String? {
+        displayNames[cell]
+    }
+
+    private static let displayNames: [HotkeyAction: String] = [
+        .cut: "Cut",
+        .copy: "Copy",
+        .paste: "Paste",
+        .undo: "Undo",
+        .redo: "Redo",
+        .newItem: "New",
+        .newTab: "New Tab",
+        .save: "Save",
+        .closeWindow: "Close",
+        .find: "Find",
+        .selectAll: "Select All",
+        .deleteLineBackward: "Delete Line",
+        .nextWindow: "Next Window",
+        .previousWindow: "Prev Window"
+    ]
+}
+
+/// The words the phone's recogniser has heard so far, on their way to the Mac
+/// card. Each message carries the whole current preview rather than a change
+/// to it, so a dropped one is repaired by the next instead of leaving the two
+/// ends disagreeing. An empty payload means "clear", and is valid.
+public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
+    /// A glance at the tail of a sentence, not a transcript, so far below
+    /// `ProtocolBytes.maximumCount`: ten of these a second share the link with
+    /// the typing they are previewing.
+    public static let maximumUTF8Bytes = 256
+
+    public let utf8: ProtocolBytes
+
+    public init(utf8: [UInt8]) throws {
+        guard utf8.count <= Self.maximumUTF8Bytes else {
+            throw ProtocolError.fieldTooLarge(
+                "transcript_preview", actual: utf8.count, limit: Self.maximumUTF8Bytes
+            )
+        }
+        self.utf8 = try ProtocolBytes(bytes: utf8)
+    }
+
+    public init(text: String) throws {
+        try self.init(utf8: Array(text.utf8))
+    }
+
+    public var text: String? {
+        String(bytes: utf8.bytes, encoding: .utf8)
+    }
 }
 
 /// Holding a modifier and walking with Tab: Command for the app switcher,
@@ -615,6 +716,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case deleteScrub(DeleteScrubPayload)
     case vocabulary(VocabularyPayload)
     case spokenText(SpokenTextPayload)
+    case keyPicker(KeyPickerPayload)
+    case transcriptPreview(TranscriptPreviewPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case acknowledgement(AcknowledgementPayload)
     case connectionStatus(ConnectionStatusPayload)
@@ -635,6 +738,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .deleteScrub: return .deleteScrub
         case .vocabulary: return .vocabulary
         case .spokenText: return .spokenText
+        case .keyPicker: return .keyPicker
+        case .transcriptPreview: return .transcriptPreview
         case .motionPointerDelta: return .motionPointerDelta
         case .acknowledgement: return .acknowledgement
         case .connectionStatus: return .connectionStatus
@@ -679,6 +784,10 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .vocabulary(try container.decode(VocabularyPayload.self, forKey: .value))
         case .spokenText:
             self = .spokenText(try container.decode(SpokenTextPayload.self, forKey: .value))
+        case .keyPicker:
+            self = .keyPicker(try container.decode(KeyPickerPayload.self, forKey: .value))
+        case .transcriptPreview:
+            self = .transcriptPreview(try container.decode(TranscriptPreviewPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .acknowledgement:
@@ -710,6 +819,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .deleteScrub(let value): try container.encode(value, forKey: .value)
         case .vocabulary(let value): try container.encode(value, forKey: .value)
         case .spokenText(let value): try container.encode(value, forKey: .value)
+        case .keyPicker(let value): try container.encode(value, forKey: .value)
+        case .transcriptPreview(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
         case .connectionStatus(let value): try container.encode(value, forKey: .value)
@@ -744,11 +855,27 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey, .tabWalk, .deleteScrub, .vocabulary:
+        // A cell riding along on `begin` or `cancel` is ignored rather than
+        // refused: only what `commit` names is ever fired.
+        case .hotkey, .tabWalk, .deleteScrub, .vocabulary, .keyPicker:
             break
         case .spokenText(let value):
             guard !value.utf8.bytes.isEmpty else {
                 throw ProtocolError.invalidField("spoken_text_empty")
+            }
+            guard value.text != nil else {
+                throw ProtocolError.invalidUTF8
+            }
+        case .transcriptPreview(let value):
+            // No empty check, unlike spoken text: an empty preview is the
+            // message that clears the card, and refusing it would break every
+            // clear.
+            guard value.utf8.bytes.count <= TranscriptPreviewPayload.maximumUTF8Bytes else {
+                throw ProtocolError.fieldTooLarge(
+                    "transcript_preview",
+                    actual: value.utf8.bytes.count,
+                    limit: TranscriptPreviewPayload.maximumUTF8Bytes
+                )
             }
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8

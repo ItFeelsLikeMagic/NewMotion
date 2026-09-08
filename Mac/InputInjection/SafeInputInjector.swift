@@ -177,6 +177,7 @@ public enum HotkeyPhysicalSequence {
         let modifiers: [UInt16]
 
         switch hotkey {
+        case .cut: key = .letter("x", qwerty: 7); modifiers = [commandKey]
         case .copy: key = .letter("c", qwerty: 8); modifiers = [commandKey]
         case .paste: key = .letter("v", qwerty: 9); modifiers = [commandKey]
         case .undo: key = .letter("z", qwerty: 6); modifiers = [commandKey]
@@ -199,9 +200,14 @@ public enum HotkeyPhysicalSequence {
         case .missionControl: key = .code(126); modifiers = [59]
         case .appExpose: key = .code(125); modifiers = [59]
         case .nextWindow: key = .letter("`", qwerty: 50); modifiers = [commandKey]
+        // Plain Command + ` is already next window, so the backwards walk is
+        // the shifted one, exactly as the Mac itself reads the chord.
+        case .previousWindow: key = .letter("`", qwerty: 50); modifiers = [commandKey, 56]
         case .newItem: key = .letter("n", qwerty: 45); modifiers = [commandKey]
         case .newTab: key = .letter("t", qwerty: 17); modifiers = [commandKey]
         case .closeWindow: key = .letter("w", qwerty: 13); modifiers = [commandKey]
+        case .save: key = .letter("s", qwerty: 1); modifiers = [commandKey]
+        case .find: key = .letter("f", qwerty: 3); modifiers = [commandKey]
         case .selectLeft: key = .code(123); modifiers = [56]
         case .selectRight: key = .code(124); modifiers = [56]
         case .selectUp: key = .code(126); modifiers = [56]

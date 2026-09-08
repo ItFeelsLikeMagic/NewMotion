@@ -34,7 +34,9 @@ final class ProtocolTests: XCTestCase {
             .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
             .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word)),
             .vocabulary(try VocabularyPayload(phrases: ["Ollama", "Testaflight"])),
-            .spokenText(try SpokenTextPayload(text: "héllo there"))
+            .spokenText(try SpokenTextPayload(text: "héllo there")),
+            .keyPicker(KeyPickerPayload(phase: .highlight, cell: .save)),
+            .transcriptPreview(try TranscriptPreviewPayload(text: "héllo th"))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)
@@ -49,6 +51,94 @@ final class ProtocolTests: XCTestCase {
             let decoded = try ProtocolCodec.decode(encoded)
             XCTAssertEqual(decoded, envelope)
             XCTAssertEqual(decoded.messageType.deliveryClass, payload.messageType.deliveryClass)
+        }
+    }
+
+    /// The commit carries the cell it fires, so an absent one has to survive
+    /// the round trip as absent: it is the difference between firing nothing
+    /// and firing whatever was last lit.
+    func testKeyPickerRoundTripsEveryPhaseWithAndWithoutACell() throws {
+        var sequence: UInt64 = 0
+        for phase in KeyPickerPhase.allCases {
+            for cell in [nil, HotkeyAction.cut] {
+                sequence += 1
+                let payload = MessagePayload.keyPicker(KeyPickerPayload(phase: phase, cell: cell))
+                let envelope = ProtocolEnvelope(
+                    sessionID: sessionID,
+                    sequence: sequence,
+                    timestampMs: 1,
+                    payload: payload
+                )
+                let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+                XCTAssertEqual(decoded, envelope, "\(phase) \(String(describing: cell))")
+                guard case let .keyPicker(value) = decoded.payload else {
+                    return XCTFail("wrong payload for \(phase)")
+                }
+                XCTAssertEqual(value.cell, cell, "\(phase)")
+            }
+        }
+    }
+
+    /// Both apps draw this grid from the same table.  A reorder is a wire
+    /// change, because the phone lights a cell the Mac then fires.
+    func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
+        XCTAssertEqual(KeyPickerGrid.rows, [
+            [.cut, .copy, .paste, .undo, .redo],
+            [.newItem, .newTab, .save, .closeWindow, .find],
+            [.selectAll, .deleteLineBackward, .nextWindow, .previousWindow]
+        ])
+
+        let cells = KeyPickerGrid.rows.flatMap { $0 }
+        XCTAssertEqual(cells.count, 14)
+        XCTAssertEqual(Set(cells).count, cells.count, "a cell appears twice")
+        for cell in cells {
+            XCTAssertNotNil(KeyPickerGrid.displayName(for: cell), "\(cell)")
+        }
+    }
+
+    /// The preview is unreliable on purpose, and an empty one is the message
+    /// that clears the card, so unlike spoken text it must pass validation.
+    func testTranscriptPreviewRoundTripsAndAcceptsAnEmptyClear() throws {
+        XCTAssertEqual(MessageType.transcriptPreview.deliveryClass, .unreliable)
+
+        for text in ["", "héllo there"] {
+            let payload = MessagePayload.transcriptPreview(try TranscriptPreviewPayload(text: text))
+            let envelope = ProtocolEnvelope(
+                sessionID: sessionID,
+                sequence: 1,
+                timestampMs: 1,
+                payload: payload
+            )
+            let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+            XCTAssertEqual(decoded, envelope)
+            guard case let .transcriptPreview(value) = decoded.payload else {
+                return XCTFail("wrong payload")
+            }
+            XCTAssertEqual(value.text, text)
+        }
+    }
+
+    func testTranscriptPreviewIsBoundedAtItsOwnLimit() throws {
+        XCTAssertEqual(TranscriptPreviewPayload.maximumUTF8Bytes, 256)
+
+        let atLimit = Array(repeating: UInt8(ascii: "a"), count: 256)
+        XCTAssertNoThrow(try TranscriptPreviewPayload(utf8: atLimit))
+        XCTAssertThrowsError(try TranscriptPreviewPayload(utf8: atLimit + [UInt8(ascii: "a")])) { error in
+            XCTAssertEqual(
+                error as? ProtocolError,
+                .fieldTooLarge("transcript_preview", actual: 257, limit: 256)
+            )
+        }
+
+        // The sender's bound is not the receiver's: a message that arrives
+        // over the limit has to be refused on the way in as well.
+        let oversized = #"{"utf8":[\#(Array(repeating: "97", count: 257).joined(separator: ","))]}"#
+        let value = try JSONDecoder().decode(TranscriptPreviewPayload.self, from: Data(oversized.utf8))
+        XCTAssertThrowsError(try MessagePayload.transcriptPreview(value).validate()) { error in
+            XCTAssertEqual(
+                error as? ProtocolError,
+                .fieldTooLarge("transcript_preview", actual: 257, limit: 256)
+            )
         }
     }
 
