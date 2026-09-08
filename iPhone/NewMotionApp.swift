@@ -1294,7 +1294,6 @@ extension RemoteHotkey {
         case .selectRight: return "⇧→"
         case .selectUp: return "⇧↑"
         case .selectDown: return "⇧↓"
-        case .controlCenter: return "control"
         }
     }
 
@@ -1306,7 +1305,6 @@ extension RemoteHotkey {
         case .deleteWordBackward: return "Backspace word"
         case .copy: return "Copy"
         case .paste: return "Paste"
-        case .controlCenter: return "Control Center"
         default: return buttonTitle
         }
     }
@@ -1505,7 +1503,7 @@ private struct RemoteControlScreen: View {
         ZStack {
             SettingsButton { isSettingsShowing = true }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            ControlCenterButton { model.sendHotkey(.controlCenter) }
+            MissionControlButton { model.handleRemoteInputEvents([.missionControl]) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             HStack(spacing: RemoteKeyMetrics.spacing) {
                 LayoutToggleButton(mode: model.layoutMode) {
@@ -1542,15 +1540,15 @@ private struct SettingsButton: View {
     }
 }
 
-/// Opens the Mac's Control Centre, which is the one place brightness, volume,
-/// and Wi-Fi all live.  It rides on the trackpad rather than taking a key,
-/// because it opens a panel the trackpad then has to point at.
-private struct ControlCenterButton: View {
+/// Opens Mission Control, the same thing three fingers up does.  It rides on
+/// the trackpad rather than taking a key, because it opens a view the trackpad
+/// then has to point at.
+private struct MissionControlButton: View {
     let open: () -> Void
 
     var body: some View {
         Button(action: Haptics.tap(open)) {
-            Image(systemName: "switch.2")
+            Image(systemName: "rectangle.3.group")
                 .font(.title3)
                 .frame(width: RemoteKeyMetrics.keyWidth, height: RemoteKeyMetrics.keyHeight)
                 .contentShape(Rectangle())
@@ -1558,7 +1556,7 @@ private struct ControlCenterButton: View {
         .background(Color(.tertiarySystemFill))
         .foregroundStyle(Color.primary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel("Control Center")
+        .accessibilityLabel("Mission Control")
     }
 }
 

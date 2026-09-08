@@ -89,7 +89,6 @@ public enum RemoteHotkey: String, CaseIterable, Equatable, Hashable, Sendable {
     case selectRight
     case selectUp
     case selectDown
-    case controlCenter
 }
 
 public enum KeyboardOutput: Equatable, Sendable {
