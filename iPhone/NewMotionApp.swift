@@ -139,9 +139,14 @@ final class NewMotionFeatureModel: ObservableObject {
     private let voiceBoost = VoiceBoostBox()
     private var audioSessionObservers: [NSObjectProtocol] = []
 
-    init(link: MessageLink = BLEMessageLink(
-        peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
-    )) {
+    /// The coordinator is a parameter so a caller can hand in one over its own
+    /// trust store; the app's own is the Keychain, which a test cannot reach.
+    init(
+        link: MessageLink = BLEMessageLink(
+            peripheral: IPhoneBLEPeripheralTransport(adapter: CoreBluetoothPeripheralManagerAdapter())
+        ),
+        pairingCoordinator: IPhonePairingCoordinator? = nil
+    ) {
         let audioController = LocalPushToTalkAudioController(
             microphone: AVAudioMicrophoneInput(),
             permissionGranted: AVAudioApplication.shared.recordPermission == .granted
@@ -173,9 +178,9 @@ final class NewMotionFeatureModel: ObservableObject {
             permission: AVFoundationCameraPermissionAdapter(),
             capture: capture
         )
-        pairingCoordinator = try? IPhonePairingCoordinator(
+        self.pairingCoordinator = pairingCoordinator ?? (try? IPhonePairingCoordinator(
             store: KeychainTrustedDeviceStore(service: Self.trustedDeviceService)
-        )
+        ))
         _ = lifecycle.handle(.startup)
 
         link.onStateChange = { [weak self] state in
@@ -192,7 +197,7 @@ final class NewMotionFeatureModel: ObservableObject {
                 self?.pairingState = state
             }
         }
-        if let pairingCoordinator {
+        if let pairingCoordinator = self.pairingCoordinator {
             pairingCoordinator.onPairingReady = { [weak self] token, _, client in
                 Task { @MainActor [weak self] in
                     self?.beginPairingHandshake(token: token, client: client)
@@ -345,8 +350,13 @@ final class NewMotionFeatureModel: ObservableObject {
     /// Dropping the session is what makes the current Mac let go; the beacon
     /// then names the new one before the link comes back up.
     func selectMac(_ id: UUID) {
-        guard id != selectedMacID else { return }
+        // The picker shows `selectedMac`, which falls back to the newest
+        // pairing while nothing has been chosen, so re-picking the Mac already
+        // in use arrives here as a change. Record the choice, but do not drop a
+        // live session over it.
+        let alreadyInUse = id == selectedMac?.deviceID
         selectedMacID = id
+        guard !alreadyInUse else { return }
         if authenticatedSession != nil || pairingClient != nil {
             authenticatedSession = nil
             pairingClient = nil
@@ -880,6 +890,10 @@ final class NewMotionFeatureModel: ObservableObject {
             pairingConfirmed = false
             link.stop()
             latestAction = "Pairing failed; scan a new Mac QR code"
+            // A scan that failed is no reason to give up the Mac this phone
+            // already trusts. Without this the fallback waits for the next
+            // scene change, and the phone sits dark until the app is reopened.
+            resumeReconnectIfNeeded()
             return
         }
         if hadTrust {
