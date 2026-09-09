@@ -5,11 +5,13 @@ import SwiftUI
 import NewMotionShared
 #endif
 
-/// A card held up while the look is being tuned. Copy and Word are stand-ins
-/// for a lit key of each kind; what is being looked at is the style, not them.
+/// A card held up while the look is being tuned. Copy, Up and Word are
+/// stand-ins for a lit key of each kind; what is being looked at is the style,
+/// not them.
 enum MacOverlayPreview: String, CaseIterable, Identifiable {
     case off
     case command
+    case arrows
     case backspace
     case dictation
 
@@ -19,6 +21,7 @@ enum MacOverlayPreview: String, CaseIterable, Identifiable {
         switch self {
         case .off: return "Off"
         case .command: return "Command"
+        case .arrows: return "Arrows"
         case .backspace: return "Backspace"
         case .dictation: return "Dictation"
         }
@@ -28,6 +31,7 @@ enum MacOverlayPreview: String, CaseIterable, Identifiable {
         switch self {
         case .off: return nil
         case .command: return .picker(cell: .copy)
+        case .arrows: return .arrows(lit: .arrowUp)
         case .backspace: return .delete(granularity: .word)
         // Words of the stand-in's own, never anyone's, and the Send bar armed
         // so the whole card is on screen while it is being tuned.

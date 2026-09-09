@@ -122,7 +122,15 @@ final class DebugServerTests: XCTestCase {
         }
         XCTAssertEqual(respond("/picker?cell=save").status, 200)
         XCTAssertEqual(respond("/picker").status, 200)
+        XCTAssertEqual(respond("/arrows?lit=up").status, 200)
+        XCTAssertEqual(respond("/arrows").status, 200)
         XCTAssertEqual(respond("/hint").status, 200)
-        XCTAssertEqual(asked, [.picker(cell: "save"), .picker(cell: nil), .hint])
+        XCTAssertEqual(asked, [
+            .picker(cell: "save"),
+            .picker(cell: nil),
+            .arrows(lit: "up"),
+            .arrows(lit: nil),
+            .hint
+        ])
     }
 }

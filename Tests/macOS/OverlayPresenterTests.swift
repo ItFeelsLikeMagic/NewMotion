@@ -473,6 +473,107 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .nothing)
     }
 
+    /// The card goes up on the key, not on the first arrow: the pad is held
+    /// before anything has been sent, and that is when the four keys are worth
+    /// showing.  Nothing is lit until an arrow has actually landed.
+    func testTheArrowCardOpensDarkAndClosesOnTheLift() {
+        let (presenter, _) = make()
+        presenter.beginArrows()
+        XCTAssertEqual(presenter.content, .arrows(lit: nil))
+        // Unlike the picker, this one does not freeze the cursor: the pad
+        // fires nothing on lift, so travel under it is still wanted.
+        XCTAssertFalse(presenter.isPickerOpen)
+
+        presenter.endArrows()
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// Each notch lights its arrow for long enough to be seen and no longer,
+    /// so a steady slide reads as separate steps rather than one lit key.
+    func testAnArrowLightsAndGoesOutAgainWithTheCardStillUp() {
+        let (presenter, clock) = make()
+        presenter.beginArrows()
+        presenter.noteArrow(.arrowDown)
+        XCTAssertEqual(presenter.content, .arrows(lit: .arrowDown))
+
+        clock.fire(.arrowLit)
+        XCTAssertEqual(presenter.content, .arrows(lit: nil))
+
+        presenter.noteArrow(.arrowRight)
+        XCTAssertEqual(presenter.content, .arrows(lit: .arrowRight))
+    }
+
+    /// A second notch buys the light a full blink of its own, so a run of
+    /// arrows does not go dark on the first one's deadline.
+    func testTheBlinkOfOneArrowDoesNotPutOutTheNextOne() {
+        let (presenter, clock) = make()
+        presenter.beginArrows()
+        presenter.noteArrow(.arrowLeft)
+        presenter.noteArrow(.arrowLeft)
+
+        clock.fireOldest(.arrowLit)
+        XCTAssertEqual(presenter.content, .arrows(lit: .arrowLeft))
+
+        clock.fire(.arrowLit)
+        XCTAssertEqual(presenter.content, .arrows(lit: nil))
+    }
+
+    /// An arrow with no pad behind it is someone tapping an arrow key, and
+    /// puts nothing on screen.
+    func testAnArrowWithNoPadHeldShowsNothing() {
+        let (presenter, _) = make()
+        presenter.noteArrow(.arrowUp)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The heartbeat is another `begin`, because the phone never knows which
+    /// arrow the Mac applied.  It must hold the card open without blanking it.
+    func testTheHeartbeatHoldsTheArrowCardOpenWithoutPuttingTheArrowOut() {
+        let (presenter, clock) = make()
+        presenter.beginArrows()
+        presenter.noteArrow(.arrowUp)
+
+        presenter.beginArrows()
+        clock.fireOldest(.arrows)
+        XCTAssertEqual(presenter.content, .arrows(lit: .arrowUp))
+
+        clock.fire(.arrows)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// A phone that suspends mid-press sends no lift, and the card would sit
+    /// there for the rest of the session.
+    func testAnArrowPadThatGoesSilentTimesOut() {
+        let (presenter, clock) = make()
+        presenter.beginArrows()
+        clock.fire(.arrows)
+        XCTAssertEqual(presenter.content, .nothing)
+
+        // And the notch already on its way cannot light it again.
+        presenter.noteArrow(.arrowUp)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The arrows sit with the picker rather than under it: both are a key
+    /// being held, and either beats words dictated a moment ago.
+    func testTheArrowCardOutranksTheTranscriptAndClearAllTakesItDown() {
+        let (presenter, _) = make()
+        presenter.showTranscript("some words")
+        presenter.beginArrows()
+        XCTAssertEqual(presenter.content, .arrows(lit: nil))
+
+        presenter.endArrows()
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .none))
+
+        presenter.beginArrows()
+        presenter.clearAll()
+        XCTAssertEqual(presenter.content, .nothing)
+
+        // And the press it cleared cannot light the card again.
+        presenter.noteArrow(.arrowLeft)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
     /// Ten partials a second must not leave ten live timers behind, and the
     /// three kinds of timeout must not cancel each other.
     func testTheTimerBankKeepsOneTimerPerKindOfTimeout() {

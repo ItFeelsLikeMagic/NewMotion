@@ -36,7 +36,8 @@ final class ProtocolTests: XCTestCase {
             .vocabulary(try VocabularyPayload(phrases: ["Ollama", "Testaflight"])),
             .spokenText(try SpokenTextPayload(text: "héllo there")),
             .keyPicker(KeyPickerPayload(phase: .highlight, cell: .save)),
-            .transcriptPreview(try TranscriptPreviewPayload(text: "héllo th"))
+            .transcriptPreview(try TranscriptPreviewPayload(text: "héllo th")),
+            .arrowPad(ArrowPadPayload(phase: .begin))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)
@@ -120,6 +121,11 @@ final class ProtocolTests: XCTestCase {
 
         XCTAssertEqual(MessageType.keyPicker.rawValue, 19)
         XCTAssertEqual(MessageType.transcriptPreview.rawValue, 20)
+        XCTAssertEqual(MessageType.arrowPad.rawValue, 21)
+
+        XCTAssertEqual(ArrowPadPhase.begin.rawValue, 1)
+        XCTAssertEqual(ArrowPadPhase.end.rawValue, 2)
+        XCTAssertEqual(ArrowPadPhase.allCases.count, 2)
 
         XCTAssertEqual(TranscriptPreviewPhase.live.rawValue, 1)
         XCTAssertEqual(TranscriptPreviewPhase.ended.rawValue, 2)
@@ -166,6 +172,31 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .hotkey(.newTab))
         XCTAssertEqual(KeyPickerGrid.cell(named: "cancel"), .cancel)
         XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
+    }
+
+    /// The pad says only that a finger is on it, and the card it puts up has
+    /// to survive a busy link, so unlike the preview it goes reliably.
+    func testArrowPadRoundTripsBothPhasesReliably() throws {
+        XCTAssertEqual(MessageType.arrowPad.deliveryClass, .reliable)
+
+        var sequence: UInt64 = 0
+        for phase in ArrowPadPhase.allCases {
+            sequence += 1
+            let payload = MessagePayload.arrowPad(ArrowPadPayload(phase: phase))
+            try payload.validate()
+            let envelope = ProtocolEnvelope(
+                sessionID: sessionID,
+                sequence: sequence,
+                timestampMs: 1,
+                payload: payload
+            )
+            let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+            XCTAssertEqual(decoded, envelope, "\(phase)")
+            guard case let .arrowPad(value) = decoded.payload else {
+                return XCTFail("wrong payload for \(phase)")
+            }
+            XCTAssertEqual(value.phase, phase)
+        }
     }
 
     /// The preview is unreliable on purpose, and a live one with no words is

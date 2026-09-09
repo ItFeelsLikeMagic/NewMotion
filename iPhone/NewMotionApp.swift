@@ -1314,6 +1314,16 @@ final class NewMotionFeatureModel: ObservableObject {
         }
     }
 
+    /// That the arrow pad is under a finger, and nothing else.  The arrows
+    /// themselves go out as ordinary hotkeys, so this only decides whether the
+    /// Mac's card is up; it is deliberately silent, because narrating a
+    /// heartbeat republishes the model and rebuilds the screen under the
+    /// finger that is still sliding.
+    func sendArrowPad(_ phase: ArrowPadPhase) {
+        guard isControllable else { return }
+        inputUplink.send(.arrowPad(ArrowPadPayload(phase: phase)))
+    }
+
     private func sendKeyboardOutput(_ output: KeyboardOutput) {
         guard let payload = try? SharedKeyboardProtocolAdapter.payload(for: output) else {
             IPhoneDebugLog.emit("key_send_failed", ["at": "encode"])
@@ -1715,7 +1725,7 @@ private struct RemoteControlScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             // Centred in the same row, where either thumb can reach it without
             // covering the keyboard button.
-            ArrowPadKey(send: { model.sendHotkey($0) })
+            ArrowPadKey(send: { model.sendHotkey($0) }, arrows: { model.sendArrowPad($0) })
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .padding(8)

@@ -194,6 +194,36 @@ final class OverlayDispatchTests: XCTestCase {
         XCTAssertEqual(model.overlay.content, .nothing)
     }
 
+    /// The pad says only that it is held; the arrows arrive as ordinary
+    /// hotkeys and light the card from where they are applied.  So the cursor
+    /// keeps moving under it, unlike under the picker.
+    func testTheArrowPadPutsUpACardTheAppliedArrowsLight() throws {
+        let (model, _) = controllableModel()
+        try model.dispatchApplication(.arrowPad(ArrowPadPayload(phase: .begin)))
+        XCTAssertEqual(model.lastApplicationMessage, "arrowPad begin")
+        XCTAssertEqual(model.overlay.content, .arrows(lit: nil))
+
+        try model.dispatchApplication(.hotkey(HotkeyPayload(action: .arrowRight)))
+        XCTAssertEqual(model.overlay.content, .arrows(lit: .arrowRight))
+
+        // Travel is still wanted: the pad fires nothing on lift, so nothing is
+        // about to be pulled out from under the pointer.
+        try model.dispatchApplication(.pointerDelta(PointerDeltaPayload(deltaX: 4, deltaY: 2)))
+        XCTAssertEqual(model.overlay.content, .arrows(lit: .arrowRight))
+
+        try model.dispatchApplication(.arrowPad(ArrowPadPayload(phase: .end)))
+        XCTAssertEqual(model.lastApplicationMessage, "arrowPad end")
+        XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
+    /// An arrow with no pad behind it is someone tapping the key on a layout,
+    /// and it must not paint a card nobody asked for.
+    func testAnArrowOutsideAHeldPadPaintsNoCard() throws {
+        let (model, _) = controllableModel()
+        try model.dispatchApplication(.hotkey(HotkeyPayload(action: .arrowUp)))
+        XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
     /// The bar the finger is sitting on rides in with the words, so the Mac's
     /// card says what letting go would do without knowing where the thumb is.
     func testTheArmedBarArrivesWithThePreview() throws {

@@ -8,6 +8,9 @@ public enum MacOverlayContent: Equatable, Sendable {
     case nothing
     /// A picker is open. `cell` is the lit one, absent until a finger moves.
     case picker(cell: HotkeyAction?)
+    /// The arrow pad is held. `lit` is the arrow just sent, which stays lit
+    /// only long enough to be seen, so the card is dark between notches.
+    case arrows(lit: HotkeyAction?)
     /// A delete key is held. `granularity` is the unit it will take off next.
     case delete(granularity: DeleteScrubGranularity)
     /// The words the phone is hearing, on their way to being typed. Empty
@@ -23,6 +26,9 @@ public enum MacOverlayContent: Equatable, Sendable {
 /// rather than one per message.
 public enum MacOverlayTimeout: Hashable, Sendable {
     case picker
+    case arrows
+    /// The blink of the arrow a notch just sent.
+    case arrowLit
     case hint
     case transcript
     case delete
@@ -43,10 +49,10 @@ public protocol MacOverlayScheduling: AnyObject {
 
 /// Decides what belongs on the card and when it goes away.
 ///
-/// Four things share one piece of glass and only one can be on it: a picker
-/// beats a held delete key, a delete key beats a dictation preview, and a
-/// preview beats a hint. Keeping that ranking here, away from AppKit, is what
-/// lets the whole of it be tested without a window server.
+/// Several things share one piece of glass and only one can be on it: the
+/// held keys beat a held delete key, a delete key beats a dictation preview,
+/// and a preview beats a hint. Keeping that ranking here, away from AppKit, is
+/// what lets the whole of it be tested without a window server.
 ///
 /// Everything timed is handed to the scheduler, so a test drives the clock
 /// instead of sleeping. A scheduled block is also tagged with the generation of
@@ -64,7 +70,13 @@ public final class MacOverlayPresenter {
     /// card before choosing must not have it taken away mid-decision. The
     /// phone says the lit cell again every 2 seconds while the key is held, so
     /// this is three missed heartbeats, which means the phone is gone.
+    ///
+    /// The arrow pad beats the same heartbeat and runs on the same wait, for
+    /// the same reason: nothing on the phone records that its card is up.
     public static let pickerSilenceTimeout: TimeInterval = 6
+    /// Long enough to catch out of the corner of an eye, short enough that a
+    /// steady slide reads as separate steps rather than one lit key.
+    public static let arrowLitDuration: TimeInterval = 0.15
     /// Long enough to read one line, short enough not to be in the way.
     public static let hintDuration: TimeInterval = 2
     /// The preview channel is unreliable, so a lost end must not strand the
@@ -101,6 +113,8 @@ public final class MacOverlayPresenter {
     private let isSecureInputActive: () -> Bool
 
     private var litCell: HotkeyAction?
+    private var isArrowsOpen = false
+    private var litArrow: HotkeyAction?
     /// Set once the press has waited out `deleteOpenDelay`, or asked for
     /// something that proves the finger is holding. Nil means no card.
     private var deleteUnit: DeleteScrubGranularity?
@@ -112,6 +126,8 @@ public final class MacOverlayPresenter {
     /// A card held up while someone tunes the look from the menu bar.
     private var previewContent: MacOverlayContent?
     private var pickerGeneration: UInt64 = 0
+    private var arrowsGeneration: UInt64 = 0
+    private var arrowLitGeneration: UInt64 = 0
     private var transcriptGeneration: UInt64 = 0
     private var hintGeneration: UInt64 = 0
     private var deleteGeneration: UInt64 = 0
@@ -149,6 +165,35 @@ public final class MacOverlayPresenter {
     /// the dispatch side's business; the card is gone either way.
     public func endPicker() {
         endPicker(generation: pickerGeneration)
+    }
+
+    /// The arrow pad went down, and the heartbeat that says it still is. The
+    /// phone repeats `begin` rather than sending a lit key, because the arrows
+    /// travel as ordinary hotkeys and only the Mac knows which ones landed, so
+    /// a repeat must not blank a card that is already up.
+    public func beginArrows() {
+        armArrowSilence()
+        guard !isArrowsOpen else { return }
+        isArrowsOpen = true
+        litArrow = nil
+        refresh()
+    }
+
+    /// One arrow has just been applied. It lights briefly, so a slide reads as
+    /// a run of separate steps; the card itself stays up until the key lifts.
+    public func noteArrow(_ action: HotkeyAction) {
+        guard isArrowsOpen else { return }
+        litArrow = action
+        let generation = bump(&arrowLitGeneration)
+        scheduler.schedule(.arrowLit, after: Self.arrowLitDuration) { [weak self] in
+            self?.dimArrow(generation: generation)
+        }
+        refresh()
+    }
+
+    /// The lift, or the silence that stands in for one.
+    public func endArrows() {
+        endArrows(generation: arrowsGeneration)
     }
 
     /// The delete key went down. The card is only armed here, not shown: three
@@ -256,6 +301,8 @@ public final class MacOverlayPresenter {
     public func clearAll() {
         isPickerOpen = false
         litCell = nil
+        isArrowsOpen = false
+        litArrow = nil
         deleteUnit = nil
         pendingDeleteUnit = nil
         transcript = nil
@@ -263,6 +310,8 @@ public final class MacOverlayPresenter {
         hint = nil
         deletePresses.removeAll()
         _ = bump(&pickerGeneration)
+        _ = bump(&arrowsGeneration)
+        _ = bump(&arrowLitGeneration)
         _ = bump(&transcriptGeneration)
         _ = bump(&hintGeneration)
         _ = bump(&deleteGeneration)
@@ -302,6 +351,30 @@ public final class MacOverlayPresenter {
         refresh()
     }
 
+    /// Starts the arrow card's silence over. Every arrow-pad message does it,
+    /// so the card outlives a thumb that has stopped moving.
+    private func armArrowSilence() {
+        let generation = bump(&arrowsGeneration)
+        scheduler.schedule(.arrows, after: Self.pickerSilenceTimeout) { [weak self] in
+            self?.endArrows(generation: generation)
+        }
+    }
+
+    private func endArrows(generation: UInt64) {
+        guard generation == arrowsGeneration, isArrowsOpen else { return }
+        isArrowsOpen = false
+        litArrow = nil
+        _ = bump(&arrowsGeneration)
+        _ = bump(&arrowLitGeneration)
+        refresh()
+    }
+
+    private func dimArrow(generation: UInt64) {
+        guard generation == arrowLitGeneration else { return }
+        litArrow = nil
+        refresh()
+    }
+
     private func expireTranscript(generation: UInt64) {
         guard generation == transcriptGeneration else { return }
         clearTranscript()
@@ -327,6 +400,11 @@ public final class MacOverlayPresenter {
             return previewContent
         }
         if isPickerOpen { return .picker(cell: litCell) }
+        // Beside the picker rather than below it: both are a key being held
+        // and a card saying what it is doing. It does not freeze the cursor
+        // the way the picker does, because the arrow pad fires nothing on
+        // lift and the pointer may still be wanted under it.
+        if isArrowsOpen { return .arrows(lit: litArrow) }
         // A held key outranks the words: the finger is on the delete key, so
         // whatever was dictated a moment ago is not what is being looked at.
         if let deleteUnit { return .delete(granularity: deleteUnit) }

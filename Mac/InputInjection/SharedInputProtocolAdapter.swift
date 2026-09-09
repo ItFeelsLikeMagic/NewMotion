@@ -112,11 +112,12 @@ public enum SharedInputProtocolAdapter {
         // `spokenText` is deliberately absent: dictation takes the transcript
         // path, which feeds the vocabulary cache and checks secure input first.
         // `vocabulary` only ever travels Mac to phone, so inbound it is junk.
-        // `keyPicker` and `transcriptPreview` draw the on-screen card; they
-        // are a gesture and content, never a command, and the picker's chosen
-        // cell reaches the injector only as an ordinary `hotkey`.
+        // `keyPicker`, `arrowPad` and `transcriptPreview` draw the on-screen
+        // card; they are a gesture and content, never a command, and the keys
+        // either gesture asks for reach the injector only as an ordinary
+        // `hotkey`.
         case .heartbeat, .tabWalk, .deleteScrub, .spokenText, .vocabulary,
-             .keyPicker, .transcriptPreview,
+             .keyPicker, .arrowPad, .transcriptPreview,
              .acknowledgement, .connectionStatus, .error, .ping, .pong:
             throw ProtocolAdapterError.unsupportedMessage
         }

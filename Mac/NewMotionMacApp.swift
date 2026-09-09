@@ -779,6 +779,19 @@ final class MacRemoteAppModel: ObservableObject {
                 : "tabWalk blocked"
         case let .keyPicker(value):
             try dispatchKeyPicker(value)
+        case let .arrowPad(value):
+            // The card, and nothing else: the arrows themselves arrive as
+            // ordinary hotkeys and light it from where they are applied.
+            // `begin` is also the heartbeat, so it arrives every couple of
+            // seconds while the key is held.
+            switch value.phase {
+            case .begin:
+                overlay.beginArrows()
+                lastApplicationMessage = "arrowPad begin"
+            case .end:
+                overlay.endArrows()
+                lastApplicationMessage = "arrowPad end"
+            }
         case let .transcriptPreview(value):
             // Spoken words, on their way to the card and nowhere else. This
             // must not touch `lastApplicationMessage`, whose `didSet` copies
@@ -839,12 +852,22 @@ final class MacRemoteAppModel: ObservableObject {
                         countCursorEvent()
                     } else {
                         lastApplicationMessage = String(describing: payload.messageType)
-                        // Counted only once a delete has actually landed: three
-                        // presses refused at a password field, or while paused,
-                        // or with Accessibility gone, erased nothing and are
-                        // nobody wishing the gesture were faster.
-                        if case let .hotkey(value) = payload, value.action == .deleteBackward {
-                            overlay.noteDeleteBackward(at: ProcessInfo.processInfo.systemUptime)
+                        // Both of these count only a key that actually landed:
+                        // one refused at a password field, or while paused, or
+                        // with Accessibility gone, moved nothing, so it is
+                        // nobody wishing the gesture were faster and nothing
+                        // for the card to light.
+                        if case let .hotkey(value) = payload {
+                            switch value.action {
+                            case .deleteBackward:
+                                overlay.noteDeleteBackward(at: ProcessInfo.processInfo.systemUptime)
+                            // Dropped again unless the arrow pad is the thing
+                            // holding the card up.
+                            case .arrowUp, .arrowDown, .arrowLeft, .arrowRight:
+                                overlay.noteArrow(value.action)
+                            default:
+                                break
+                            }
                         }
                     }
                 case .denied:
@@ -1037,11 +1060,33 @@ final class MacRemoteAppModel: ObservableObject {
             // does: a highlight carrying nothing.
             overlay.highlight(cell.hotkey)
             return ["picker": name]
+        case let .arrows(name):
+            guard let name else {
+                overlay.endArrows()
+                return ["arrows": "closed"]
+            }
+            guard let arrow = Self.arrowsByName[name.lowercased()] else {
+                return ["error": "unknown arrow"]
+            }
+            overlay.beginArrows()
+            // Lit the way a notch lights it, blink and all: what this route is
+            // for is watching the card behave, not posing it.
+            overlay.noteArrow(arrow)
+            return ["arrows": name]
         case .hint:
             overlay.showHint(MacOverlayPresenter.deleteSlideHint)
             return ["hint": "shown"]
         }
     }
+
+    /// The four the debug route and the card share. Directions rather than
+    /// case names, so the route keeps working the day a case is renamed.
+    private static let arrowsByName: [String: HotkeyAction] = [
+        "up": .arrowUp,
+        "down": .arrowDown,
+        "left": .arrowLeft,
+        "right": .arrowRight
+    ]
 
     /// Carries the injector to the debug probe.  Both are main-thread only:
     /// the probe is hopped there before it runs, which is what makes this safe.

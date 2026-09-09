@@ -32,7 +32,7 @@ struct MacOverlayView: View {
         switch shown.content {
         case .transcript, .hint:
             RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.ultraThinMaterial)
-        case .nothing, .picker, .delete:
+        case .nothing, .picker, .arrows, .delete:
             EmptyView()
         }
     }
@@ -47,6 +47,7 @@ struct MacOverlayView: View {
     private enum CardShape: Equatable {
         case nothing
         case picker(HotkeyAction?)
+        case arrows(HotkeyAction?)
         case delete(DeleteScrubGranularity)
         case transcript(TranscriptPreviewArmed)
         case hint(String)
@@ -56,6 +57,7 @@ struct MacOverlayView: View {
         switch shown.content {
         case .nothing: return .nothing
         case let .picker(cell): return .picker(cell)
+        case let .arrows(lit): return .arrows(lit)
         case let .delete(granularity): return .delete(granularity)
         case let .transcript(_, armed): return .transcript(armed)
         case let .hint(text): return .hint(text)
@@ -69,6 +71,8 @@ struct MacOverlayView: View {
             EmptyView()
         case let .picker(cell):
             grid(lit: cell)
+        case let .arrows(lit):
+            arrows(lit: lit)
         case let .delete(granularity):
             deleteUnits(lit: granularity)
         case let .transcript(text, armed):
@@ -95,6 +99,22 @@ struct MacOverlayView: View {
                     }
                 }
                 .padding(.leading, style.rowOffset(index))
+            }
+        }
+    }
+
+    /// The keyboard's own inverted T, so a card caught out of the corner of an
+    /// eye reads as the arrow keys rather than as a list of directions. The
+    /// same tiles as the picker, because it is the same gesture: hold a key and
+    /// slide. Nothing is lit between notches; the arrow that just went lights
+    /// for long enough to be seen and no longer.
+    private func arrows(lit: HotkeyAction?) -> some View {
+        VStack(spacing: CGFloat(style.tileSpacing)) {
+            tile(cap: .key("\u{2191}"), name: "Up", isLit: lit == .arrowUp)
+            HStack(spacing: CGFloat(style.tileSpacing)) {
+                tile(cap: .key("\u{2190}"), name: "Left", isLit: lit == .arrowLeft)
+                tile(cap: .key("\u{2193}"), name: "Down", isLit: lit == .arrowDown)
+                tile(cap: .key("\u{2192}"), name: "Right", isLit: lit == .arrowRight)
             }
         }
     }

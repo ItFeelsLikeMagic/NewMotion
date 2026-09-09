@@ -5,9 +5,11 @@ import NewMotionShared
 #endif
 
 /// What a debug request may put on the on-screen card. Deliberately not a
-/// string: a named grid cell or the one fixed hint, and never arbitrary words.
+/// string: a named grid cell, a named arrow, or the one fixed hint, and never
+/// arbitrary words.
 public enum MacDebugCardRequest: Equatable, Sendable {
     case picker(cell: String?)
+    case arrows(lit: String?)
     case hint
 }
 
@@ -72,6 +74,9 @@ public enum MacDebugHTTP {
         // ignoring case and spaces.
         let cell = query.split(separator: "&").first { $0.hasPrefix("cell=") }
             .map { String($0.dropFirst("cell=".count)) }
+        // `/arrows?lit=up` lights one of the four, by direction.
+        let lit = query.split(separator: "&").first { $0.hasPrefix("lit=") }
+            .map { String($0.dropFirst("lit=".count)) }
         guard method == "GET" else {
             return json(status: 405, object: ["error": "method not allowed"])
         }
@@ -100,6 +105,10 @@ public enum MacDebugHTTP {
         // closes the picker.  Nothing here puts arbitrary words on the screen.
         case "/picker":
             return json(status: 200, object: card(.picker(cell: cell?.isEmpty == false ? cell : nil)))
+        // The same for the arrow card: one of the four directions, or nothing
+        // at all, which closes it.
+        case "/arrows":
+            return json(status: 200, object: card(.arrows(lit: lit?.isEmpty == false ? lit : nil)))
         case "/hint":
             return json(status: 200, object: card(.hint))
         default:

@@ -40,6 +40,7 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case spokenText = 18
     case keyPicker = 19
     case transcriptPreview = 20
+    case arrowPad = 21
 
     public var deliveryClass: DeliveryClass {
         switch self {
@@ -49,7 +50,7 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
              .transcriptPreview:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
-             .deleteScrub, .vocabulary, .spokenText, .keyPicker,
+             .deleteScrub, .vocabulary, .spokenText, .keyPicker, .arrowPad,
              .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
@@ -604,6 +605,26 @@ public enum KeyPickerGrid {
     ]
 }
 
+/// Whether the phone's arrow pad is under a finger. It says only that, never
+/// which way the finger went: each notch is an ordinary arrow hotkey, so the
+/// Mac lights its card off the keys it actually applied. Nothing is held down
+/// between the two phases, so a press that never ends leaves nothing stuck.
+public enum ArrowPadPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    /// The key went down, and said again every couple of seconds while it is
+    /// held: a finger resting between notches is silent, and the Mac closes a
+    /// card that has gone quiet.
+    case begin = 1
+    case end = 2
+}
+
+public struct ArrowPadPayload: Codable, Equatable, Sendable {
+    public let phase: ArrowPadPhase
+
+    public init(phase: ArrowPadPhase) {
+        self.phase = phase
+    }
+}
+
 /// Where the talk button is, which is what decides whether the Mac's card is
 /// on screen at all.
 public enum TranscriptPreviewPhase: UInt8, Codable, CaseIterable, Sendable {
@@ -822,6 +843,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case spokenText(SpokenTextPayload)
     case keyPicker(KeyPickerPayload)
     case transcriptPreview(TranscriptPreviewPayload)
+    case arrowPad(ArrowPadPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case acknowledgement(AcknowledgementPayload)
     case connectionStatus(ConnectionStatusPayload)
@@ -844,6 +866,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .spokenText: return .spokenText
         case .keyPicker: return .keyPicker
         case .transcriptPreview: return .transcriptPreview
+        case .arrowPad: return .arrowPad
         case .motionPointerDelta: return .motionPointerDelta
         case .acknowledgement: return .acknowledgement
         case .connectionStatus: return .connectionStatus
@@ -892,6 +915,8 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .keyPicker(try container.decode(KeyPickerPayload.self, forKey: .value))
         case .transcriptPreview:
             self = .transcriptPreview(try container.decode(TranscriptPreviewPayload.self, forKey: .value))
+        case .arrowPad:
+            self = .arrowPad(try container.decode(ArrowPadPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .acknowledgement:
@@ -925,6 +950,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .spokenText(let value): try container.encode(value, forKey: .value)
         case .keyPicker(let value): try container.encode(value, forKey: .value)
         case .transcriptPreview(let value): try container.encode(value, forKey: .value)
+        case .arrowPad(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
         case .connectionStatus(let value): try container.encode(value, forKey: .value)
@@ -964,7 +990,7 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         // not checked against `KeyPickerGrid` either, because a plain hotkey
         // already carries every `HotkeyAction`, and refusing an off-grid cell
         // would only make an older Mac reject a newer phone's grid.
-        case .hotkey, .tabWalk, .deleteScrub, .vocabulary, .keyPicker:
+        case .hotkey, .tabWalk, .deleteScrub, .vocabulary, .keyPicker, .arrowPad:
             break
         case .spokenText(let value):
             guard !value.utf8.bytes.isEmpty else {
