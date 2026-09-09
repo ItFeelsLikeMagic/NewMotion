@@ -94,13 +94,14 @@ struct MacOverlayView: View {
     }
 
     /// The same capsules as the picker, because it is the same gesture: hold a
-    /// key and slide. Two of them, and a line saying what across does, since
+    /// key and slide. Stacked the way the finger moves: up on the phone is
+    /// Word, so Word sits on top. And a line saying what across does, since
     /// the card is up before the finger has moved and that is the moment the
     /// reminder is worth anything.
     private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
         VStack(spacing: 10) {
-            HStack(spacing: 6) {
-                ForEach(DeleteScrubGranularity.allCases, id: \.self) { unit in
+            VStack(spacing: 6) {
+                ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in
                     Text(Self.unitName(unit))
                         .font(.callout)
                         .lineLimit(1)
