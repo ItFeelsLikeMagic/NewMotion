@@ -86,7 +86,7 @@ struct MacOverlayView: View {
                 HStack(spacing: CGFloat(style.tileSpacing)) {
                     ForEach(row, id: \.self) { cell in
                         tile(
-                            cap: KeyPickerGrid.keyCap(for: cell),
+                            cap: cell == .cancel ? .symbol("trash.fill") : KeyPickerGrid.keyCap(for: cell).map(Cap.key),
                             name: KeyPickerGrid.displayName(for: cell) ?? "",
                             isLit: cell.hotkey == lit
                         )
@@ -119,11 +119,25 @@ struct MacOverlayView: View {
     }
 
     /// One key of the grid: the cap large, what it does small underneath.
-    private func tile(cap: String?, name: String, isLit: Bool) -> some View {
+    /// What sits large on a tile: a key as printed on the keyboard, or a
+    /// picture for a cell that is no key at all.  Cancel is the bin, not
+    /// "esc": it throws the chord away rather than sending anything.
+    private enum Cap {
+        case key(String)
+        case symbol(String)
+    }
+
+    private func tile(cap: Cap?, name: String, isLit: Bool) -> some View {
         VStack(spacing: 2) {
             if let cap {
-                Text(cap)
-                    .font(.system(size: style.capFontSize, weight: style.capWeight, design: .rounded))
+                switch cap {
+                case let .key(key):
+                    Text(key)
+                        .font(.system(size: style.capFontSize, weight: style.capWeight, design: .rounded))
+                case let .symbol(symbol):
+                    Image(systemName: symbol)
+                        .font(.system(size: style.capFontSize * 0.85, weight: style.capWeight))
+                }
                 if style.showsNames {
                     Text(name)
                         .font(.system(size: style.nameFontSize))
