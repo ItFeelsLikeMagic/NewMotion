@@ -21,11 +21,18 @@ final class MacScreenOverlayWindow {
 
     func show(_ content: MacOverlayContent) {
         let panel = panel ?? makePanel()
-        shown.content = content
         // Already up: the card redraws itself and nothing else happens. Placing
         // and fading a panel per dictation partial would be a screen scan and
         // an animation ten times a second for a card that has not moved.
-        guard !isShowing else { return }
+        guard !isShowing else {
+            shown.content = content
+            return
+        }
+        // A card arriving on a panel that is down, or on its way down, is put
+        // in place without the card's own cross-fade: the panel fading in is
+        // the only animation, or the keys of the last card ghost under the
+        // words of this one.
+        Self.withoutAnimation { shown.content = content }
         isShowing = true
         position(panel)
         // Ordered front without activating: a menu bar app that activated here
@@ -106,6 +113,13 @@ final class MacScreenOverlayWindow {
     private func orderOutIfFadedAway() {
         guard let panel, !isShowing else { return }
         panel.orderOut(nil)
+        Self.withoutAnimation { shown.content = .nothing }
+    }
+
+    private static func withoutAnimation(_ change: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, change)
     }
 }
 
