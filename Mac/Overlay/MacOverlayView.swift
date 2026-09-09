@@ -107,18 +107,20 @@ struct MacOverlayView: View {
     /// `lit` is the hotkey the phone named, and no hotkey means the Cancel
     /// cell, which is what an open card starts on.
     private func grid(lit: HotkeyAction?) -> some View {
-        VStack(alignment: .leading, spacing: Self.tileSpacing) {
-            ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
-                HStack(spacing: Self.tileSpacing) {
-                    ForEach(row, id: \.self) { cell in
-                        tile(
-                            cap: KeyPickerGrid.keyCap(for: cell),
-                            name: KeyPickerGrid.displayName(for: cell) ?? "",
-                            isLit: cell.hotkey == lit
-                        )
+        Glassed(spacing: Self.tileSpacing) {
+            VStack(alignment: .leading, spacing: Self.tileSpacing) {
+                ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: Self.tileSpacing) {
+                        ForEach(row, id: \.self) { cell in
+                            tile(
+                                cap: KeyPickerGrid.keyCap(for: cell),
+                                name: KeyPickerGrid.displayName(for: cell) ?? "",
+                                isLit: cell.hotkey == lit
+                            )
+                        }
                     }
+                    .padding(.leading, Self.rowOffset(index))
                 }
-                .padding(.leading, Self.rowOffset(index))
             }
         }
     }
@@ -129,24 +131,22 @@ struct MacOverlayView: View {
     /// up before the finger has moved and that is the moment the reminder is
     /// worth anything. It gets a slab of its own; the card behind it is clear.
     private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
-        VStack(spacing: Self.tileSpacing) {
+        Glassed(spacing: Self.tileSpacing) {
             VStack(spacing: Self.tileSpacing) {
                 ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in
                     tile(cap: nil, name: Self.unitName(unit), isLit: unit == lit)
                 }
+                Text("Slide left to erase, right to restore")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .modifier(Slab(shape: Capsule(), isLit: false))
             }
-            Text("Slide left to erase, right to restore")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(.regularMaterial))
         }
     }
 
-    /// One key of the grid: the cap large, what it does small underneath. The
-    /// unlit fill is a material rather than a tint so a tile stays a tile over
-    /// a white document and over a photograph.
+    /// One key of the grid: the cap large, what it does small underneath.
     private func tile(cap: String?, name: String, isLit: Bool) -> some View {
         VStack(spacing: 2) {
             if let cap {
@@ -165,21 +165,44 @@ struct MacOverlayView: View {
         .padding(.horizontal, 6)
         .frame(width: Self.tileSide, height: Self.tileSide)
         .foregroundStyle(isLit ? Color.white : Color.primary)
-        .background(tileFill(isLit: isLit))
-        .overlay(
-            RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous)
-                .strokeBorder(Color.primary.opacity(isLit ? 0 : 0.12), lineWidth: 1)
-        )
+        .modifier(Slab(shape: RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous), isLit: isLit))
     }
 
-    @ViewBuilder
-    private func tileFill(isLit: Bool) -> some View {
-        if isLit {
-            RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous)
-                .fill(Color.accentColor)
-        } else {
-            RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous)
-                .fill(.regularMaterial)
+    /// Liquid Glass where the Mac has it, so the keys sit on the wallpaper
+    /// the way the system's own floating controls do; a material slab with a
+    /// hairline on the Macs before it, which reads the same from across a
+    /// room.  The lit key is the glass tinted, not a flat fill, so it keeps
+    /// the same edge as its neighbours.
+    private struct Slab<S: InsettableShape>: ViewModifier {
+        let shape: S
+        let isLit: Bool
+
+        func body(content: Content) -> some View {
+            if #available(macOS 26, *) {
+                let glass: Glass = isLit ? Glass.regular.tint(Color.accentColor) : Glass.regular
+                content.glassEffect(glass, in: shape)
+            } else if isLit {
+                content.background(shape.fill(Color.accentColor))
+            } else {
+                content
+                    .background(shape.fill(.regularMaterial))
+                    .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+            }
+        }
+    }
+
+    /// Glass tiles this close together are meant to share one container, so
+    /// the highlight moving between keys blends rather than snaps.
+    private struct Glassed<Inner: View>: View {
+        let spacing: CGFloat
+        @ViewBuilder let inner: () -> Inner
+
+        var body: some View {
+            if #available(macOS 26, *) {
+                GlassEffectContainer(spacing: spacing) { inner() }
+            } else {
+                inner()
+            }
         }
     }
 
