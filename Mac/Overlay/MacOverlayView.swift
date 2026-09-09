@@ -241,44 +241,47 @@ struct MacOverlayView: View {
     /// The width is fixed rather than fitted, so the card does not shuffle
     /// sideways on every partial. Empty means the key is down and the
     /// recogniser has nothing yet, which is worth saying out loud.
+    ///
+    /// The phone's Send and Cancel bars sit above and below the words the
+    /// way they sit around the talk button, so the card is also the hint that
+    /// sliding up or down does something, and the armed one lights the way a
+    /// picked key does.
     private func transcript(_ text: String, armed: TranscriptPreviewArmed) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            bar("Send", symbol: "return", colour: .green, isLit: armed == .send)
             Text(text.isEmpty ? "Listening…" : text)
                 .font(.title3)
                 .foregroundStyle(text.isEmpty ? Color.secondary : Color.primary)
                 .lineLimit(2)
                 .truncationMode(.head)
                 .multilineTextAlignment(.leading)
-            armedBar(armed)
+                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            bar("Cancel", symbol: "trash.fill", colour: .red, isLit: armed == .cancel)
         }
         .frame(width: MacOverlayStyle.maximumWidth, alignment: .leading)
     }
 
-    /// The phone's own Send and Cancel bars, repeated under the words so both
-    /// screens say the same thing about what letting go would do. Only the
-    /// armed one is drawn: a finger on the talk button itself is the plain
-    /// card, words and nothing else.
-    @ViewBuilder
-    private func armedBar(_ armed: TranscriptPreviewArmed) -> some View {
-        switch armed {
-        case .none:
-            EmptyView()
-        case .send:
-            bar("Send", symbol: "return", colour: .green)
-        case .cancel:
-            bar("Cancel", symbol: "trash.fill", colour: .red)
-        }
-    }
-
-    private func bar(_ title: String, symbol: String, colour: Color) -> some View {
+    /// Unlit, a bar is the same slab as an unpicked key; lit, it is the solid
+    /// colour the phone's bar turns.
+    private func bar(_ title: String, symbol: String, colour: Color, isLit: Bool) -> some View {
         HStack(spacing: 6) {
             Text(title)
             Image(systemName: symbol)
         }
         .font(.system(size: 17, weight: .semibold, design: .rounded))
-        .foregroundStyle(Color.white)
-        .frame(maxWidth: .infinity, minHeight: 34)
-        .background(colour, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .foregroundStyle(isLit ? Color.white : Color.primary)
+        .frame(maxWidth: .infinity, minHeight: 40)
+        .background {
+            if isLit {
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(colour)
+            } else {
+                Color.clear.modifier(Slab(
+                    shape: RoundedRectangle(cornerRadius: 10, style: .continuous),
+                    isLit: false,
+                    style: style
+                ))
+            }
+        }
     }
 }
 #endif
