@@ -620,32 +620,25 @@ public enum TranscriptPreviewPhase: UInt8, Codable, CaseIterable, Sendable {
 /// ends disagreeing. Words are not what puts the card up or takes it down;
 /// the phase is, so an empty `live` payload is valid and means "listening".
 public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
-    /// A glance at the tail of a sentence, not a transcript, so far below
-    /// `ProtocolBytes.maximumCount`: ten of these a second share the link with
-    /// the typing they are previewing.  The bytes go out as a JSON array of
-    /// numbers, four or so bytes of envelope for each one of these, so the cap
-    /// is what decides how many BLE fragments a partial costs.
+    /// A glance at the tail of a sentence, not a transcript: several of these
+    /// a second share the link with the typing they are previewing, so the cap
+    /// is what decides how many BLE fragments a partial costs.  The words ride
+    /// as a JSON string rather than an array of bytes, which would cost about
+    /// four bytes of envelope for each one of them.
     public static let maximumUTF8Bytes = 128
 
     public let phase: TranscriptPreviewPhase
-    public let utf8: ProtocolBytes
+    public let text: String
 
-    public init(phase: TranscriptPreviewPhase = .live, utf8: [UInt8]) throws {
-        guard utf8.count <= Self.maximumUTF8Bytes else {
+    public init(phase: TranscriptPreviewPhase = .live, text: String) throws {
+        let byteCount = text.utf8.count
+        guard byteCount <= Self.maximumUTF8Bytes else {
             throw ProtocolError.fieldTooLarge(
-                "transcript_preview", actual: utf8.count, limit: Self.maximumUTF8Bytes
+                "transcript_preview", actual: byteCount, limit: Self.maximumUTF8Bytes
             )
         }
         self.phase = phase
-        self.utf8 = try ProtocolBytes(bytes: utf8)
-    }
-
-    public init(phase: TranscriptPreviewPhase = .live, text: String) throws {
-        try self.init(phase: phase, utf8: Array(text.utf8))
-    }
-
-    public var text: String? {
-        String(bytes: utf8.bytes, encoding: .utf8)
+        self.text = text
     }
 }
 
@@ -962,19 +955,16 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             // No empty check, unlike spoken text: a live preview with no words
             // is the card saying it is listening, sent the moment the talk
             // button goes down.
-            guard value.utf8.bytes.count <= TranscriptPreviewPayload.maximumUTF8Bytes else {
+            guard value.text.utf8.count <= TranscriptPreviewPayload.maximumUTF8Bytes else {
                 throw ProtocolError.fieldTooLarge(
                     "transcript_preview",
-                    actual: value.utf8.bytes.count,
+                    actual: value.text.utf8.count,
                     limit: TranscriptPreviewPayload.maximumUTF8Bytes
                 )
             }
-            guard value.text != nil else {
-                throw ProtocolError.invalidUTF8
-            }
             // The end of a hold carries no words, so words with it mean the
             // two ends disagree about which message this is.
-            guard value.phase == .live || value.utf8.bytes.isEmpty else {
+            guard value.phase == .live || value.text.isEmpty else {
                 throw ProtocolError.invalidField("transcript_preview_ended_words")
             }
         case .motionPointerDelta(let value):

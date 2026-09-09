@@ -70,8 +70,8 @@ public final class MacOverlayPresenter {
     /// card on screen. This timeout is the real guarantee; the ended message
     /// only makes the common case instant. The phone repeats its preview
     /// twice a second, silent hold or not, so a card that is still wanted
-    /// survives even a lost repeat.
-    public static let transcriptIdleTimeout: TimeInterval = 2
+    /// survives four lost repeats in a row, which is what a busy link costs.
+    public static let transcriptIdleTimeout: TimeInterval = 3
     /// Three plain deletes inside this window is someone rubbing a word out
     /// one press at a time, which is exactly who has not found the slide.
     public static let deleteHintPresses = 3

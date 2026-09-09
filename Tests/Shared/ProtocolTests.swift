@@ -209,18 +209,21 @@ final class ProtocolTests: XCTestCase {
     func testTranscriptPreviewIsBoundedAtItsOwnLimit() throws {
         XCTAssertEqual(TranscriptPreviewPayload.maximumUTF8Bytes, 128)
 
-        let atLimit = Array(repeating: UInt8(ascii: "a"), count: 128)
-        XCTAssertNoThrow(try TranscriptPreviewPayload(utf8: atLimit))
-        XCTAssertThrowsError(try TranscriptPreviewPayload(utf8: atLimit + [UInt8(ascii: "a")])) { error in
+        let atLimit = String(repeating: "a", count: 128)
+        XCTAssertNoThrow(try TranscriptPreviewPayload(text: atLimit))
+        XCTAssertThrowsError(try TranscriptPreviewPayload(text: atLimit + "a")) { error in
             XCTAssertEqual(
                 error as? ProtocolError,
                 .fieldTooLarge("transcript_preview", actual: 129, limit: 128)
             )
         }
 
+        // The cap counts bytes, not characters, because the wire does.
+        XCTAssertThrowsError(try TranscriptPreviewPayload(text: String(repeating: "é", count: 65)))
+
         // The sender's bound is not the receiver's: a message that arrives
         // over the limit has to be refused on the way in as well.
-        let oversized = #"{"phase":1,"utf8":[\#(Array(repeating: "97", count: 129).joined(separator: ","))]}"#
+        let oversized = #"{"phase":1,"text":"\#(String(repeating: "a", count: 129))"}"#
         let value = try JSONDecoder().decode(TranscriptPreviewPayload.self, from: Data(oversized.utf8))
         XCTAssertThrowsError(try MessagePayload.transcriptPreview(value).validate()) { error in
             XCTAssertEqual(

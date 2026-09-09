@@ -7,7 +7,7 @@ import NewMotionShared
 ///
 /// Apple's analyser revises a partial many times a second, and every one of
 /// them shares the link with the typing it is previewing, so this drops the
-/// revisions that changed nothing and holds the rest to ten a second.  The
+/// revisions that changed nothing and holds the rest to four a second.  The
 /// clock is passed in rather than read, so its tests do not sleep.
 public struct TranscriptPreviewThrottle: Sendable {
     /// What a revision is worth.
@@ -22,16 +22,18 @@ public struct TranscriptPreviewThrottle: Sendable {
         case tooSoon(after: Double)
     }
 
-    /// Ten a second: fast enough to read as live, slow enough that the
-    /// finished sentence behind it is not queued up behind previews.
-    public static let minimumInterval: Double = 0.1
+    /// Four a second: fast enough to read as live, slow enough that a preview
+    /// several BLE fragments long does not fill the notification queue and
+    /// have its own sends, and the finished sentence behind them, refused.
+    public static let minimumInterval: Double = 0.25
 
     /// How long the same words may sit unsent.  The Mac wipes its card after
-    /// two silent seconds, which is the guarantee against a lost clear on an
+    /// three silent seconds, which is the guarantee against a lost clear on an
     /// unreliable channel.  The timer that repeats the words runs at this
     /// interval too, so the gap between two sends can reach twice it, and a
-    /// message can still be lost on the way: half a second keeps the worst
-    /// gap at one second, and a lost repeat inside the Mac's two.
+    /// message can still be refused by a full link on the way: half a second
+    /// keeps the worst gap at one second, and four lost repeats in a row
+    /// inside the Mac's three.
     public static let keepaliveInterval: Double = 0.5
 
     /// Previews this utterance has put on the wire.

@@ -39,7 +39,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
     }
 
     /// Someone pausing mid-sentence sends nothing new, and the Mac wipes its
-    /// card after two silent seconds. So the same words go out again, twice
+    /// card after three silent seconds. So the same words go out again, twice
     /// a second, and the words stay up until the talk button is let go.
     func testUnchangedWordsGoOutAgainAfterHalfASecond() {
         var throttle = TranscriptPreviewThrottle()
@@ -74,13 +74,13 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
-    func testNoMoreThanTenASecond() {
+    func testNoMoreThanFourASecond() {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.sends("one", at: 0), "one")
         XCTAssertNil(throttle.sends("one two", at: 0.05))
-        XCTAssertNil(throttle.sends("one two three", at: 0.099))
-        XCTAssertEqual(throttle.sends("one two three four", at: 0.1), "one two three four")
+        XCTAssertNil(throttle.sends("one two three", at: 0.249))
+        XCTAssertEqual(throttle.sends("one two three four", at: 0.25), "one two three four")
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
@@ -91,7 +91,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
 
         _ = throttle.sends("one", at: 0)
         XCTAssertNil(throttle.sends("one two", at: 0.05))
-        XCTAssertEqual(throttle.sends("one two", at: 0.2), "one two")
+        XCTAssertEqual(throttle.sends("one two", at: 0.3), "one two")
     }
 
     /// The card only ever shows the end of a sentence, so a long one is cut
@@ -167,7 +167,7 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         guard case let .tooSoon(after) = throttle.partial("one two", at: 0.04) else {
             return XCTFail("new words inside the window are owed a message")
         }
-        XCTAssertEqual(after, 0.06, accuracy: 0.001)
+        XCTAssertEqual(after, 0.21, accuracy: 0.001)
     }
 
     /// The link refusing a message leaves the card showing the words before it,
@@ -177,11 +177,11 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
 
         XCTAssertEqual(throttle.partial("one two", at: 0), .send("one two"))
         // Nothing recorded: the link said no.
-        XCTAssertEqual(throttle.partial("one two", at: 0.2), .send("one two"))
+        XCTAssertEqual(throttle.partial("one two", at: 0.3), .send("one two"))
         XCTAssertEqual(throttle.sentCount, 0)
 
-        throttle.sent("one two", at: 0.2)
-        XCTAssertEqual(throttle.partial("one two", at: 0.4), .nothing)
+        throttle.sent("one two", at: 0.3)
+        XCTAssertEqual(throttle.partial("one two", at: 0.6), .nothing)
         XCTAssertEqual(throttle.sentCount, 1)
     }
 }
@@ -347,8 +347,8 @@ final class VoicePreviewTrailingSendTests: XCTestCase {
 
         // The wait is real time; the clock the throttle reads is the test's, so
         // it has to reach past the end of the window as well.
-        clock.value += 0.07
-        spinRunLoop(for: 0.2)
+        clock.value += 0.25
+        spinRunLoop(for: 0.35)
         XCTAssertEqual(
             link.dataMessageCount,
             afterFirstPartial + 1,

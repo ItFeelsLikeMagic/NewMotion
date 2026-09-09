@@ -169,6 +169,10 @@ final class NewMotionFeatureModel: ObservableObject {
     /// preview so it can tell a revision from a repeat; nothing is stored past
     /// the utterance.
     private var previewThrottle = TranscriptPreviewThrottle()
+    /// Previews the link would not take this utterance.  A full notification
+    /// queue is what starves the Mac's card into clearing itself mid-hold, and
+    /// the count is the only way to see that from the outside.
+    private var previewRefusals = 0
     /// Runs only while there is a card on the Mac to keep alive.
     private var previewKeepalive: Timer?
     /// True from the moment the talk button goes down until it lifts.  The
@@ -1079,7 +1083,10 @@ final class NewMotionFeatureModel: ObservableObject {
             holdPreviewForTrailingSend(text, after: after)
         case let .send(tail):
             guard let payload = try? TranscriptPreviewPayload(text: tail) else { return }
-            guard inputUplink.sendTranscriptPreview(payload) else { return }
+            guard inputUplink.sendTranscriptPreview(payload) else {
+                previewRefusals += 1
+                return
+            }
             previewThrottle.sent(tail, at: now)
             // Newer words than anything waiting, so the wait is over.
             cancelTrailingPreview()
@@ -1114,9 +1121,9 @@ final class NewMotionFeatureModel: ObservableObject {
 
     /// Someone pausing mid-sentence stops the analyser revising, and a button
     /// held before the first word never started it.  Either way nothing would
-    /// reach the Mac and its two-second idle clear would take the card away
-    /// with the finger still down.  This puts the same preview back on the
-    /// wire twice a second, words or not, until the button lifts.
+    /// reach the Mac and its idle clear would take the card away with the
+    /// finger still down.  This puts the same preview back on the wire twice a
+    /// second, words or not, until the button lifts.
     func keepVoicePreviewAlive() {
         guard previewKeepalive != nil else { return }
         sendVoicePreview(voicePreview)
@@ -1155,9 +1162,14 @@ final class NewMotionFeatureModel: ObservableObject {
         cancelTrailingPreview()
         let previews = previewThrottle.sentCount
         let characters = previewThrottle.characterCount
+        let refused = previewRefusals
+        previewRefusals = 0
         let hadCard = previewThrottle.clear()
         if hadCard {
-            IPhoneDebugLog.emit("voice_preview", ["sent": "\(previews)", "chars": "\(characters)"])
+            IPhoneDebugLog.emit(
+                "voice_preview",
+                ["sent": "\(previews)", "chars": "\(characters)", "refused": "\(refused)"]
+            )
         }
         guard !isTalkHeld else {
             sendVoicePreview("")
