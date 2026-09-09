@@ -23,48 +23,45 @@ struct MacOverlayView: View {
 
     /// One sheet of glass behind the whole card, the way the app switcher sits
     /// over a desktop: nothing at all through the middle, and a rim that bends
-    /// and catches the light. Apple's glass blurs and greys whatever it covers,
-    /// even the clear kind, so it is kept to a ring at the edge, masked away
-    /// from the middle, with a highlight stroke over it for the gloss. It is a
-    /// background, not a container: a glass container draws its own glass over
-    /// everything inside it, and took the tiles' letters with it.
+    /// what is behind it. Apple's glass blurs and greys whatever it covers,
+    /// even the clear kind, so the glass here is a ring, a shape of its own
+    /// rather than a masked sheet: masking or fading a glass view flattens it
+    /// to a tint, and it is the live edge of a glass shape that refracts. A
+    /// ring has two such edges. It is a background, not a container: a glass
+    /// container draws its own glass over everything inside it, and took the
+    /// tiles' letters with it.
     @ViewBuilder
     private var pane: some View {
         let shape = RoundedRectangle(cornerRadius: MacOverlayStyle.cardCorner, style: .continuous)
+        let rim = Rim(corner: MacOverlayStyle.cardCorner, width: MacOverlayStyle.rimWidth)
         switch shown.content {
         case .nothing:
             EmptyView()
         case .picker, .arrows, .delete, .transcript, .hint:
             ZStack {
                 if #available(macOS 26, *) {
-                    shape.fill(.clear)
-                        .glassEffect(.clear, in: shape)
-                        .mask(rimMask(shape))
+                    Color.clear.glassEffect(.clear, in: rim)
                 } else {
-                    shape.fill(.ultraThinMaterial).mask(rimMask(shape))
+                    rim.fill(.ultraThinMaterial)
                 }
                 shape.fill(Color.white.opacity(0.03))
-                shape.strokeBorder(Self.gloss, lineWidth: 1.2)
-                shape.inset(by: 1.2).strokeBorder(Color.black.opacity(0.18), lineWidth: 0.6)
+                shape.strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
             }
         }
     }
 
-    /// Light from the top left, as on every Apple pane: bright along the top
-    /// edge, dim down the right, a little back at the bottom.
-    private static let gloss = LinearGradient(
-        colors: [Color.white.opacity(0.75), Color.white.opacity(0.18), Color.white.opacity(0.45)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    /// The outline of a rounded rectangle as a band `width` across, drawn in
+    /// from the edge, which is what a stroke is when it is filled.
+    private struct Rim: Shape {
+        let corner: CGFloat
+        let width: CGFloat
 
-    /// Opaque at the edge, gone `rimWidth` in, with a soft falloff so the
-    /// glass fades into the clear middle rather than ending on a line.
-    private func rimMask(_ shape: RoundedRectangle) -> some View {
-        shape.fill(Color.black)
-            .overlay(shape.inset(by: MacOverlayStyle.rimWidth).fill(Color.black).blendMode(.destinationOut))
-            .compositingGroup()
-            .blur(radius: MacOverlayStyle.rimWidth / 2)
+        func path(in rect: CGRect) -> Path {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .inset(by: width / 2)
+                .path(in: rect)
+                .strokedPath(StrokeStyle(lineWidth: width))
+        }
     }
 
     /// What the fade is allowed to notice.  A card arriving or leaving, and a
