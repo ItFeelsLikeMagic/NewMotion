@@ -529,16 +529,27 @@ public enum KeyPickerCell: Equatable, Hashable, Sendable {
 /// different grids would still agree on every message and quietly light and
 /// fire different things.
 public enum KeyPickerGrid {
+    /// Laid out like the keys themselves, so a hand that knows where C is on
+    /// a keyboard knows where to slide: escape and the top-row keys across the
+    /// top, the home-row keys under them, the Z X C V run along the bottom.
+    /// A shifted key sits beside its plain twin.  Cancel is first, so it is
+    /// where a press starts and a finger that never moves fires nothing.
     public static let rows: [[KeyPickerCell]] = [
-        [.cancel, .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.undo), .hotkey(.redo)],
-        [.hotkey(.newItem), .hotkey(.newTab), .hotkey(.save), .hotkey(.closeWindow), .hotkey(.find)],
-        [.hotkey(.selectAll), .hotkey(.deleteLineBackward), .hotkey(.nextWindow), .hotkey(.previousWindow)]
+        [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.closeWindow), .hotkey(.newTab), .hotkey(.deleteLineBackward)],
+        [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
+        [.hotkey(.undo), .hotkey(.redo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
     ]
 
     /// Every cell in `rows` has one. Nothing outside the grid does, because no
     /// other hotkey is ever drawn.
     public static func displayName(for cell: KeyPickerCell) -> String? {
         displayNames[cell]
+    }
+
+    /// The key pressed with Command to get the cell's shortcut, as it is
+    /// printed on a keyboard, with a shift arrow where the shortcut needs one.
+    public static func keyCap(for cell: KeyPickerCell) -> String? {
+        keyCaps[cell]
     }
 
     /// The cell a name stands for, matched on the display name ignoring case
@@ -569,6 +580,24 @@ public enum KeyPickerGrid {
         .hotkey(.deleteLineBackward): "Delete Line",
         .hotkey(.nextWindow): "Next Window",
         .hotkey(.previousWindow): "Prev Window"
+    ]
+
+    private static let keyCaps: [KeyPickerCell: String] = [
+        .cancel: "esc",
+        .hotkey(.cut): "X",
+        .hotkey(.copy): "C",
+        .hotkey(.paste): "V",
+        .hotkey(.undo): "Z",
+        .hotkey(.redo): "\u{21E7}Z",
+        .hotkey(.newItem): "N",
+        .hotkey(.newTab): "T",
+        .hotkey(.save): "S",
+        .hotkey(.closeWindow): "W",
+        .hotkey(.find): "F",
+        .hotkey(.selectAll): "A",
+        .hotkey(.deleteLineBackward): "\u{232B}",
+        .hotkey(.nextWindow): "`",
+        .hotkey(.previousWindow): "\u{21E7}`"
     ]
 }
 

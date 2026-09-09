@@ -89,13 +89,14 @@ final class KeyPickerPressTests: XCTestCase {
         XCTAssertEqual(press.cell, .cancel)
     }
 
-    /// The rows below the first are a cell shorter, so the column the top row
-    /// allows is off the end of them.  The highlight stays where it is rather
+    /// The home row is shorter than the top one, so the column the top row
+    /// allows is off the end of it.  The highlight stays where it is rather
     /// than wrapping.
     func testDroppingIntoAShorterRowFromItsMissingColumnIsIgnored() {
         var press = KeyPickerPress()
         _ = press.begin()
-        XCTAssertEqual(KeyPickerGrid.rows[1].count + 1, KeyPickerGrid.rows[0].count)
+        XCTAssertLessThan(KeyPickerGrid.rows[1].count, KeyPickerGrid.rows[0].count)
+        XCTAssertEqual(KeyPickerGrid.rows[0].count, 6)
 
         for _ in 0..<6 { _ = press.notch(.right) }
         XCTAssertEqual(press.cell, KeyPickerGrid.rows[0][5])

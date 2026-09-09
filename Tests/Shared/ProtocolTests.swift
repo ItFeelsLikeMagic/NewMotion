@@ -131,9 +131,9 @@ final class ProtocolTests: XCTestCase {
     /// change, because the phone lights a cell the Mac then fires.
     func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
         XCTAssertEqual(KeyPickerGrid.rows, [
-            [.cancel, .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.undo), .hotkey(.redo)],
-            [.hotkey(.newItem), .hotkey(.newTab), .hotkey(.save), .hotkey(.closeWindow), .hotkey(.find)],
-            [.hotkey(.selectAll), .hotkey(.deleteLineBackward), .hotkey(.nextWindow), .hotkey(.previousWindow)]
+            [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.closeWindow), .hotkey(.newTab), .hotkey(.deleteLineBackward)],
+            [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
+            [.hotkey(.undo), .hotkey(.redo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
         ])
 
         // The way out is the first cell, so it is where a press starts and a
@@ -146,8 +146,13 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(Set(cells).count, cells.count, "a cell appears twice")
         for cell in cells {
             XCTAssertNotNil(KeyPickerGrid.displayName(for: cell), "\(cell)")
+            XCTAssertNotNil(KeyPickerGrid.keyCap(for: cell), "\(cell)")
             XCTAssertEqual(KeyPickerGrid.cell(named: KeyPickerGrid.displayName(for: cell) ?? ""), cell)
         }
+        let caps = cells.compactMap(KeyPickerGrid.keyCap(for:))
+        XCTAssertEqual(Set(caps).count, caps.count, "a key cap appears twice")
+        XCTAssertEqual(KeyPickerGrid.keyCap(for: .hotkey(.copy)), "C")
+        XCTAssertEqual(KeyPickerGrid.keyCap(for: .hotkey(.redo)), "\u{21E7}Z")
         XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .hotkey(.newTab))
         XCTAssertEqual(KeyPickerGrid.cell(named: "cancel"), .cancel)
         XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
