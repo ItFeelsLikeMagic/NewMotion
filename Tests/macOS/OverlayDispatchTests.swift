@@ -181,16 +181,38 @@ final class OverlayDispatchTests: XCTestCase {
         let model = MacRemoteAppModel()
 
         try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "")))
-        XCTAssertEqual(model.overlay.content, .transcript(""))
+        XCTAssertEqual(model.overlay.content, .transcript("", armed: .none))
 
         try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "spoken words")))
-        XCTAssertEqual(model.overlay.content, .transcript("spoken words"))
+        XCTAssertEqual(model.overlay.content, .transcript("spoken words", armed: .none))
 
         // The phrase was typed, but the finger is still down.
         try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "")))
-        XCTAssertEqual(model.overlay.content, .transcript(""))
+        XCTAssertEqual(model.overlay.content, .transcript("", armed: .none))
 
         try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(phase: .ended, text: "")))
         XCTAssertEqual(model.overlay.content, .nothing)
+    }
+
+    /// The bar the finger is sitting on rides in with the words, so the Mac's
+    /// card says what letting go would do without knowing where the thumb is.
+    func testTheArmedBarArrivesWithThePreview() throws {
+        let model = MacRemoteAppModel()
+
+        try model.dispatchApplication(
+            .transcriptPreview(TranscriptPreviewPayload(text: "spoken words", armed: .send))
+        )
+        XCTAssertEqual(model.overlay.content, .transcript("spoken words", armed: .send))
+
+        try model.dispatchApplication(
+            .transcriptPreview(TranscriptPreviewPayload(text: "spoken words", armed: .cancel))
+        )
+        XCTAssertEqual(model.overlay.content, .transcript("spoken words", armed: .cancel))
+
+        // The finger backed off the bar and onto the talk button again.
+        try model.dispatchApplication(
+            .transcriptPreview(TranscriptPreviewPayload(text: "spoken words"))
+        )
+        XCTAssertEqual(model.overlay.content, .transcript("spoken words", armed: .none))
     }
 }

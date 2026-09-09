@@ -46,6 +46,7 @@ public struct TranscriptPreviewThrottle: Sendable {
     private let keepaliveInterval: Double
     private let maximumUTF8Bytes: Int
     private var lastSent = ""
+    private var lastArmed = TranscriptPreviewArmed.none
     private var lastSentAt: Double?
 
     public init(
@@ -60,8 +61,14 @@ public struct TranscriptPreviewThrottle: Sendable {
 
     /// What to do with this partial.  Deciding is separate from recording so
     /// that a message the link refuses is offered again instead of being
-    /// mistaken for words the card is already showing.
-    public mutating func partial(_ text: String, at now: Double) -> Decision {
+    /// mistaken for words the card is already showing.  The armed bar counts
+    /// as much as the words do: the same words with a different bar under them
+    /// are a different card.
+    public mutating func partial(
+        _ text: String,
+        armed: TranscriptPreviewArmed = .none,
+        at now: Double
+    ) -> Decision {
         // The clock first: trimming and the tail walk both run the length of
         // the whole utterance, and this is called on the main actor for every
         // revision the analyser makes, most of which are held back anyway.
@@ -73,7 +80,7 @@ public struct TranscriptPreviewThrottle: Sendable {
             of: text.trimmingCharacters(in: .whitespacesAndNewlines),
             maximumUTF8Bytes: maximumUTF8Bytes
         )
-        if tail == lastSent, let sinceLastSend {
+        if tail == lastSent, armed == lastArmed, let sinceLastSend {
             // Words the card is already showing, so this is only worth the
             // wire once the Mac's idle clear is close.  An empty preview
             // counts: while the talk button is held it is the card saying it
@@ -86,8 +93,13 @@ public struct TranscriptPreviewThrottle: Sendable {
     /// Records the words that reached the wire.  Only a send the link took
     /// counts: one it refused left the card unchanged, so the interval and the
     /// repeat check must both still let those words through.
-    public mutating func sent(_ text: String, at now: Double) {
+    public mutating func sent(
+        _ text: String,
+        armed: TranscriptPreviewArmed = .none,
+        at now: Double
+    ) {
         lastSent = text
+        lastArmed = armed
         lastSentAt = now
         sentCount += 1
     }

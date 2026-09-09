@@ -784,7 +784,7 @@ final class MacRemoteAppModel: ObservableObject {
             // must not touch `lastApplicationMessage`, whose `didSet` copies
             // it into the debug snapshot ten times a second.
             switch value.phase {
-            case .live: overlay.showTranscript(value.text)
+            case .live: overlay.showTranscript(value.text, armed: value.armed)
             case .ended: overlay.clearTranscript()
             }
         case let .spokenText(value):

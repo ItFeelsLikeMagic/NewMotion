@@ -614,6 +614,19 @@ public enum TranscriptPreviewPhase: UInt8, Codable, CaseIterable, Sendable {
     case ended = 2
 }
 
+/// Which bar the finger is sitting on, and so what letting go would do. The
+/// Mac lights the same bar the phone is showing, so the two screens agree
+/// about what happens next without the Mac knowing where anyone's thumb is.
+public enum TranscriptPreviewArmed: UInt8, Codable, CaseIterable, Sendable {
+    /// The finger is on the talk button itself: the words are typed as they
+    /// always were.
+    case none = 0
+    /// Releasing types the words and presses Return behind them.
+    case send = 1
+    /// Releasing throws the utterance away.
+    case cancel = 2
+}
+
 /// The words the phone's recogniser has heard so far, on their way to the Mac
 /// card. Each message carries the whole current preview rather than a change
 /// to it, so a dropped one is repaired by the next instead of leaving the two
@@ -629,8 +642,16 @@ public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
 
     public let phase: TranscriptPreviewPhase
     public let text: String
+    /// The bar the finger is over as these words were heard. It rides with
+    /// every preview rather than in messages of its own, so a lost one is
+    /// repaired by the next preview like the words are.
+    public let armed: TranscriptPreviewArmed
 
-    public init(phase: TranscriptPreviewPhase = .live, text: String) throws {
+    public init(
+        phase: TranscriptPreviewPhase = .live,
+        text: String,
+        armed: TranscriptPreviewArmed = .none
+    ) throws {
         let byteCount = text.utf8.count
         guard byteCount <= Self.maximumUTF8Bytes else {
             throw ProtocolError.fieldTooLarge(
@@ -639,6 +660,7 @@ public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
         }
         self.phase = phase
         self.text = text
+        self.armed = armed
     }
 }
 
@@ -966,6 +988,11 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             // two ends disagree about which message this is.
             guard value.phase == .live || value.text.isEmpty else {
                 throw ProtocolError.invalidField("transcript_preview_ended_words")
+            }
+            // The card is going down: there is no bar left to light, and one
+            // named here would be a bar the Mac lit as the words vanished.
+            guard value.phase == .live || value.armed == .none else {
+                throw ProtocolError.invalidField("transcript_preview_ended_armed")
             }
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")

@@ -102,6 +102,9 @@ final class NewMotionFeatureModel: ObservableObject {
     /// Set by a hold that ended on the Send bar, spent by the words that hold
     /// produced.  An utterance that produced none presses nothing.
     private var returnAfterTranscript = false
+    /// The bar the finger is over, as every preview on the wire reports it.
+    /// A state, not content: the Mac lights the same bar this screen does.
+    private(set) var previewArmed = TranscriptPreviewArmed.none
     private(set) lazy var pushToTalk = PushToTalkController(
         audio: audioController,
         activity: { [weak self] in self?.latestAction = $0 },
@@ -117,6 +120,7 @@ final class NewMotionFeatureModel: ObservableObject {
             }
         },
         lifted: { [weak self] zone in self?.returnAfterTranscript = zone == .send },
+        armedChanged: { [weak self] zone in self?.armVoicePreview(zone) },
         logContext: { [weak self] in
             [
                 "link": self?.linkState.label ?? "unknown",
@@ -1076,18 +1080,19 @@ final class NewMotionFeatureModel: ObservableObject {
     private func sendVoicePreview(_ text: String) {
         guard isControllable else { return }
         let now = uptime()
-        switch previewThrottle.partial(text, at: now) {
+        let armed = previewArmed
+        switch previewThrottle.partial(text, armed: armed, at: now) {
         case .nothing:
             return
         case let .tooSoon(after):
             holdPreviewForTrailingSend(text, after: after)
         case let .send(tail):
-            guard let payload = try? TranscriptPreviewPayload(text: tail) else { return }
+            guard let payload = try? TranscriptPreviewPayload(text: tail, armed: armed) else { return }
             guard inputUplink.sendTranscriptPreview(payload) else {
                 previewRefusals += 1
                 return
             }
-            previewThrottle.sent(tail, at: now)
+            previewThrottle.sent(tail, armed: armed, at: now)
             // Newer words than anything waiting, so the wait is over.
             cancelTrailingPreview()
         }
@@ -1136,10 +1141,20 @@ final class NewMotionFeatureModel: ObservableObject {
         }
     }
 
+    /// The finger slid onto a bar, or off one.  The card has to light it now:
+    /// waiting for the keepalive would show what the thumb was doing half a
+    /// second ago, and a bar armed and dropped inside that half second would
+    /// never reach the Mac at all.
+    func armVoicePreview(_ zone: PushToTalkZone?) {
+        previewArmed = zone?.armed ?? .none
+        sendVoicePreview(voicePreview)
+    }
+
     /// The talk button went down.  The card goes up empty right away, so the
     /// hint that the Mac is listening does not wait on the first word.
     func beginVoicePreview() {
         isTalkHeld = true
+        previewArmed = .none
         startPreviewKeepalive()
         sendVoicePreview("")
     }
@@ -1148,6 +1163,7 @@ final class NewMotionFeatureModel: ObservableObject {
     /// goes down and the tick that held it there stops.
     func endVoicePreview() {
         isTalkHeld = false
+        previewArmed = .none
         clearVoicePreview()
     }
 

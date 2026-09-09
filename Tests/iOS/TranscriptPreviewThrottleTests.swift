@@ -9,9 +9,13 @@ import XCTest
 /// decision say so once here: they offer the words and take the send as having
 /// reached the wire.
 private extension TranscriptPreviewThrottle {
-    mutating func sends(_ text: String, at now: Double) -> String? {
-        guard case let .send(tail) = partial(text, at: now) else { return nil }
-        sent(tail, at: now)
+    mutating func sends(
+        _ text: String,
+        armed: TranscriptPreviewArmed = .none,
+        at now: Double
+    ) -> String? {
+        guard case let .send(tail) = partial(text, armed: armed, at: now) else { return nil }
+        sent(tail, armed: armed, at: now)
         return tail
     }
 }
@@ -168,6 +172,30 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
             return XCTFail("new words inside the window are owed a message")
         }
         XCTAssertEqual(after, 0.21, accuracy: 0.001)
+    }
+
+    /// Sliding onto a bar changes the card without changing a word, so the
+    /// same words go out again rather than being swallowed as a repeat.
+    func testArmingABarSendsTheSameWordsAgain() {
+        var throttle = TranscriptPreviewThrottle()
+
+        XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
+        XCTAssertNil(throttle.sends("hello", at: 0.3))
+        XCTAssertEqual(throttle.sends("hello", armed: .send, at: 0.3), "hello")
+        // Backing off the bar is as much a change as arming it was.
+        XCTAssertEqual(throttle.sends("hello", at: 0.6), "hello")
+        XCTAssertEqual(throttle.sentCount, 3)
+    }
+
+    /// A bar armed inside the window is owed a message like new words are:
+    /// waiting for the keepalive would show the thumb where it was.
+    func testArmingInsideTheWindowIsOwedATrailingSend() {
+        var throttle = TranscriptPreviewThrottle()
+
+        _ = throttle.sends("hello", at: 0)
+        guard case .tooSoon = throttle.partial("hello", armed: .cancel, at: 0.05) else {
+            return XCTFail("a bar armed inside the window is owed a message")
+        }
     }
 
     /// The link refusing a message leaves the card showing the words before it,
@@ -375,6 +403,82 @@ final class VoicePreviewTrailingSendTests: XCTestCase {
         clock.value += 1
         spinRunLoop(for: 0.2)
         XCTAssertEqual(link.dataMessageCount, afterClear, "the wait went with the utterance")
+    }
+}
+
+/// The Mac's card shows the bar the finger is on, so the two screens agree
+/// about what letting go would do.
+@MainActor
+final class VoicePreviewArmedTests: XCTestCase {
+    private let bars: [PushToTalkZone: CGRect] = [
+        .send: CGRect(x: 0, y: 0, width: 100, height: 34),
+        .cancel: CGRect(x: 0, y: 100, width: 100, height: 34)
+    ]
+
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "selectedMacID")
+        super.tearDown()
+    }
+
+    func testSlidingOntoSendGoesOutWithoutWaitingForTheKeepalive() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+        for (bar, frame) in bars { model.pushToTalk.setZoneFrame(bar, frame) }
+
+        model.pushToTalk.pressed()
+        try await settle()
+        XCTAssertEqual(model.previewArmed, .none, "the hold starts on the button")
+
+        // Past the throttle's window, so what follows is the arming and not a
+        // partial that was owed a message anyway.
+        clock.value += 0.5
+        let beforeSend = link.dataMessageCount
+        model.pushToTalk.dragged(to: centre(of: .send))
+        XCTAssertEqual(model.previewArmed, .send)
+        XCTAssertEqual(link.dataMessageCount, beforeSend + 1, "the bar is on the wire at once")
+
+        clock.value += 0.5
+        let beforeCancel = link.dataMessageCount
+        model.pushToTalk.dragged(to: centre(of: .cancel))
+        XCTAssertEqual(model.previewArmed, .cancel)
+        XCTAssertEqual(link.dataMessageCount, beforeCancel + 1)
+
+        // Back onto the talk button itself: no bar, and the Mac hears that too.
+        clock.value += 0.5
+        let beforeNone = link.dataMessageCount
+        model.pushToTalk.dragged(to: CGPoint(x: 500, y: 500))
+        XCTAssertEqual(model.previewArmed, .none)
+        XCTAssertEqual(link.dataMessageCount, beforeNone + 1)
+    }
+
+    /// The card is going down with the finger, and a preview that ends a hold
+    /// may carry no bar at all.
+    func testLiftingLeavesNothingArmed() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+        for (bar, frame) in bars { model.pushToTalk.setZoneFrame(bar, frame) }
+
+        model.pushToTalk.pressed()
+        try await settle()
+        clock.value += 0.5
+        model.pushToTalk.dragged(to: centre(of: .send))
+        XCTAssertEqual(model.previewArmed, .send)
+
+        model.pushToTalk.released()
+        try await settle()
+        XCTAssertEqual(model.previewArmed, .none)
+    }
+
+    private func centre(of zone: PushToTalkZone) -> CGPoint {
+        guard let frame = bars[zone] else { return .zero }
+        return CGPoint(x: frame.midX, y: frame.midY)
     }
 }
 

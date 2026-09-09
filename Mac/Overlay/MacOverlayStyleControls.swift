@@ -11,6 +11,7 @@ enum MacOverlayPreview: String, CaseIterable, Identifiable {
     case off
     case command
     case backspace
+    case dictation
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ enum MacOverlayPreview: String, CaseIterable, Identifiable {
         case .off: return "Off"
         case .command: return "Command"
         case .backspace: return "Backspace"
+        case .dictation: return "Dictation"
         }
     }
 
@@ -27,6 +29,9 @@ enum MacOverlayPreview: String, CaseIterable, Identifiable {
         case .off: return nil
         case .command: return .picker(cell: .copy)
         case .backspace: return .delete(granularity: .word)
+        // Words of the stand-in's own, never anyone's, and the Send bar armed
+        // so the whole card is on screen while it is being tuned.
+        case .dictation: return .transcript("the quick brown fox", armed: .send)
         }
     }
 }

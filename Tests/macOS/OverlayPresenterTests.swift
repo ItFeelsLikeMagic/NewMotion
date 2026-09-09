@@ -170,13 +170,13 @@ final class OverlayPresenterTests: XCTestCase {
         let (presenter, _) = make()
         presenter.showHint("hold delete")
         presenter.showTranscript("the newest words")
-        XCTAssertEqual(presenter.content, .transcript("the newest words"))
+        XCTAssertEqual(presenter.content, .transcript("the newest words", armed: .none))
 
         presenter.beginPicker()
         XCTAssertEqual(presenter.content, .picker(cell: nil))
 
         presenter.endPicker()
-        XCTAssertEqual(presenter.content, .transcript("the newest words"))
+        XCTAssertEqual(presenter.content, .transcript("the newest words", armed: .none))
     }
 
     /// The talk button going down puts the card up before a word is said, so
@@ -184,14 +184,43 @@ final class OverlayPresenterTests: XCTestCase {
     func testAnEmptyPreviewLeavesTheCardUpListening() {
         let (presenter, _) = make()
         presenter.showTranscript("")
-        XCTAssertEqual(presenter.content, .transcript(""))
+        XCTAssertEqual(presenter.content, .transcript("", armed: .none))
 
         presenter.showTranscript("some words")
         presenter.showTranscript("")
-        XCTAssertEqual(presenter.content, .transcript(""))
+        XCTAssertEqual(presenter.content, .transcript("", armed: .none))
 
         presenter.clearTranscript()
         XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The bar under the words is the phone's, so it arrives and leaves with
+    /// the previews rather than with anything the Mac decides.
+    func testTheArmedBarFollowsThePreviewsAndGoesWithTheCard() {
+        let (presenter, _) = make()
+        presenter.showTranscript("some words")
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .none))
+
+        presenter.showTranscript("some words", armed: .send)
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .send))
+
+        // The finger slid off Send and onto Cancel without saying anything new.
+        presenter.showTranscript("some words", armed: .cancel)
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .cancel))
+
+        presenter.showTranscript("some words")
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .none))
+
+        presenter.showTranscript("", armed: .send)
+        XCTAssertEqual(presenter.content, .transcript("", armed: .send))
+
+        presenter.clearTranscript()
+        presenter.showTranscript("some words")
+        XCTAssertEqual(
+            presenter.content,
+            .transcript("some words", armed: .none),
+            "a cleared card starts the next hold with no bar"
+        )
     }
 
     /// The listening card is kept alive by the phone like any other, so it
@@ -226,14 +255,14 @@ final class OverlayPresenterTests: XCTestCase {
         presenter.showTranscript("some")
         presenter.showTranscript("some words")
         clock.fireOldest(.transcript)
-        XCTAssertEqual(presenter.content, .transcript("some words"))
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .none))
     }
 
     func testSecureInputBlanksThePreviewAndTakesDownOneAlreadyShowing() {
         let secure = SecureInputFlag()
         let (presenter, _) = make(secure: secure)
         presenter.showTranscript("before the password")
-        XCTAssertEqual(presenter.content, .transcript("before the password"))
+        XCTAssertEqual(presenter.content, .transcript("before the password", armed: .none))
 
         secure.isOn = true
         presenter.showTranscript("before the password and more")
@@ -395,7 +424,7 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .delete(granularity: .character))
 
         presenter.endDelete()
-        XCTAssertEqual(presenter.content, .transcript("some words"))
+        XCTAssertEqual(presenter.content, .transcript("some words", armed: .none))
     }
 
     func testDisconnectClearsAHeldDeleteKeyToo() {

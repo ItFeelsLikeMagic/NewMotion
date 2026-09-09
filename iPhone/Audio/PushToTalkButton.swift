@@ -2,6 +2,10 @@
 import AVFoundation
 import SwiftUI
 
+#if canImport(NewMotionShared)
+import NewMotionShared
+#endif
+
 /// A bar the finger can slide onto while the talk button is held.  Send lets
 /// the words go as usual and presses Return after them; cancel throws the
 /// utterance away.
@@ -38,6 +42,19 @@ enum PushToTalkZone: CaseIterable, Sendable {
     }
 }
 
+#if canImport(NewMotionShared)
+extension PushToTalkZone {
+    /// The same bar, named the way the wire names it, so the Mac's card can
+    /// show what letting go would do.
+    var armed: TranscriptPreviewArmed {
+        switch self {
+        case .send: return .send
+        case .cancel: return .cancel
+        }
+    }
+}
+#endif
+
 /// Owns push to talk end to end: the hold gesture, the microphone permission
 /// it needs, and the one status line the user reads.  There is no separate
 /// permission button; the first hold asks for the microphone and, if the
@@ -60,6 +77,10 @@ final class PushToTalkController: ObservableObject {
     /// Told which bar the finger lifted on, so the model can decide what
     /// follows the words this hold produced.
     private let lifted: @MainActor (PushToTalkZone?) -> Void
+    /// Told the moment the finger crosses onto or off a bar, so the Mac's card
+    /// lights the same bar this screen does instead of hearing about it on the
+    /// next keepalive.
+    private let armedChanged: @MainActor (PushToTalkZone?) -> Void
     private let logContext: @MainActor () -> [String: String]
     private var isHeld = false
     private var zoneFrames: [PushToTalkZone: CGRect] = [:]
@@ -69,12 +90,14 @@ final class PushToTalkController: ObservableObject {
         activity: @escaping @MainActor (String) -> Void,
         hold: @escaping @MainActor (Bool) -> Void = { _ in },
         lifted: @escaping @MainActor (PushToTalkZone?) -> Void = { _ in },
+        armedChanged: @escaping @MainActor (PushToTalkZone?) -> Void = { _ in },
         logContext: @escaping @MainActor () -> [String: String]
     ) {
         self.audio = audio
         self.activity = activity
         self.hold = hold
         self.lifted = lifted
+        self.armedChanged = armedChanged
         self.logContext = logContext
     }
 
@@ -94,6 +117,7 @@ final class PushToTalkController: ObservableObject {
         guard zone != armedZone else { return }
         armedZone = zone
         Haptics.play(zone == nil ? .gestureEnded : .gestureBegan)
+        armedChanged(zone)
     }
 
     func setZoneFrame(_ zone: PushToTalkZone, _ frame: CGRect) {

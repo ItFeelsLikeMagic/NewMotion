@@ -125,6 +125,11 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(TranscriptPreviewPhase.ended.rawValue, 2)
         XCTAssertEqual(TranscriptPreviewPhase.allCases.count, 2)
 
+        XCTAssertEqual(TranscriptPreviewArmed.none.rawValue, 0)
+        XCTAssertEqual(TranscriptPreviewArmed.send.rawValue, 1)
+        XCTAssertEqual(TranscriptPreviewArmed.cancel.rawValue, 2)
+        XCTAssertEqual(TranscriptPreviewArmed.allCases.count, 3)
+
         // 5 is the next free number after `end`, and a retired one is never
         // handed back out: an older Mac reads an unknown phase as a phase it
         // once knew and acts on it.
@@ -169,14 +174,16 @@ final class ProtocolTests: XCTestCase {
     func testTranscriptPreviewRoundTripsAndAcceptsAnEmptyLiveHold() throws {
         XCTAssertEqual(MessageType.transcriptPreview.deliveryClass, .unreliable)
 
-        let cases: [(TranscriptPreviewPhase, String)] = [
-            (.live, ""),
-            (.live, "héllo there"),
-            (.ended, "")
+        let cases: [(TranscriptPreviewPhase, String, TranscriptPreviewArmed)] = [
+            (.live, "", .none),
+            (.live, "héllo there", .none),
+            (.live, "héllo there", .send),
+            (.live, "", .cancel),
+            (.ended, "", .none)
         ]
-        for (phase, text) in cases {
+        for (phase, text, armed) in cases {
             let payload = MessagePayload.transcriptPreview(
-                try TranscriptPreviewPayload(phase: phase, text: text)
+                try TranscriptPreviewPayload(phase: phase, text: text, armed: armed)
             )
             try payload.validate()
             let envelope = ProtocolEnvelope(
@@ -192,6 +199,7 @@ final class ProtocolTests: XCTestCase {
             }
             XCTAssertEqual(value.phase, phase)
             XCTAssertEqual(value.text, text)
+            XCTAssertEqual(value.armed, armed)
         }
     }
 
@@ -203,6 +211,17 @@ final class ProtocolTests: XCTestCase {
         )
         XCTAssertThrowsError(try payload.validate()) { error in
             XCTAssertEqual(error as? ProtocolError, .invalidField("transcript_preview_ended_words"))
+        }
+    }
+
+    /// The card is going down with the finger, so there is no bar left to
+    /// light: one named here would flash a bar as the words vanished.
+    func testTranscriptPreviewRefusesAnArmedBarOnAnEndedHold() throws {
+        let payload = MessagePayload.transcriptPreview(
+            try TranscriptPreviewPayload(phase: .ended, text: "", armed: .send)
+        )
+        XCTAssertThrowsError(try payload.validate()) { error in
+            XCTAssertEqual(error as? ProtocolError, .invalidField("transcript_preview_ended_armed"))
         }
     }
 
@@ -223,7 +242,7 @@ final class ProtocolTests: XCTestCase {
 
         // The sender's bound is not the receiver's: a message that arrives
         // over the limit has to be refused on the way in as well.
-        let oversized = #"{"phase":1,"text":"\#(String(repeating: "a", count: 129))"}"#
+        let oversized = #"{"phase":1,"armed":0,"text":"\#(String(repeating: "a", count: 129))"}"#
         let value = try JSONDecoder().decode(TranscriptPreviewPayload.self, from: Data(oversized.utf8))
         XCTAssertThrowsError(try MessagePayload.transcriptPreview(value).validate()) { error in
             XCTAssertEqual(

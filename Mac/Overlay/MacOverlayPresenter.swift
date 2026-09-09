@@ -11,8 +11,9 @@ public enum MacOverlayContent: Equatable, Sendable {
     /// A delete key is held. `granularity` is the unit it will take off next.
     case delete(granularity: DeleteScrubGranularity)
     /// The words the phone is hearing, on their way to being typed. Empty
-    /// while the talk button is down and nothing has been said yet.
-    case transcript(String)
+    /// while the talk button is down and nothing has been said yet. `armed` is
+    /// the bar the finger is sitting on, which is what letting go would do.
+    case transcript(String, armed: TranscriptPreviewArmed)
     case hint(String)
 }
 
@@ -106,6 +107,7 @@ public final class MacOverlayPresenter {
     /// What the press is set to before its card is allowed on screen.
     private var pendingDeleteUnit: DeleteScrubGranularity?
     private var transcript: String?
+    private var transcriptArmed = TranscriptPreviewArmed.none
     private var hint: String?
     /// A card held up while someone tunes the look from the menu bar.
     private var previewContent: MacOverlayContent?
@@ -184,7 +186,9 @@ public final class MacOverlayPresenter {
     /// The words the phone has heard so far, none of them yet while the talk
     /// button is down and nobody has spoken. Empty puts the card up listening
     /// rather than taking it down; `clearTranscript` is the only way down.
-    public func showTranscript(_ text: String) {
+    /// `armed` says which bar the finger is over, so the card can show what
+    /// letting go would do.
+    public func showTranscript(_ text: String, armed: TranscriptPreviewArmed = .none) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Dictation is already held back at a password field; a preview of it
         // has to be too, or a spoken password paints itself on the screen.
@@ -195,6 +199,7 @@ public final class MacOverlayPresenter {
             return
         }
         transcript = trimmed
+        transcriptArmed = armed
         let generation = bump(&transcriptGeneration)
         scheduler.schedule(.transcript, after: Self.transcriptIdleTimeout) { [weak self] in
             self?.expireTranscript(generation: generation)
@@ -205,6 +210,7 @@ public final class MacOverlayPresenter {
     public func clearTranscript() {
         guard transcript != nil else { return }
         transcript = nil
+        transcriptArmed = .none
         _ = bump(&transcriptGeneration)
         refresh()
     }
@@ -253,6 +259,7 @@ public final class MacOverlayPresenter {
         deleteUnit = nil
         pendingDeleteUnit = nil
         transcript = nil
+        transcriptArmed = .none
         hint = nil
         deletePresses.removeAll()
         _ = bump(&pickerGeneration)
@@ -326,7 +333,9 @@ public final class MacOverlayPresenter {
         // Asked on every derivation, not only when a partial arrives, so a
         // redraw for any reason blanks the words. If nothing redraws at all,
         // the 2 second idle timeout is what takes them down.
-        if let transcript, !isSecureInputActive() { return .transcript(transcript) }
+        if let transcript, !isSecureInputActive() {
+            return .transcript(transcript, armed: transcriptArmed)
+        }
         if let hint { return .hint(hint) }
         return .nothing
     }
