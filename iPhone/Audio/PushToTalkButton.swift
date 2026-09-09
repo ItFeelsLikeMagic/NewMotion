@@ -189,12 +189,13 @@ final class PushToTalkController: ObservableObject {
 /// A local-only hold gesture.  The callback is never driven by a decoded
 /// remote command; the audio controller itself also enforces that boundary.
 struct PushToTalkButton: View {
-    /// The two bars take their height out of the microphone's, so the stack
-    /// still fills exactly the room a layout hands the hold bar.
+    /// The microphone keeps the full height of a key cluster and the bars sit
+    /// beyond it, so the stack stands taller than the clusters beside it and
+    /// the thumb's target is as big as it was before the bars arrived.
     private enum Metrics {
         static let barHeight: Double = 34
         static let spacing: Double = 6
-        static var micHeight: Double { RemoteKeyMetrics.clusterHeight - 2 * (barHeight + spacing) }
+        static let micHeight = RemoteKeyMetrics.clusterHeight
     }
 
     @ObservedObject var controller: PushToTalkController
@@ -221,7 +222,7 @@ struct PushToTalkButton: View {
     private var microphone: some View {
         Image(systemName: icon)
             .font(.system(size: 34, weight: .medium))
-            .frame(maxWidth: .infinity, minHeight: Metrics.micHeight)
+            .frame(maxWidth: .infinity, minHeight: Metrics.micHeight, maxHeight: .infinity)
             .contentShape(Rectangle())
             .background(tint)
             .foregroundStyle(.white)
