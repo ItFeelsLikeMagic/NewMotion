@@ -146,10 +146,10 @@ final class ProtocolTests: XCTestCase {
     /// change, because the phone lights a cell the Mac then fires.
     func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
         XCTAssertEqual(KeyPickerGrid.rows, [
-            [.cancel],
-            [.hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.closeWindow), .hotkey(.newTab), .hotkey(.deleteLineBackward)],
+            [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.redo), .hotkey(.deleteLineBackward)],
+            [.hotkey(.closeWindow), .hotkey(.newTab)],
             [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
-            [.hotkey(.undo), .hotkey(.redo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
+            [.hotkey(.undo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
         ])
 
         // The way out is the first cell, so it is where a press starts and a

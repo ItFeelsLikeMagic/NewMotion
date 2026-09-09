@@ -31,13 +31,13 @@ final class OverlayStyleTests: XCTestCase {
         return tiles + gaps
     }
 
-    /// The stagger is a quarter tile for the home row and three quarters for
-    /// the bottom one, with nothing above them.
-    func testTheStaggerIsAQuarterAndThreeQuartersOfATile() {
+    /// Every row starts a quarter tile further in than the one above it, and
+    /// the bottom row half a tile further, the way a keyboard's rows step.
+    func testEachRowStepsInAQuarterTileAndTheBottomOneHalfATileMore() {
         XCTAssertEqual(MacOverlayStyle.rowOffset(0), 0)
-        XCTAssertEqual(MacOverlayStyle.rowOffset(1), 0)
-        XCTAssertEqual(MacOverlayStyle.rowOffset(2), 25, accuracy: 0.001)
-        XCTAssertEqual(MacOverlayStyle.rowOffset(3), 75, accuracy: 0.001)
+        XCTAssertEqual(MacOverlayStyle.rowOffset(1), 25, accuracy: 0.001)
+        XCTAssertEqual(MacOverlayStyle.rowOffset(2), 50, accuracy: 0.001)
+        XCTAssertEqual(MacOverlayStyle.rowOffset(3), 100, accuracy: 0.001)
         XCTAssertEqual(MacOverlayStyle.rowOffset(4), 0)
     }
 }

@@ -24,10 +24,9 @@ enum MacOverlayStyle {
     static let tileCorner: CGFloat = 15
     static let tileSpacing: CGFloat = 10
     static let capFontSize: CGFloat = 30
-    /// How far each row of the grid starts in from the one above, in tiles:
-    /// row one by this much, row two by three times it. A keyboard's rows are
-    /// offset like this, and the offset is most of what tells a hand which row
-    /// it is looking at.
+    /// How far each row of the grid starts in from the one above, in tiles.
+    /// A keyboard's rows are offset like this, and the offset is most of what
+    /// tells a hand which row it is looking at.
     static let stagger: CGFloat = 0.25
     static let fadeDuration: TimeInterval = 0.12
 
@@ -63,9 +62,10 @@ enum MacOverlayStyle {
 
     /// How far row `index` starts in from the left edge of the grid.
     static func rowOffset(_ index: Int) -> CGFloat {
-        // Cancel sits alone above the keys, flush left like the escape key it
-        // stands for, so the stepping starts under it.
-        let offsets: [CGFloat] = [0, 0, stagger, 3 * stagger]
+        // The top row is the grid's own top row, so the stepping starts
+        // there: each row further in than the one above, and the bottom row
+        // further still, the way a keyboard's rows run.
+        let offsets: [CGFloat] = [0, stagger, 2 * stagger, 4 * stagger]
         guard index < offsets.count else { return 0 }
         return tileSide * offsets[index]
     }

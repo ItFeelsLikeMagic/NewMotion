@@ -49,9 +49,6 @@ public struct KeyPickerPress: Equatable, Sendable {
     /// rather than after retracing every notch spent on nothing.  A step up
     /// or down keeps its column and passes over any row too short to have it,
     /// so the gap beside a short row is crossed as if the row went through.
-    /// The Cancel row on top is the exception to keeping the column: a step
-    /// up out of the keys lands on Cancel from anywhere, because sliding up
-    /// is the way out and should not need finding a corner.
     public mutating func notch(_ step: SlideStep) -> [KeyPickerPayload] {
         guard hasBegun else { return [] }
         var nextRow = row
@@ -62,12 +59,11 @@ public struct KeyPickerPress: Equatable, Sendable {
         case .up, .down:
             let direction = step == .up ? -1 : 1
             nextRow += direction
-            while KeyPickerGrid.rows.indices.contains(nextRow), nextRow != 0,
+            while KeyPickerGrid.rows.indices.contains(nextRow),
                   !KeyPickerGrid.rows[nextRow].indices.contains(nextColumn) {
                 nextRow += direction
             }
         }
-        if nextRow == 0 { nextColumn = 0 }
         guard KeyPickerGrid.rows.indices.contains(nextRow),
               KeyPickerGrid.rows[nextRow].indices.contains(nextColumn),
               (nextRow, nextColumn) != (row, column) else { return [] }
