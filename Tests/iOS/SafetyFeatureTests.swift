@@ -545,46 +545,75 @@ final class SafetyFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testDraggingToACancelZoneThrowsTheUtteranceAway() {
+    func testReleasingOnTheCancelBarThrowsTheUtteranceAway() {
         let log = EventLog()
-        let (audio, ptt) = makePushToTalk(log: log)
+        let (audio, ptt, lifted) = makePushToTalk(log: log)
         ptt.pressed()
         voiceQueue.sync {}
-        ptt.dragged(to: CGPoint(x: 30, y: 760))
-        XCTAssertEqual(ptt.armedZone, .cancelLeading)
-        ptt.released()
+        ptt.dragged(to: CGPoint(x: 60, y: 760))
+        XCTAssertEqual(ptt.armedZone, .cancel)
+        XCTAssertEqual(ptt.released(), .cancel)
         voiceQueue.sync {}
         XCTAssertEqual(log.events, ["start", "mic_start", "cancel", "mic_stop"])
         XCTAssertEqual(audio.state, .idle)
+        XCTAssertEqual(lifted.zones, [.cancel])
         XCTAssertNil(ptt.armedZone)
         XCTAssertFalse(ptt.isHolding)
     }
 
-    /// Backing out of the corner puts the utterance back on its normal path.
+    /// Send takes the same path as letting go on the button; the Return that
+    /// follows the words is the model's business, not the microphone's.
     @MainActor
-    func testDraggingBackOutOfACancelZoneStillSends() {
+    func testReleasingOnTheSendBarStillEndsTheUtteranceNormally() {
         let log = EventLog()
-        let (_, ptt) = makePushToTalk(log: log)
+        let (audio, ptt, lifted) = makePushToTalk(log: log)
         ptt.pressed()
         voiceQueue.sync {}
-        // The corner of the frame is outside the circle drawn inside it.
-        ptt.dragged(to: CGPoint(x: 5, y: 705))
-        XCTAssertNil(ptt.armedZone)
-        ptt.dragged(to: CGPoint(x: 30, y: 760))
-        ptt.dragged(to: CGPoint(x: 200, y: 400))
-        XCTAssertNil(ptt.armedZone)
-        ptt.released()
+        ptt.dragged(to: CGPoint(x: 60, y: 620))
+        XCTAssertEqual(ptt.armedZone, .send)
+        XCTAssertEqual(ptt.released(), .send)
         voiceQueue.sync {}
         XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
+        XCTAssertEqual(audio.state, .idle)
+        XCTAssertEqual(lifted.zones, [.send])
+    }
+
+    /// Backing off a bar puts the utterance back on its plain path.
+    @MainActor
+    func testDraggingBackOffABarStillSends() {
+        let log = EventLog()
+        let (_, ptt, lifted) = makePushToTalk(log: log)
+        ptt.pressed()
+        voiceQueue.sync {}
+        // Beside the bar, not on it.
+        ptt.dragged(to: CGPoint(x: 300, y: 760))
+        XCTAssertNil(ptt.armedZone)
+        ptt.dragged(to: CGPoint(x: 60, y: 760))
+        XCTAssertEqual(ptt.armedZone, .cancel)
+        // Back onto the button between the two bars.
+        ptt.dragged(to: CGPoint(x: 60, y: 690))
+        XCTAssertNil(ptt.armedZone)
+        XCTAssertNil(ptt.released())
+        voiceQueue.sync {}
+        XCTAssertEqual(log.events, ["start", "mic_start", "end", "mic_stop"])
+        XCTAssertEqual(lifted.zones, [nil])
     }
 
     @MainActor
-    private func makePushToTalk(log: EventLog) -> (LocalPushToTalkAudioController, PushToTalkController) {
+    private func makePushToTalk(
+        log: EventLog
+    ) -> (LocalPushToTalkAudioController, PushToTalkController, LiftedZones) {
         let audio = makeController(microphone: TestMicrophone(log: log), log: log)
-        let ptt = PushToTalkController(audio: audio, activity: { _ in }, logContext: { [:] })
-        ptt.setZoneFrame(.cancelLeading, CGRect(x: 0, y: 700, width: 120, height: 120))
-        ptt.setZoneFrame(.cancelTrailing, CGRect(x: 280, y: 700, width: 120, height: 120))
-        return (audio, ptt)
+        let lifted = LiftedZones()
+        let ptt = PushToTalkController(
+            audio: audio,
+            activity: { _ in },
+            lifted: { lifted.zones.append($0) },
+            logContext: { [:] }
+        )
+        ptt.setZoneFrame(.send, CGRect(x: 20, y: 600, width: 120, height: 34))
+        ptt.setZoneFrame(.cancel, CGRect(x: 20, y: 740, width: 120, height: 34))
+        return (audio, ptt, lifted)
     }
 
     func testCancelBeatsTheReleaseGraceWindow() {
@@ -803,6 +832,12 @@ private final class TestMotionSink: MotionPointerOutputSink {
 
 private final class EventLog: @unchecked Sendable {
     var events: [String] = []
+}
+
+/// What the button told the model each hold ended on.
+@MainActor
+private final class LiftedZones {
+    var zones: [PushToTalkZone?] = []
 }
 
 private final class ResultBox: @unchecked Sendable {

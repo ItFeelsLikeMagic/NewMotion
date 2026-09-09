@@ -99,12 +99,24 @@ final class NewMotionFeatureModel: ObservableObject {
     private var isForeground = false
 
     private let audioController: LocalPushToTalkAudioController
+    /// Set by a hold that ended on the Send bar, spent by the words that hold
+    /// produced.  An utterance that produced none presses nothing.
+    private var returnAfterTranscript = false
     private(set) lazy var pushToTalk = PushToTalkController(
         audio: audioController,
         activity: { [weak self] in self?.latestAction = $0 },
         hold: { [weak self] isHeld in
-            if isHeld { self?.beginVoicePreview() } else { self?.endVoicePreview() }
+            guard let self else { return }
+            // A new hold owns whatever follows its own words; what the last
+            // one armed is stale by now.
+            if isHeld {
+                returnAfterTranscript = false
+                beginVoicePreview()
+            } else {
+                endVoicePreview()
+            }
         },
+        lifted: { [weak self] zone in self?.returnAfterTranscript = zone == .send },
         logContext: { [weak self] in
             [
                 "link": self?.linkState.label ?? "unknown",
@@ -296,7 +308,10 @@ final class NewMotionFeatureModel: ObservableObject {
         // path, and a throttle still holding the last partial would swallow
         // the next utterance's identical opening one as a repeat.
         onDeviceVoice.onUtteranceFinished = { [weak self] in
-            Task { @MainActor in self?.clearVoicePreview() }
+            Task { @MainActor in
+                self?.returnAfterTranscript = false
+                self?.clearVoicePreview()
+            }
         }
         onDeviceVoice.onReadiness = { [weak self] readiness in
             Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
@@ -1186,6 +1201,12 @@ final class NewMotionFeatureModel: ObservableObject {
             "parts": "\(pieces.count)"
         ])
         latestAction = "Typing"
+        // Same reliable ordered channel as the words, and the Mac types them
+        // before it reads the next message, so the Return lands behind them.
+        if returnAfterTranscript {
+            returnAfterTranscript = false
+            sendHotkey(.return)
+        }
     }
 
     /// Characters are forwarded as they are typed and never stored or logged.
@@ -1543,15 +1564,6 @@ struct NewMotionControlView: View {
 
     var body: some View {
         RemoteControlScreen(model: model)
-        // Into the bottom safe area, so the targets sit in the true corners of
-        // the screen.
-        .overlay {
-            PushToTalkDragZones(
-                controller: model.pushToTalk,
-                sides: model.layoutMode.pushToTalkZoneSides(mirrored: model.mirrorHorizontalLayout)
-            )
-                .ignoresSafeArea()
-        }
         // Above the keys rather than over the trackpad, so the words being
         // heard are readable without covering anything the thumb is using.
         .overlay(alignment: .top) { VoicePreviewBanner(text: model.voicePreview) }

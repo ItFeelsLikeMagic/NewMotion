@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 import XCTest
@@ -374,6 +375,69 @@ final class VoicePreviewTrailingSendTests: XCTestCase {
         clock.value += 1
         spinRunLoop(for: 0.2)
         XCTAssertEqual(link.dataMessageCount, afterClear, "the wait went with the utterance")
+    }
+}
+
+/// The Send bar puts a Return behind the words the hold produced, and behind
+/// nothing else.
+@MainActor
+final class PushToTalkSendChordTests: XCTestCase {
+    func testLiftingOnSendPressesReturnAfterTheWords() async throws {
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: PreviewClock(1_000))
+
+        try await holdAndLift(model, on: .send)
+        let beforeWords = link.dataMessageCount
+        model.onDeviceVoice.onText?("hello there")
+        try await settle()
+
+        XCTAssertEqual(model.latestAction, "Sent return")
+        XCTAssertGreaterThanOrEqual(link.dataMessageCount, beforeWords + 2, "the words and the Return")
+    }
+
+    func testLiftingOnTheButtonSendsTheWordsAlone() async throws {
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: PreviewClock(1_000))
+
+        try await holdAndLift(model, on: nil)
+        model.onDeviceVoice.onText?("hello there")
+        try await settle()
+
+        XCTAssertEqual(model.latestAction, "Typing")
+    }
+
+    /// A silent utterance has nothing for a Return to follow, and must not
+    /// leave one armed for whatever is said next.
+    func testASilentUtteranceOnSendPressesNothingAndArmsNothing() async throws {
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: PreviewClock(1_000))
+
+        try await holdAndLift(model, on: .send)
+        model.onDeviceVoice.onUtteranceFinished?()
+        try await settle()
+        XCTAssertNotEqual(model.latestAction, "Sent return")
+
+        model.onDeviceVoice.onText?("hello there")
+        try await settle()
+        XCTAssertEqual(model.latestAction, "Typing")
+    }
+
+    /// The hold as the model sees it: the finger lands on the button, slides
+    /// onto a bar if there is one, and lifts.
+    private func holdAndLift(_ model: NewMotionFeatureModel, on zone: PushToTalkZone?) async throws {
+        let bars: [PushToTalkZone: CGRect] = [
+            .send: CGRect(x: 0, y: 0, width: 100, height: 34),
+            .cancel: CGRect(x: 0, y: 100, width: 100, height: 34)
+        ]
+        for (bar, frame) in bars { model.pushToTalk.setZoneFrame(bar, frame) }
+        model.pushToTalk.pressed()
+        if let zone, let frame = bars[zone] {
+            model.pushToTalk.dragged(to: CGPoint(x: frame.midX, y: frame.midY))
+        }
+        model.pushToTalk.released()
+        // The press answers through the voice queue and a main-actor hop, so
+        // let it land before the words do rather than on top of them.
+        try await settle()
     }
 }
 

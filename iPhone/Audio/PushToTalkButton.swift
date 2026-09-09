@@ -2,6 +2,42 @@
 import AVFoundation
 import SwiftUI
 
+/// A bar the finger can slide onto while the talk button is held.  Send lets
+/// the words go as usual and presses Return after them; cancel throws the
+/// utterance away.
+enum PushToTalkZone: CaseIterable, Sendable {
+    case send
+    case cancel
+
+    var title: String {
+        switch self {
+        case .send: return "Send"
+        case .cancel: return "Cancel"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .send: return .green
+        case .cancel: return .red
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .send: return "paperplane.fill"
+        case .cancel: return "trash.fill"
+        }
+    }
+
+    var spokenRelease: String {
+        switch self {
+        case .send: return "Release to send and press Return"
+        case .cancel: return "Release to cancel"
+        }
+    }
+}
+
 /// Owns push to talk end to end: the hold gesture, the microphone permission
 /// it needs, and the one status line the user reads.  There is no separate
 /// permission button; the first hold asks for the microphone and, if the
@@ -9,11 +45,10 @@ import SwiftUI
 @MainActor
 final class PushToTalkController: ObservableObject {
     @Published private(set) var status = ""
-    /// True from the moment the finger lands until it lifts; the cancel
-    /// targets are on screen for exactly this long.
+    /// True from the moment the finger lands until it lifts.
     @Published private(set) var isHolding = false
-    /// The target the finger is over right now, if any.  Releasing here
-    /// throws the utterance away.
+    /// The bar the finger is over right now, if any.  Releasing here decides
+    /// what becomes of the utterance.
     @Published private(set) var armedZone: PushToTalkZone?
 
     private let audio: LocalPushToTalkAudioController
@@ -22,6 +57,9 @@ final class PushToTalkController: ObservableObject {
     /// Mac's card can say it is listening without waiting on a permission
     /// prompt or an audio session.
     private let hold: @MainActor (Bool) -> Void
+    /// Told which bar the finger lifted on, so the model can decide what
+    /// follows the words this hold produced.
+    private let lifted: @MainActor (PushToTalkZone?) -> Void
     private let logContext: @MainActor () -> [String: String]
     private var isHeld = false
     private var zoneFrames: [PushToTalkZone: CGRect] = [:]
@@ -30,11 +68,13 @@ final class PushToTalkController: ObservableObject {
         audio: LocalPushToTalkAudioController,
         activity: @escaping @MainActor (String) -> Void,
         hold: @escaping @MainActor (Bool) -> Void = { _ in },
+        lifted: @escaping @MainActor (PushToTalkZone?) -> Void = { _ in },
         logContext: @escaping @MainActor () -> [String: String]
     ) {
         self.audio = audio
         self.activity = activity
         self.hold = hold
+        self.lifted = lifted
         self.logContext = logContext
     }
 
@@ -60,17 +100,13 @@ final class PushToTalkController: ObservableObject {
         zoneFrames[zone] = frame
     }
 
-    /// The targets are drawn as circles, so the finger has to be inside the
-    /// disc the frame encloses rather than anywhere in its square.
     private func covers(_ zone: PushToTalkZone, _ point: CGPoint) -> Bool {
         guard let frame = zoneFrames[zone], frame.width > 0, frame.height > 0 else { return false }
-        let x = (point.x - frame.midX) / (frame.width / 2)
-        let y = (point.y - frame.midY) / (frame.height / 2)
-        return x * x + y * y <= 1
+        return frame.contains(point)
     }
 
-    /// The target the finger lifted over, if any, so the caller can pick the
-    /// buzz that goes with it.
+    /// The bar the finger lifted over, if any, so the caller can pick the buzz
+    /// that goes with it.
     @discardableResult
     func released() -> PushToTalkZone? {
         isHeld = false
@@ -78,12 +114,17 @@ final class PushToTalkController: ObservableObject {
         let zone = armedZone
         armedZone = nil
         hold(false)
+        lifted(zone)
         switch zone {
-        case .some:
+        case .cancel:
             audio.pushToTalkCancelled()
             status = ""
             activity("Push to talk cancelled")
             IPhoneDebugLog.emit("ptt_cancel", logContext())
+        case .send:
+            audio.pushToTalkReleased()
+            activity("Push to talk released")
+            IPhoneDebugLog.emit("ptt_send", ["zone": "send"])
         case .none:
             audio.pushToTalkReleased()
             activity("Push to talk released")
@@ -148,29 +189,25 @@ final class PushToTalkController: ObservableObject {
 /// A local-only hold gesture.  The callback is never driven by a decoded
 /// remote command; the audio controller itself also enforces that boundary.
 struct PushToTalkButton: View {
+    /// The two bars take their height out of the microphone's, so the stack
+    /// still fills exactly the room a layout hands the hold bar.
+    private enum Metrics {
+        static let barHeight: Double = 34
+        static let spacing: Double = 6
+        static var micHeight: Double { RemoteKeyMetrics.clusterHeight - 2 * (barHeight + spacing) }
+    }
+
     @ObservedObject var controller: PushToTalkController
     @State private var isPressed = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 34, weight: .medium))
-                // Fills the gap between the two key clusters, at their full
-                // height, so it is the easiest thing on screen to hit.
-                .frame(maxWidth: .infinity, minHeight: RemoteKeyMetrics.clusterHeight)
-                .contentShape(Rectangle())
-                .background(tint)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay { PushToTalkTouchSurface(press: press, drag: controller.dragged(to:), release: release) }
-                // A cancelled touch (incoming call, app switcher) reaches the
-                // touch view, but a suspended app never delivers one at all.
-                .onChange(of: scenePhase) { _, phase in
-                    if phase != .active { release() }
-                }
-                .accessibilityLabel(spokenState)
-                .onAppear { Haptics.prepare() }
+            VStack(spacing: Metrics.spacing) {
+                bar(.send)
+                microphone
+                bar(.cancel)
+            }
 
             if !controller.status.isEmpty {
                 Text(controller.status)
@@ -181,22 +218,57 @@ struct PushToTalkButton: View {
         }
     }
 
-    /// The same icon as the target the finger is over, so the button under the
-    /// thumb and the circle it is sitting on say one thing.
+    private var microphone: some View {
+        Image(systemName: icon)
+            .font(.system(size: 34, weight: .medium))
+            .frame(maxWidth: .infinity, minHeight: Metrics.micHeight)
+            .contentShape(Rectangle())
+            .background(tint)
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay { PushToTalkTouchSurface(press: press, drag: controller.dragged(to:), release: release) }
+            // A cancelled touch (incoming call, app switcher) reaches the
+            // touch view, but a suspended app never delivers one at all.
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { release() }
+            }
+            .accessibilityLabel(spokenState)
+            .onAppear { Haptics.prepare() }
+    }
+
+    /// Slid onto, never tapped: the hold owns the touch from press to release,
+    /// so a bar only reports where it is and the controller hit-tests it.
+    private func bar(_ zone: PushToTalkZone) -> some View {
+        let armed = controller.armedZone == zone
+        return Text(zone.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(armed ? Color.white : Color.secondary)
+            .frame(maxWidth: .infinity, minHeight: Metrics.barHeight)
+            .background(armed ? zone.color : Color.secondary.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .allowsHitTesting(false)
+            .animation(.easeOut(duration: 0.12), value: armed)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                controller.setZoneFrame(zone, frame)
+            }
+    }
+
+    /// The same icon as the bar the finger is over, so the button under the
+    /// thumb and the bar it is sitting on say one thing.
     private var icon: String {
-        guard controller.armedZone == nil else { return "trash.fill" }
+        if let zone = controller.armedZone { return zone.icon }
         return isPressed ? "waveform" : "mic.fill"
     }
 
-    /// Green means the words are being recorded.  Red is only ever cancel, and
-    /// it is the red of the circle the finger has landed on.
+    /// Green means the words are being recorded.  While a bar is armed the
+    /// button takes that bar's colour instead.
     private var tint: Color {
-        guard controller.armedZone == nil else { return .red }
+        if let zone = controller.armedZone { return zone.color }
         return isPressed ? .green : .accentColor
     }
 
     private var spokenState: String {
-        guard controller.armedZone == nil else { return "Release to cancel" }
+        if let zone = controller.armedZone { return zone.spokenRelease }
         return isPressed ? "Recording" : "Push to talk"
     }
 
