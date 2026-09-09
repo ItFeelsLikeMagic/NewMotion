@@ -105,10 +105,10 @@ final class KeyPickerPressTests: XCTestCase {
         XCTAssertEqual(press.cell, .cancel)
     }
 
-    /// The home row is shorter than the top row of keys, so the column the
-    /// top row allows is off the end of it.  The highlight stays where it is
-    /// rather than wrapping.
-    func testDroppingIntoAShorterRowFromItsMissingColumnIsIgnored() {
+    /// The home row is shorter than the rows either side of it, so a column
+    /// it lacks passes straight over it: down from the top row's last key
+    /// lands on the bottom row, and back up returns the same way.
+    func testAShortRowIsCrossedByAColumnItDoesNotHave() {
         var press = KeyPickerPress()
         _ = press.begin()
         XCTAssertLessThan(KeyPickerGrid.rows[2].count, KeyPickerGrid.rows[1].count)
@@ -117,8 +117,28 @@ final class KeyPickerPressTests: XCTestCase {
         _ = press.notch(.down)
         for _ in 0..<5 { _ = press.notch(.right) }
         XCTAssertEqual(press.cell, KeyPickerGrid.rows[1][4])
-        XCTAssertEqual(press.notch(.down), [])
-        XCTAssertEqual(press.cell, KeyPickerGrid.rows[1][4])
+        XCTAssertEqual(
+            press.notch(.down),
+            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[3][4].hotkey)]
+        )
+        XCTAssertEqual(
+            press.notch(.up),
+            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[1][4].hotkey)]
+        )
+    }
+
+    /// A column no row above has goes all the way up to Cancel.
+    func testAColumnOnlyTheBottomRowHasGoesStraightUpToCancel() {
+        var press = KeyPickerPress()
+        _ = press.begin()
+        _ = press.notch(.down)
+        _ = press.notch(.down)
+        _ = press.notch(.down)
+        for _ in 0..<5 { _ = press.notch(.right) }
+        XCTAssertEqual(press.cell, KeyPickerGrid.rows[3][5])
+
+        XCTAssertEqual(press.notch(.up), [KeyPickerPayload(phase: .highlight, cell: nil)])
+        XCTAssertEqual(press.cell, .cancel)
     }
 
     /// A press left on Cancel still closes the card it opened, and names no

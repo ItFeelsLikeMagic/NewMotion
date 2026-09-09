@@ -109,7 +109,7 @@ struct MacOverlayView: View {
             }
             if style.captionOnDeleteCard {
                 Text("Slide left to erase, right to restore")
-                    .font(.caption)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)

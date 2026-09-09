@@ -25,7 +25,7 @@ final class OverlayStyleTests: XCTestCase {
         style.tileCorner = 6
         style.tileSpacing = 22
         style.capFontSize = 44
-        style.showsNames = false
+        style.showsNames = true
         style.nameFontSize = 14
         style.boldCaps = true
         style.textShadow = true
@@ -59,14 +59,14 @@ final class OverlayStyleTests: XCTestCase {
         XCTAssertGreaterThan(bigger.panelSize.height, MacOverlayStyle.standard.panelSize.height)
     }
 
-    /// The stagger reproduces the offsets the grid was drawn with before it
-    /// was tunable: no offset, a quarter tile, three quarters.
-    func testTheStandardStaggerIsTheOffsetTheGridHad() {
+    /// The stagger is a quarter tile for the home row and three quarters for
+    /// the bottom one, with nothing above them.
+    func testTheStandardStaggerIsAQuarterAndThreeQuartersOfATile() {
         let style = MacOverlayStyle.standard
         XCTAssertEqual(style.rowOffset(0), 0)
         XCTAssertEqual(style.rowOffset(1), 0)
-        XCTAssertEqual(style.rowOffset(2), 21, accuracy: 0.001)
-        XCTAssertEqual(style.rowOffset(3), 63, accuracy: 0.001)
+        XCTAssertEqual(style.rowOffset(2), 25, accuracy: 0.001)
+        XCTAssertEqual(style.rowOffset(3), 75, accuracy: 0.001)
         XCTAssertEqual(style.rowOffset(4), 0)
     }
 }

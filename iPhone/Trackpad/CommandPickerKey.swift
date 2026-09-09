@@ -18,7 +18,11 @@ import NewMotionShared
 struct CommandPickerKey: View {
     let picker: (KeyPickerPhase, HotkeyAction?) -> Void
 
-    @State private var tracker = SlideStepTracker()
+    /// Wider notches than the other held keys: a cell of the grid is a
+    /// choice, not a character, so a longer slide per cell buys precision at
+    /// the cost of travel.
+    private static let slideSensitivity = 0.6
+    @State private var tracker = SlideStepTracker(sensitivity: Self.slideSensitivity)
     @State private var press = KeyPickerPress()
     @State private var isHeld = false
     @State private var keepalive = KeyPickerKeepalive()
@@ -63,7 +67,7 @@ struct CommandPickerKey: View {
         case .began:
             guard !isHeld else { return }
             isHeld = true
-            tracker = SlideStepTracker()
+            tracker = SlideStepTracker(sensitivity: Self.slideSensitivity)
             press = KeyPickerPress()
             if let message = press.begin() { picker(message.phase, message.cell) }
             // Cancel is lit from the word go, so the label says so from the
@@ -79,9 +83,9 @@ struct CommandPickerKey: View {
                 for message in messages { picker(message.phase, message.cell) }
                 litName = KeyPickerGrid.displayName(for: press.cell) ?? ""
                 keepalive.update(press.keepalive)
-                // The tick is how a thumb counts cells off a screen it is not
-                // looking at.
-                Haptics.play(.step)
+                // The thump is how a thumb counts cells off a screen it is not
+                // looking at, so it has to be felt over the slide itself.
+                Haptics.play(.pickerStep)
             }
         case .ended:
             finish(committing: true)
@@ -101,7 +105,7 @@ struct CommandPickerKey: View {
             Haptics.play(.release)
             IPhoneDebugLog.emit("key_picker", ["end": committing ? "commit" : "cancel"])
         }
-        tracker = SlideStepTracker()
+        tracker = SlideStepTracker(sensitivity: Self.slideSensitivity)
         litName = ""
     }
 }

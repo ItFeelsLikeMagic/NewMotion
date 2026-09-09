@@ -37,19 +37,19 @@ struct MacOverlayStyle: Codable, Equatable, Sendable {
     /// How much of the glass is drawn at all. Apple's glass comes in two
     /// strengths and no dial, so this fades the whole pane, edge and blur
     /// together, towards nothing; the letters stay solid.
-    var glassOpacity: Double = 1
+    var glassOpacity: Double = 0.5
     /// A scrim between the glass and the letters. Clear glass shows whatever
     /// is behind it straight through, and some wallpapers swallow the type.
-    var backing: Double = 0
+    var backing: Double = 0.15
     /// Keycaps, not labels: the picker is read out of the corner of an eye
     /// while a thumb is already moving, so a tile is big enough to hit with a
     /// glance and square enough to read as a key.
-    var tileSide: Double = 84
-    var tileCorner: Double = 18
+    var tileSide: Double = 100
+    var tileCorner: Double = 15
     var tileSpacing: Double = 10
     var capFontSize: Double = 30
     /// The small line under the cap saying what the key does.
-    var showsNames = true
+    var showsNames = false
     var nameFontSize: Double = 11
     var boldCaps = false
     /// A soft shadow under the type, which is what makes a clear tile legible
@@ -64,7 +64,7 @@ struct MacOverlayStyle: Codable, Equatable, Sendable {
     /// The line under the delete card saying what sliding across does.
     var captionOnDeleteCard = true
 
-    /// Today's look, and what a decode that fails falls back to.
+    /// The tuned look, and what a decode that fails falls back to.
     static let standard = MacOverlayStyle()
 
     static let glassOpacityRange: ClosedRange<Double> = 0...1

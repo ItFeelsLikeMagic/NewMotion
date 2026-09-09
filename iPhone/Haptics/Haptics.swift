@@ -22,6 +22,9 @@ public enum Haptics {
         case gestureEnded
         /// One notch of a continuous control, like walking the app switcher.
         case step
+        /// One cell of the chord grid.  Heavier than a step, because each
+        /// one is a different shortcut and the thumb is counting them.
+        case pickerStep
         /// A control changed what it does.  The heaviest thing the remote
         /// plays, because it is the one buzz that has to be felt through a
         /// slide that is already ticking.
@@ -35,6 +38,7 @@ public enum Haptics {
         gestureBegan.prepare()
         gestureEnded.prepare()
         step.prepare()
+        pickerStep.prepare()
     }
 
     public static func play(_ feedback: Feedback) {
@@ -50,6 +54,8 @@ public enum Haptics {
         case .step:
             step.selectionChanged()
             step.prepare()
+        case .pickerStep:
+            impact(pickerStep, intensity: 1.0)
         case .modeChange:
             impact(modeChange, intensity: 1.0)
         }
@@ -68,6 +74,7 @@ public enum Haptics {
     private static let gestureBegan = UIImpactFeedbackGenerator(style: .rigid)
     private static let gestureEnded = UIImpactFeedbackGenerator(style: .soft)
     private static let step = UISelectionFeedbackGenerator()
+    private static let pickerStep = UIImpactFeedbackGenerator(style: .heavy)
     private static let modeChange = UIImpactFeedbackGenerator(style: .heavy)
 
     private static func impact(_ generator: UIImpactFeedbackGenerator, intensity: CGFloat) {

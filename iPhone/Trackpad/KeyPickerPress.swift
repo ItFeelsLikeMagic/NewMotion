@@ -44,12 +44,14 @@ public struct KeyPickerPress: Equatable, Sendable {
     /// What this notch asks the Mac to do.  Nothing at all when the notch
     /// changes nothing, so a slide held against an edge is silent.
     ///
-    /// Overshoot is absorbed rather than banked: a step off the edge, or into
-    /// a row that is a cell shorter, is dropped instead of counted, so a step
-    /// back moves the highlight at once rather than after retracing every
-    /// notch spent on nothing.  The one exception is the Cancel row on top:
-    /// a step up out of the keys lands on Cancel from any column, because
-    /// sliding up is the way out and should not need finding a corner.
+    /// Overshoot is absorbed rather than banked: a step off the edge is
+    /// dropped instead of counted, so a step back moves the highlight at once
+    /// rather than after retracing every notch spent on nothing.  A step up
+    /// or down keeps its column and passes over any row too short to have it,
+    /// so the gap beside a short row is crossed as if the row went through.
+    /// The Cancel row on top is the exception to keeping the column: a step
+    /// up out of the keys lands on Cancel from anywhere, because sliding up
+    /// is the way out and should not need finding a corner.
     public mutating func notch(_ step: SlideStep) -> [KeyPickerPayload] {
         guard hasBegun else { return [] }
         var nextRow = row
@@ -57,8 +59,13 @@ public struct KeyPickerPress: Equatable, Sendable {
         switch step {
         case .left: nextColumn -= 1
         case .right: nextColumn += 1
-        case .up: nextRow -= 1
-        case .down: nextRow += 1
+        case .up, .down:
+            let direction = step == .up ? -1 : 1
+            nextRow += direction
+            while KeyPickerGrid.rows.indices.contains(nextRow), nextRow != 0,
+                  !KeyPickerGrid.rows[nextRow].indices.contains(nextColumn) {
+                nextRow += direction
+            }
         }
         if nextRow == 0 { nextColumn = 0 }
         guard KeyPickerGrid.rows.indices.contains(nextRow),
