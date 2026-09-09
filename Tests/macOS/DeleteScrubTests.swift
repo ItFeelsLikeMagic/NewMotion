@@ -37,13 +37,15 @@ final class DeleteScrubTests: XCTestCase {
         private var answer: FocusedCaretText
         private var count = 0
 
-        init(_ head: String, tail: String = "") { answer = .split(head: head, tail: tail) }
+        init(_ head: String, reachesStart: Bool = true) {
+            answer = .split(head: head, reachesStart: reachesStart)
+        }
         init(unavailable reason: String) { answer = .unavailable(reason) }
 
         var reads: Int { lock.withLock { count } }
 
-        func set(_ head: String, tail: String = "") {
-            lock.withLock { answer = .split(head: head, tail: tail) }
+        func set(_ head: String, reachesStart: Bool = true) {
+            lock.withLock { answer = .split(head: head, reachesStart: reachesStart) }
         }
 
         func setUnavailable(_ reason: String) { lock.withLock { answer = .unavailable(reason) } }
@@ -437,13 +439,66 @@ final class DeleteScrubTests: XCTestCase {
         XCTAssertTrue(submitter.commands.isEmpty)
     }
 
-    /// Text after the caret is no obstacle: only the head is counted from.
-    func testTextAfterTheCaretDoesNotStopARestore() {
-        let (coordinator, submitter) = make(StubField("one two three", tail: "\nand a second line"))
+    /// A long field is read as a window on to its end.  While a word boundary
+    /// sits inside that window the notch is counted exactly as any other.
+    func testAWindowOnALongFieldErasesLikeAnyOtherReading() {
+        let (coordinator, submitter) = make(StubField("one two three", reachesStart: false))
 
         coordinator.handle(scrub(.delete, .word))
-        coordinator.handle(scrub(.restore, .word))
-        XCTAssertEqual(submitter.typed, ["three"])
+        XCTAssertEqual(submitter.commands, deletes(5))
+    }
+
+    /// The far edge of a window is not the start of the text.  A word that runs
+    /// up to it may carry on past it, so the notch is held rather than guessed
+    /// at, and the lift sends the key the phone would have tapped.
+    func testAWordRunningOffTheEdgeOfTheWindowIsHeldForTheLift() {
+        let (coordinator, submitter) = make(StubField("three", reachesStart: false))
+
+        coordinator.handle(scrub(.delete, .word))
+        XCTAssertTrue(submitter.commands.isEmpty)
+
+        coordinator.handle(scrub(.end))
+        XCTAssertEqual(submitter.commands, held(1, .deleteWordBackward))
+    }
+
+    /// The same edge, reached by erasing rather than arrived at.  What the
+    /// window did hold still went out, and only the notch past it is held.
+    func testASlideThatEmptiesTheWindowKeepsWhatItAlreadyErased() {
+        let (coordinator, submitter) = make(StubField("one two", reachesStart: false))
+
+        coordinator.handle(scrub(.delete, .word))
+        coordinator.handle(scrub(.delete, .word))
+        XCTAssertEqual(submitter.commands, deletes(3))
+
+        coordinator.handle(scrub(.end))
+        XCTAssertEqual(submitter.commands, deletes(3) + held(1, .deleteWordBackward))
+    }
+
+    /// A reading that did reach the start keeps the old bargain: sliding past
+    /// it presses nothing at all rather than falling back to the app's key.
+    func testAWindowThatReachesTheStartStillMakesAnOvershootFree() {
+        let (coordinator, submitter) = make(StubField("three"))
+
+        coordinator.handle(scrub(.delete, .word))
+        coordinator.handle(scrub(.delete, .word))
+        coordinator.handle(scrub(.end))
+        XCTAssertEqual(submitter.commands, deletes(5))
+    }
+
+    /// The clock moving on is what used to let a second read overwrite the
+    /// first.  A field that has not yet taken in the keys already sent to it
+    /// answers with characters this has erased, and counting them again erases
+    /// them twice.
+    func testASuccessfulReadIsNeverTakenAgainMidPress() {
+        let clock = Clock()
+        let field = StubField("one two three")
+        let (coordinator, submitter) = make(field, clock: clock)
+
+        coordinator.handle(scrub(.begin))
+        for _ in 0..<3 { coordinator.handle(scrub(.delete, .word)); clock.advance() }
+
+        XCTAssertEqual(field.reads, 1)
+        XCTAssertEqual(submitter.deletes, "one two three".count)
     }
 
     /// A press cannot restore into the field the next press is pointed at.
