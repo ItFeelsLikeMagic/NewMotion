@@ -119,6 +119,11 @@ public final class OnDeviceVoice: @unchecked Sendable {
     public var onText: (@Sendable (String) -> Void)?
     /// Rough text while the finger is still down, for the on-screen preview.
     public var onPartialText: (@Sendable (String) -> Void)?
+    /// The utterance is over, whether or not it produced any text.  Silence
+    /// and a failed recogniser both end one without an `onText`, and the
+    /// preview they left on both screens still has to be taken back.  Always
+    /// after `onText`, so nothing blanks the words before they are typed.
+    public var onUtteranceFinished: (@Sendable () -> Void)?
     /// Readiness changed; the Settings row follows it.
     public var onReadiness: (@Sendable (OnDeviceVoiceReadiness) -> Void)?
 
@@ -147,6 +152,7 @@ public final class OnDeviceVoice: @unchecked Sendable {
         if #available(iOS 26.0, *), let engine = engine as? AppleSpeechEngine {
             engine.onText = { [weak self] in self?.onText?($0) }
             engine.onPartialText = { [weak self] in self?.onPartialText?($0) }
+            engine.onUtteranceFinished = { [weak self] in self?.onUtteranceFinished?() }
             engine.onReadiness = { [weak self] in self?.onReadiness?($0) }
             engine.prepare()
             return
@@ -212,6 +218,7 @@ final class AppleSpeechEngine: @unchecked Sendable {
 
     var onText: (@Sendable (String) -> Void)?
     var onPartialText: (@Sendable (String) -> Void)?
+    var onUtteranceFinished: (@Sendable () -> Void)?
     var onReadiness: (@Sendable (OnDeviceVoiceReadiness) -> Void)?
 
     private let locale: Locale
@@ -316,6 +323,9 @@ final class AppleSpeechEngine: @unchecked Sendable {
         lock.unlock()
 
         resultsTask = Task { [weak self] in
+            // On every way out, including the ones that deliver no text: a
+            // silent utterance still left a preview on both screens.
+            defer { self?.onUtteranceFinished?() }
             var finalized = AttributedString()
             do {
                 for try await result in transcriber.results {

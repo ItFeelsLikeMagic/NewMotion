@@ -99,9 +99,28 @@ final class NewMotionFeatureModel: ObservableObject {
     private var isForeground = false
 
     private let audioController: LocalPushToTalkAudioController
+    /// Set by a hold that ended on the Send bar, spent by the words that hold
+    /// produced.  An utterance that produced none presses nothing.
+    private var returnAfterTranscript = false
+    /// The bar the finger is over, as every preview on the wire reports it.
+    /// A state, not content: the Mac lights the same bar this screen does.
+    private(set) var previewArmed = TranscriptPreviewArmed.none
     private(set) lazy var pushToTalk = PushToTalkController(
         audio: audioController,
         activity: { [weak self] in self?.latestAction = $0 },
+        hold: { [weak self] isHeld in
+            guard let self else { return }
+            // A new hold owns whatever follows its own words; what the last
+            // one armed is stale by now.
+            if isHeld {
+                returnAfterTranscript = false
+                beginVoicePreview()
+            } else {
+                endVoicePreview()
+            }
+        },
+        lifted: { [weak self] zone in self?.returnAfterTranscript = zone == .send },
+        armedChanged: { [weak self] zone in self?.armVoicePreview(zone) },
         logContext: { [weak self] in
             [
                 "link": self?.linkState.label ?? "unknown",
@@ -148,8 +167,27 @@ final class NewMotionFeatureModel: ObservableObject {
     private var reconnectFailures = 0
     /// Speech becomes text here and travels as text; nothing the microphone
     /// hears ever leaves the phone.
-    private let onDeviceVoice = OnDeviceVoice()
+    let onDeviceVoice = OnDeviceVoice()
     private let voiceBoost = VoiceBoostBox()
+    /// Holds back the partials the Mac's card does not need. It keeps the last
+    /// preview so it can tell a revision from a repeat; nothing is stored past
+    /// the utterance.
+    private var previewThrottle = TranscriptPreviewThrottle()
+    /// Previews the link would not take this utterance.  A full notification
+    /// queue is what starves the Mac's card into clearing itself mid-hold, and
+    /// the count is the only way to see that from the outside.
+    private var previewRefusals = 0
+    /// Runs only while there is a card on the Mac to keep alive.
+    private var previewKeepalive: Timer?
+    /// True from the moment the talk button goes down until it lifts.  The
+    /// Mac's card is up for exactly that long, so a phrase finishing mid-hold
+    /// blanks it back to listening instead of taking it down.
+    private var isTalkHeld = false
+    /// The newest words the throttle held back, and the one-shot wait that
+    /// puts them on the wire the moment its window opens.  Not published: the
+    /// banner already has them.
+    private var pendingPreview: String?
+    private var previewTrailing: Timer?
     private var audioSessionObservers: [NSObjectProtocol] = []
 
     /// The coordinator is a parameter so a caller can hand in one over its own
@@ -261,15 +299,27 @@ final class NewMotionFeatureModel: ObservableObject {
         audioController.onUtteranceStart = { onDevice.begin(boostWords: boost.words) }
         audioController.onChunk = { onDevice.append($0) }
         audioController.onUtteranceEnd = { onDevice.end() }
+        // A cancel also arrives from outside the button: a call, a route
+        // change, the app going away.  The card goes with the microphone.
         audioController.onUtteranceCancel = { [weak self] in
             onDevice.cancel()
-            Task { @MainActor in self?.voicePreview = "" }
+            Task { @MainActor in self?.endVoicePreview() }
         }
         onDeviceVoice.onText = { [weak self] text in
             Task { @MainActor in self?.typeTranscribedText(text) }
         }
         onDeviceVoice.onPartialText = { [weak self] text in
-            Task { @MainActor in self?.voicePreview = text }
+            Task { @MainActor in self?.showVoicePreview(text) }
+        }
+        // An utterance can end having produced no text at all: silence, or a
+        // recogniser that failed.  Nothing else takes the preview back on that
+        // path, and a throttle still holding the last partial would swallow
+        // the next utterance's identical opening one as a repeat.
+        onDeviceVoice.onUtteranceFinished = { [weak self] in
+            Task { @MainActor in
+                self?.returnAfterTranscript = false
+                self?.clearVoicePreview()
+            }
         }
         onDeviceVoice.onReadiness = { [weak self] readiness in
             Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
@@ -1015,11 +1065,144 @@ final class NewMotionFeatureModel: ObservableObject {
         cursorMixer.handle(events)
     }
 
+    /// The rough words so far, on the phone's own banner and on the Mac's
+    /// card.  They are never stored and never logged: each one replaces the
+    /// last, and the debug line counts characters rather than carrying any.
+    private func showVoicePreview(_ text: String) {
+        voicePreview = text
+        startPreviewKeepalive()
+        sendVoicePreview(text)
+    }
+
+    /// The throttle's one send point.  It runs on every revision the analyser
+    /// makes and again on every keepalive tick, so nothing here may write
+    /// published state or a debug line.
+    private func sendVoicePreview(_ text: String) {
+        guard isControllable else { return }
+        let now = uptime()
+        let armed = previewArmed
+        switch previewThrottle.partial(text, armed: armed, at: now) {
+        case .nothing:
+            return
+        case let .tooSoon(after):
+            holdPreviewForTrailingSend(text, after: after)
+        case let .send(tail):
+            guard let payload = try? TranscriptPreviewPayload(text: tail, armed: armed) else { return }
+            guard inputUplink.sendTranscriptPreview(payload) else {
+                previewRefusals += 1
+                return
+            }
+            previewThrottle.sent(tail, armed: armed, at: now)
+            // Newer words than anything waiting, so the wait is over.
+            cancelTrailingPreview()
+        }
+    }
+
+    /// The last revision of a phrase often lands inside the throttle's window,
+    /// and the analyser then goes quiet: without this the card shows those
+    /// words a second late, or not at all when the utterance ends first.  One
+    /// timer waits out the window, and later revisions only replace the words
+    /// it will carry, because the window closes at a time the wait already has
+    /// right.
+    private func holdPreviewForTrailingSend(_ text: String, after delay: TimeInterval) {
+        pendingPreview = text
+        guard previewTrailing == nil else { return }
+        previewTrailing = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.previewTrailing = nil
+                guard let pending = self.pendingPreview else { return }
+                self.pendingPreview = nil
+                self.sendVoicePreview(pending)
+            }
+        }
+    }
+
+    private func cancelTrailingPreview() {
+        previewTrailing?.invalidate()
+        previewTrailing = nil
+        pendingPreview = nil
+    }
+
+    /// Someone pausing mid-sentence stops the analyser revising, and a button
+    /// held before the first word never started it.  Either way nothing would
+    /// reach the Mac and its idle clear would take the card away with the
+    /// finger still down.  This puts the same preview back on the wire twice a
+    /// second, words or not, until the button lifts.
+    func keepVoicePreviewAlive() {
+        guard previewKeepalive != nil else { return }
+        sendVoicePreview(voicePreview)
+    }
+
+    private func startPreviewKeepalive() {
+        guard previewKeepalive == nil else { return }
+        previewKeepalive = repeatingTimer(every: TranscriptPreviewThrottle.keepaliveInterval) {
+            $0.keepVoicePreviewAlive()
+        }
+    }
+
+    /// The finger slid onto a bar, or off one.  The card has to light it now:
+    /// waiting for the keepalive would show what the thumb was doing half a
+    /// second ago, and a bar armed and dropped inside that half second would
+    /// never reach the Mac at all.
+    func armVoicePreview(_ zone: PushToTalkZone?) {
+        previewArmed = zone?.armed ?? .none
+        sendVoicePreview(voicePreview)
+    }
+
+    /// The talk button went down.  The card goes up empty right away, so the
+    /// hint that the Mac is listening does not wait on the first word.
+    func beginVoicePreview() {
+        isTalkHeld = true
+        previewArmed = .none
+        startPreviewKeepalive()
+        sendVoicePreview("")
+    }
+
+    /// The talk button came up, or the microphone was taken away.  The card
+    /// goes down and the tick that held it there stops.
+    func endVoicePreview() {
+        isTalkHeld = false
+        previewArmed = .none
+        clearVoicePreview()
+    }
+
+    /// The utterance is over.  While the button is still down the Mac keeps
+    /// its card, blank again, because the next phrase is already being
+    /// listened for; only the button lifting takes it down.  The ended message
+    /// only makes that instant; the Mac clears itself if it never lands.
+    private func clearVoicePreview() {
+        voicePreview = ""
+        // Words still waiting on the window belong to an utterance that is
+        // over, and the card is about to be blanked of them anyway.
+        cancelTrailingPreview()
+        let previews = previewThrottle.sentCount
+        let characters = previewThrottle.characterCount
+        let refused = previewRefusals
+        previewRefusals = 0
+        let hadCard = previewThrottle.clear()
+        if hadCard {
+            IPhoneDebugLog.emit(
+                "voice_preview",
+                ["sent": "\(previews)", "chars": "\(characters)", "refused": "\(refused)"]
+            )
+        }
+        guard !isTalkHeld else {
+            sendVoicePreview("")
+            return
+        }
+        previewKeepalive?.invalidate()
+        previewKeepalive = nil
+        guard hadCard, isControllable,
+              let payload = try? TranscriptPreviewPayload(phase: .ended, text: "") else { return }
+        _ = inputUplink.sendTranscriptPreview(payload)
+    }
+
     /// The on-device route's one delivery point.  A finished sentence crosses
     /// four places it can be dropped without a word, so this one says which;
     /// counts only, never the text.
     private func typeTranscribedText(_ text: String) {
-        voicePreview = ""
+        clearVoicePreview()
         guard isControllable else {
             IPhoneDebugLog.emit("ondevice_drop", ["why": "notReady", "link": linkState.label])
             latestAction = "Pair before typing"
@@ -1046,6 +1229,12 @@ final class NewMotionFeatureModel: ObservableObject {
             "parts": "\(pieces.count)"
         ])
         latestAction = "Typing"
+        // Same reliable ordered channel as the words, and the Mac types them
+        // before it reads the next message, so the Return lands behind them.
+        if returnAfterTranscript {
+            returnAfterTranscript = false
+            sendHotkey(.return)
+        }
     }
 
     /// Characters are forwarded as they are typed and never stored or logged.
@@ -1101,8 +1290,38 @@ final class NewMotionFeatureModel: ObservableObject {
         switch phase {
         case .begin: latestAction = "Erasing"
         case .end: latestAction = "Erased"
-        case .delete, .restore: break
+        case .delete, .restore, .unitChanged: break
         }
+    }
+
+    /// One phase of a held Command picker.  Nothing is held down on the Mac
+    /// between them: the chord is fired once, at commit, from the cell that
+    /// message carries.
+    func sendKeyPicker(_ phase: KeyPickerPhase, cell: HotkeyAction?) {
+        guard isControllable else {
+            latestAction = "Pair before using shortcuts"
+            return
+        }
+        let sent = inputUplink.send(.keyPicker(KeyPickerPayload(phase: phase, cell: cell)))
+        // Silent on begin as well as on the highlights.  Begin lands on the
+        // first notch, with the finger already sliding, so narrating it - or
+        // narrating a failure to send it - republishes the model, which
+        // rebuilds the whole trackpad screen under that finger.
+        switch phase {
+        case .begin, .highlight: break
+        case .commit: latestAction = sent ? "Sent a shortcut" : "Shortcut send failed"
+        case .cancel: latestAction = sent ? "Shortcut cancelled" : "Shortcut send failed"
+        }
+    }
+
+    /// That the arrow pad is under a finger, and nothing else.  The arrows
+    /// themselves go out as ordinary hotkeys, so this only decides whether the
+    /// Mac's card is up; it is deliberately silent, because narrating a
+    /// heartbeat republishes the model and rebuilds the screen under the
+    /// finger that is still sliding.
+    func sendArrowPad(_ phase: ArrowPadPhase) {
+        guard isControllable else { return }
+        inputUplink.send(.arrowPad(ArrowPadPayload(phase: phase)))
     }
 
     private func sendKeyboardOutput(_ output: KeyboardOutput) {
@@ -1383,15 +1602,6 @@ struct NewMotionControlView: View {
 
     var body: some View {
         RemoteControlScreen(model: model)
-        // Into the bottom safe area, so the targets sit in the true corners of
-        // the screen.
-        .overlay {
-            PushToTalkDragZones(
-                controller: model.pushToTalk,
-                sides: model.layoutMode.pushToTalkZoneSides(mirrored: model.mirrorHorizontalLayout)
-            )
-                .ignoresSafeArea()
-        }
         // Above the keys rather than over the trackpad, so the words being
         // heard are readable without covering anything the thumb is using.
         .overlay(alignment: .top) { VoicePreviewBanner(text: model.voicePreview) }
@@ -1467,7 +1677,8 @@ private struct RemoteControlScreen: View {
         RemoteKeys(
             send: { model.sendHotkey($0) },
             walk: { model.sendTabWalk($0, holding: $1) },
-            scrub: { model.sendDeleteScrub($0, granularity: $1) }
+            scrub: { model.sendDeleteScrub($0, granularity: $1) },
+            picker: { model.sendKeyPicker($0, cell: $1) }
         )
     }
 
@@ -1514,7 +1725,7 @@ private struct RemoteControlScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             // Centred in the same row, where either thumb can reach it without
             // covering the keyboard button.
-            ArrowPadKey(send: { model.sendHotkey($0) })
+            ArrowPadKey(send: { model.sendHotkey($0) }, arrows: { model.sendArrowPad($0) })
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .padding(8)

@@ -15,6 +15,12 @@ public enum SlideStep: Equatable, Sendable {
 /// Nothing is clamped either: a step the other way undoes the one before it,
 /// so the finger can always take a step back.
 public struct SlideStepTracker: Equatable, Sendable {
+    /// The notch for a key that aims rather than repeats.  A step that lights
+    /// a cell or moves the caret is one someone means to take, and one taken
+    /// by accident has to be undone, so it costs more travel than a step that
+    /// only types another character.
+    public static let aimingSensitivity = 0.6
+
     private var horizontal: SlideNotchCounter
     private var vertical: SlideNotchCounter
 

@@ -352,6 +352,21 @@ final class DeleteScrubTests: XCTestCase {
         ])
     }
 
+    /// A slide up is for the card.  Touching held notches or the snapshot here
+    /// would let it rewrite what the press has already taken.
+    func testAUnitChangeErasesNothingAndLeavesTheHeldNotchesAlone() {
+        let clock = Clock()
+        let (coordinator, submitter) = make(StubField(unavailable: "focus:-25212"), clock: clock)
+
+        coordinator.handle(scrub(.begin))
+        coordinator.handle(scrub(.delete, .character)); clock.advance()
+        coordinator.handle(scrub(.unitChanged, .word))
+        XCTAssertTrue(submitter.commands.isEmpty)
+
+        coordinator.handle(scrub(.end, .word))
+        XCTAssertEqual(submitter.commands, held(1))
+    }
+
     /// A press the link never ended cannot erase into whatever comes next.
     func testAbandoningThePressDropsWhatItWasHolding() {
         let (coordinator, submitter) = make(StubField(unavailable: "focus:-25212"))

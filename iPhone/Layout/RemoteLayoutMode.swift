@@ -16,15 +16,6 @@ enum RemoteLayoutMode: String, CaseIterable, Sendable {
         }
     }
 
-    /// The drag targets follow the hold bar: both sides when it sits between
-    /// the thumbs, one side when it sits under one of them.
-    func pushToTalkZoneSides(mirrored: Bool) -> PushToTalkZoneSides {
-        switch self {
-        case .vertical: return .both
-        case .controller: return mirrored ? .trailing : .leading
-        }
-    }
-
     var next: RemoteLayoutMode {
         switch self {
         case .vertical: return .controller

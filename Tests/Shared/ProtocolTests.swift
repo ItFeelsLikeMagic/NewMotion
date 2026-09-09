@@ -34,7 +34,10 @@ final class ProtocolTests: XCTestCase {
             .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
             .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word)),
             .vocabulary(try VocabularyPayload(phrases: ["Ollama", "Testaflight"])),
-            .spokenText(try SpokenTextPayload(text: "héllo there"))
+            .spokenText(try SpokenTextPayload(text: "héllo there")),
+            .keyPicker(KeyPickerPayload(phase: .highlight, cell: .save)),
+            .transcriptPreview(try TranscriptPreviewPayload(text: "héllo th")),
+            .arrowPad(ArrowPadPayload(phase: .begin))
         ]
 
         XCTAssertEqual(payloads.map(\.messageType), MessageType.allCases)
@@ -49,6 +52,234 @@ final class ProtocolTests: XCTestCase {
             let decoded = try ProtocolCodec.decode(encoded)
             XCTAssertEqual(decoded, envelope)
             XCTAssertEqual(decoded.messageType.deliveryClass, payload.messageType.deliveryClass)
+        }
+    }
+
+    /// The commit carries the cell it fires, so an absent one has to survive
+    /// the round trip as absent: it is the difference between firing nothing
+    /// and firing whatever was last lit.
+    func testKeyPickerRoundTripsEveryPhaseWithAndWithoutACell() throws {
+        var sequence: UInt64 = 0
+        for phase in KeyPickerPhase.allCases {
+            for cell in [nil, HotkeyAction.cut] {
+                sequence += 1
+                let payload = MessagePayload.keyPicker(KeyPickerPayload(phase: phase, cell: cell))
+                let envelope = ProtocolEnvelope(
+                    sessionID: sessionID,
+                    sequence: sequence,
+                    timestampMs: 1,
+                    payload: payload
+                )
+                let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+                XCTAssertEqual(decoded, envelope, "\(phase) \(String(describing: cell))")
+                guard case let .keyPicker(value) = decoded.payload else {
+                    return XCTFail("wrong payload for \(phase)")
+                }
+                XCTAssertEqual(value.cell, cell, "\(phase)")
+            }
+        }
+    }
+
+    /// The unit flip is the one scrub phase that erases nothing, so a Mac that
+    /// dropped it would light the wrong half of its card for the rest of the
+    /// press.  Both units go round, because the phase and the unit are the
+    /// whole message.
+    func testDeleteScrubRoundTripsEveryPhaseAndUnit() throws {
+        var sequence: UInt64 = 0
+        for phase in DeleteScrubPhase.allCases {
+            for granularity in DeleteScrubGranularity.allCases {
+                sequence += 1
+                let payload = MessagePayload.deleteScrub(
+                    DeleteScrubPayload(phase: phase, granularity: granularity)
+                )
+                let envelope = ProtocolEnvelope(
+                    sessionID: sessionID,
+                    sequence: sequence,
+                    timestampMs: 1,
+                    payload: payload
+                )
+                let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+                XCTAssertEqual(decoded, envelope, "\(phase) \(granularity)")
+                guard case let .deleteScrub(value) = decoded.payload else {
+                    return XCTFail("wrong payload for \(phase)")
+                }
+                XCTAssertEqual(value.phase, phase)
+                XCTAssertEqual(value.granularity, granularity)
+            }
+        }
+    }
+
+    /// These numbers are the wire.  They were renumbered once already, when a
+    /// rebase found 29 taken by `controlCenter`, and a phone and a Mac that
+    /// disagree on them fire the wrong shortcut rather than fail.  Pinning them
+    /// here means a reorder of either enum has to be a deliberate edit.
+    func testNewWireRawValuesArePinned() {
+        XCTAssertEqual(HotkeyAction.cut.rawValue, 30)
+        XCTAssertEqual(HotkeyAction.save.rawValue, 31)
+        XCTAssertEqual(HotkeyAction.find.rawValue, 32)
+        XCTAssertEqual(HotkeyAction.previousWindow.rawValue, 33)
+
+        XCTAssertEqual(MessageType.keyPicker.rawValue, 19)
+        XCTAssertEqual(MessageType.transcriptPreview.rawValue, 20)
+        XCTAssertEqual(MessageType.arrowPad.rawValue, 21)
+
+        XCTAssertEqual(ArrowPadPhase.begin.rawValue, 1)
+        XCTAssertEqual(ArrowPadPhase.end.rawValue, 2)
+        XCTAssertEqual(ArrowPadPhase.allCases.count, 2)
+
+        XCTAssertEqual(TranscriptPreviewPhase.live.rawValue, 1)
+        XCTAssertEqual(TranscriptPreviewPhase.ended.rawValue, 2)
+        XCTAssertEqual(TranscriptPreviewPhase.allCases.count, 2)
+
+        XCTAssertEqual(TranscriptPreviewArmed.none.rawValue, 0)
+        XCTAssertEqual(TranscriptPreviewArmed.send.rawValue, 1)
+        XCTAssertEqual(TranscriptPreviewArmed.cancel.rawValue, 2)
+        XCTAssertEqual(TranscriptPreviewArmed.allCases.count, 3)
+
+        // 5 is the next free number after `end`, and a retired one is never
+        // handed back out: an older Mac reads an unknown phase as a phase it
+        // once knew and acts on it.
+        XCTAssertEqual(DeleteScrubPhase.unitChanged.rawValue, 5)
+    }
+
+    /// Both apps draw this grid from the same table.  A reorder is a wire
+    /// change, because the phone lights a cell the Mac then fires.
+    func testKeyPickerGridIsPinnedAndEveryCellHasAName() {
+        XCTAssertEqual(KeyPickerGrid.rows, [
+            [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.redo), .hotkey(.deleteLineBackward)],
+            [.hotkey(.closeWindow), .hotkey(.newTab)],
+            [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
+            [.hotkey(.undo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
+        ])
+
+        // The way out is the first cell, so it is where a press starts and a
+        // finger that never moves fires nothing.
+        XCTAssertEqual(KeyPickerGrid.rows[0][0], .cancel)
+        XCTAssertNil(KeyPickerCell.cancel.hotkey)
+
+        let cells = KeyPickerGrid.rows.flatMap { $0 }
+        XCTAssertEqual(cells.count, 15)
+        XCTAssertEqual(Set(cells).count, cells.count, "a cell appears twice")
+        for cell in cells {
+            XCTAssertNotNil(KeyPickerGrid.displayName(for: cell), "\(cell)")
+            XCTAssertNotNil(KeyPickerGrid.keyCap(for: cell), "\(cell)")
+            XCTAssertEqual(KeyPickerGrid.cell(named: KeyPickerGrid.displayName(for: cell) ?? ""), cell)
+        }
+        let caps = cells.compactMap(KeyPickerGrid.keyCap(for:))
+        XCTAssertEqual(Set(caps).count, caps.count, "a key cap appears twice")
+        XCTAssertEqual(KeyPickerGrid.keyCap(for: .hotkey(.copy)), "C")
+        XCTAssertEqual(KeyPickerGrid.keyCap(for: .hotkey(.redo)), "\u{21E7}Z")
+        XCTAssertEqual(KeyPickerGrid.cell(named: "newtab"), .hotkey(.newTab))
+        XCTAssertEqual(KeyPickerGrid.cell(named: "cancel"), .cancel)
+        XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
+    }
+
+    /// The pad says only that a finger is on it, and the card it puts up has
+    /// to survive a busy link, so unlike the preview it goes reliably.
+    func testArrowPadRoundTripsBothPhasesReliably() throws {
+        XCTAssertEqual(MessageType.arrowPad.deliveryClass, .reliable)
+
+        var sequence: UInt64 = 0
+        for phase in ArrowPadPhase.allCases {
+            sequence += 1
+            let payload = MessagePayload.arrowPad(ArrowPadPayload(phase: phase))
+            try payload.validate()
+            let envelope = ProtocolEnvelope(
+                sessionID: sessionID,
+                sequence: sequence,
+                timestampMs: 1,
+                payload: payload
+            )
+            let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+            XCTAssertEqual(decoded, envelope, "\(phase)")
+            guard case let .arrowPad(value) = decoded.payload else {
+                return XCTFail("wrong payload for \(phase)")
+            }
+            XCTAssertEqual(value.phase, phase)
+        }
+    }
+
+    /// The preview is unreliable on purpose, and a live one with no words is
+    /// the card saying it is listening, so unlike spoken text it must pass
+    /// validation.
+    func testTranscriptPreviewRoundTripsAndAcceptsAnEmptyLiveHold() throws {
+        XCTAssertEqual(MessageType.transcriptPreview.deliveryClass, .unreliable)
+
+        let cases: [(TranscriptPreviewPhase, String, TranscriptPreviewArmed)] = [
+            (.live, "", .none),
+            (.live, "héllo there", .none),
+            (.live, "héllo there", .send),
+            (.live, "", .cancel),
+            (.ended, "", .none)
+        ]
+        for (phase, text, armed) in cases {
+            let payload = MessagePayload.transcriptPreview(
+                try TranscriptPreviewPayload(phase: phase, text: text, armed: armed)
+            )
+            try payload.validate()
+            let envelope = ProtocolEnvelope(
+                sessionID: sessionID,
+                sequence: 1,
+                timestampMs: 1,
+                payload: payload
+            )
+            let decoded = try ProtocolCodec.decode(try ProtocolCodec.encode(envelope))
+            XCTAssertEqual(decoded, envelope)
+            guard case let .transcriptPreview(value) = decoded.payload else {
+                return XCTFail("wrong payload")
+            }
+            XCTAssertEqual(value.phase, phase)
+            XCTAssertEqual(value.text, text)
+            XCTAssertEqual(value.armed, armed)
+        }
+    }
+
+    /// The end of a hold takes the card down, so words riding along with it
+    /// mean the two ends disagree about which message this is.
+    func testTranscriptPreviewRefusesWordsOnAnEndedHold() throws {
+        let payload = MessagePayload.transcriptPreview(
+            try TranscriptPreviewPayload(phase: .ended, text: "héllo there")
+        )
+        XCTAssertThrowsError(try payload.validate()) { error in
+            XCTAssertEqual(error as? ProtocolError, .invalidField("transcript_preview_ended_words"))
+        }
+    }
+
+    /// The card is going down with the finger, so there is no bar left to
+    /// light: one named here would flash a bar as the words vanished.
+    func testTranscriptPreviewRefusesAnArmedBarOnAnEndedHold() throws {
+        let payload = MessagePayload.transcriptPreview(
+            try TranscriptPreviewPayload(phase: .ended, text: "", armed: .send)
+        )
+        XCTAssertThrowsError(try payload.validate()) { error in
+            XCTAssertEqual(error as? ProtocolError, .invalidField("transcript_preview_ended_armed"))
+        }
+    }
+
+    func testTranscriptPreviewIsBoundedAtItsOwnLimit() throws {
+        XCTAssertEqual(TranscriptPreviewPayload.maximumUTF8Bytes, 128)
+
+        let atLimit = String(repeating: "a", count: 128)
+        XCTAssertNoThrow(try TranscriptPreviewPayload(text: atLimit))
+        XCTAssertThrowsError(try TranscriptPreviewPayload(text: atLimit + "a")) { error in
+            XCTAssertEqual(
+                error as? ProtocolError,
+                .fieldTooLarge("transcript_preview", actual: 129, limit: 128)
+            )
+        }
+
+        // The cap counts bytes, not characters, because the wire does.
+        XCTAssertThrowsError(try TranscriptPreviewPayload(text: String(repeating: "é", count: 65)))
+
+        // The sender's bound is not the receiver's: a message that arrives
+        // over the limit has to be refused on the way in as well.
+        let oversized = #"{"phase":1,"armed":0,"text":"\#(String(repeating: "a", count: 129))"}"#
+        let value = try JSONDecoder().decode(TranscriptPreviewPayload.self, from: Data(oversized.utf8))
+        XCTAssertThrowsError(try MessagePayload.transcriptPreview(value).validate()) { error in
+            XCTAssertEqual(
+                error as? ProtocolError,
+                .fieldTooLarge("transcript_preview", actual: 129, limit: 128)
+            )
         }
     }
 

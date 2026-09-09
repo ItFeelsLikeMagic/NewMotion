@@ -26,11 +26,16 @@ struct RemoteKeys {
     let send: (RemoteHotkey) -> Void
     let walk: (TabWalkPhase, HeldModifier) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
+    let picker: (KeyPickerPhase, HotkeyAction?) -> Void
 
     var appSwitcher: some View { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
 
     /// Hold and drag to pick up text.
     var select: some View { TextSelectionKey(send: send) }
+
+    /// Hold and slide to choose a Command shortcut off the grid the Mac draws.
+    /// Its cells are the shared allowlist, so this key adds no new action.
+    var commandPicker: some View { CommandPickerKey(picker: picker) }
 
     var nextTab: some View { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
 

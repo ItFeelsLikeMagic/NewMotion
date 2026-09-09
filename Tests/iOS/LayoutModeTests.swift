@@ -24,20 +24,6 @@ final class LayoutModeTests: XCTestCase {
         XCTAssertEqual(RemoteLayoutMode.controller.next, .vertical)
     }
 
-    func testTheDragTargetsFollowTheHoldBar() {
-        XCTAssertEqual(RemoteLayoutMode.vertical.pushToTalkZoneSides(mirrored: false), .both)
-        XCTAssertEqual(RemoteLayoutMode.vertical.pushToTalkZoneSides(mirrored: true), .both)
-        XCTAssertEqual(RemoteLayoutMode.controller.pushToTalkZoneSides(mirrored: false), .leading)
-        XCTAssertEqual(RemoteLayoutMode.controller.pushToTalkZoneSides(mirrored: true), .trailing)
-    }
-
-    func testOneSidedTargetsLeaveTheOtherSideAlone() {
-        XCTAssertTrue(PushToTalkZoneSides.leading.includes(.cancelLeading))
-        XCTAssertFalse(PushToTalkZoneSides.leading.includes(.cancelTrailing))
-        XCTAssertFalse(PushToTalkZoneSides.trailing.includes(.cancelLeading))
-        XCTAssertTrue(PushToTalkZoneSides.both.includes(.cancelTrailing))
-    }
-
     func testTheStoredNameRestoresTheMode() {
         XCTAssertEqual(RemoteLayoutMode(rawValue: "controller"), .controller)
     }

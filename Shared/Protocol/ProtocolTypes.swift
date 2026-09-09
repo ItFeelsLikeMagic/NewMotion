@@ -38,14 +38,20 @@ public enum MessageType: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case deleteScrub = 16
     case vocabulary = 17
     case spokenText = 18
+    case keyPicker = 19
+    case transcriptPreview = 20
+    case arrowPad = 21
 
     public var deliveryClass: DeliveryClass {
         switch self {
-        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta:
+        // A lost preview is repaired by the next one a tenth of a second
+        // later, and re-sending stale words is worse than dropping them.
+        case .heartbeat, .pointerDelta, .scrollDelta, .motionPointerDelta,
+             .transcriptPreview:
             return .unreliable
         case .mouseButton, .mouseDoubleClick, .textInput, .hotkey, .tabWalk,
-             .deleteScrub, .vocabulary, .spokenText, .acknowledgement,
-             .connectionStatus, .error, .ping, .pong:
+             .deleteScrub, .vocabulary, .spokenText, .keyPicker, .arrowPad,
+             .acknowledgement, .connectionStatus, .error, .ping, .pong:
             return .reliable
         }
     }
@@ -461,6 +467,221 @@ public enum HotkeyAction: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case selectUp = 27
     case selectDown = 28
     case controlCenter = 29
+    case cut = 30
+    case save = 31
+    case find = 32
+    case previousWindow = 33
+}
+
+/// A held press on the phone's Command key, aimed across the picker grid.
+/// Unlike the tab walk, the Mac holds nothing down while it lasts: the chord
+/// is one atomic hotkey fired at `commit`, so a press that never ends can
+/// leave nothing stuck.
+public enum KeyPickerPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    case begin = 1
+    case highlight = 2
+    case commit = 3
+    case cancel = 4
+}
+
+public struct KeyPickerPayload: Codable, Equatable, Sendable {
+    public let phase: KeyPickerPhase
+    /// `cancel` names no cell. `highlight` names the newly lit one.
+    /// `commit` names the cell to fire, or none if the lit cell was Cancel.
+    /// Commit carrying its own cell is what makes a dropped highlight cost a
+    /// stale card rather than the wrong shortcut.
+    ///
+    /// No cell is how the wire spells the grid's Cancel cell, which is why it
+    /// needs no value of its own here: a `highlight` naming nothing means
+    /// Cancel is lit, and `begin` says the same thing, because the card opens
+    /// on Cancel. Nothing is fired for it, which is what a picker that named
+    /// nothing has always done.
+    public let cell: HotkeyAction?
+
+    public init(phase: KeyPickerPhase, cell: HotkeyAction? = nil) {
+        self.phase = phase
+        self.cell = cell
+    }
+}
+
+/// One cell of the picker grid. Most are shortcuts; the first is the way out
+/// of a press, and it is no hotkey at all, so the grid cannot be a plain list
+/// of them.
+public enum KeyPickerCell: Equatable, Hashable, Sendable {
+    /// Lit the moment the card opens, and leftmost, so the way out is where
+    /// the finger already is and a press left alone fires nothing.
+    case cancel
+    case hotkey(HotkeyAction)
+
+    /// What the wire carries for this cell. Cancel has none: the absent cell
+    /// is how the protocol already says "fire nothing".
+    public var hotkey: HotkeyAction? {
+        switch self {
+        case .cancel: return nil
+        case let .hotkey(action): return action
+        }
+    }
+}
+
+/// The picker's keyboard: the cells, in the order they are drawn.
+///
+/// Both apps read this table and neither may reorder it alone. The wire says
+/// which cell is lit, never where a finger is, so a phone and a Mac drawing
+/// different grids would still agree on every message and quietly light and
+/// fire different things.
+public enum KeyPickerGrid {
+    /// Laid out like the keys themselves, so a hand that knows where C is on
+    /// a keyboard knows where to slide: A S F along the home row, the Z X C V
+    /// run under it.  Cancel is first, so it is where a press starts and a
+    /// finger that never moves fires nothing, and the chords reached for
+    /// least share its top row, the longest reach of the grid, so that no
+    /// common key has to pay for it.
+    public static let rows: [[KeyPickerCell]] = [
+        [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.redo), .hotkey(.deleteLineBackward)],
+        [.hotkey(.closeWindow), .hotkey(.newTab)],
+        [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
+        [.hotkey(.undo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
+    ]
+
+    /// Every cell in `rows` has one. Nothing outside the grid does, because no
+    /// other hotkey is ever drawn.
+    public static func displayName(for cell: KeyPickerCell) -> String? {
+        displayNames[cell]
+    }
+
+    /// The key pressed with Command to get the cell's shortcut, as it is
+    /// printed on a keyboard, with a shift arrow where the shortcut needs one.
+    public static func keyCap(for cell: KeyPickerCell) -> String? {
+        keyCaps[cell]
+    }
+
+    /// The cell a name stands for, matched on the display name ignoring case
+    /// and spaces, so the Mac's debug route can light one by name. Matching the
+    /// case names instead would break silently the day a case is renamed.
+    public static func cell(named name: String) -> KeyPickerCell? {
+        let wanted = folded(name)
+        return displayNames.first { folded($0.value) == wanted }?.key
+    }
+
+    private static func folded(_ name: String) -> String {
+        name.lowercased().filter { !$0.isWhitespace }
+    }
+
+    private static let displayNames: [KeyPickerCell: String] = [
+        .cancel: "Cancel",
+        .hotkey(.cut): "Cut",
+        .hotkey(.copy): "Copy",
+        .hotkey(.paste): "Paste",
+        .hotkey(.undo): "Undo",
+        .hotkey(.redo): "Redo",
+        .hotkey(.newItem): "New",
+        .hotkey(.newTab): "New Tab",
+        .hotkey(.save): "Save",
+        .hotkey(.closeWindow): "Close",
+        .hotkey(.find): "Find",
+        .hotkey(.selectAll): "Select All",
+        .hotkey(.deleteLineBackward): "Delete Line",
+        .hotkey(.nextWindow): "Next Window",
+        .hotkey(.previousWindow): "Prev Window"
+    ]
+
+    private static let keyCaps: [KeyPickerCell: String] = [
+        .cancel: "esc",
+        .hotkey(.cut): "X",
+        .hotkey(.copy): "C",
+        .hotkey(.paste): "V",
+        .hotkey(.undo): "Z",
+        .hotkey(.redo): "\u{21E7}Z",
+        .hotkey(.newItem): "N",
+        .hotkey(.newTab): "T",
+        .hotkey(.save): "S",
+        .hotkey(.closeWindow): "W",
+        .hotkey(.find): "F",
+        .hotkey(.selectAll): "A",
+        .hotkey(.deleteLineBackward): "\u{232B}",
+        .hotkey(.nextWindow): "`",
+        .hotkey(.previousWindow): "\u{21E7}`"
+    ]
+}
+
+/// Whether the phone's arrow pad is under a finger. It says only that, never
+/// which way the finger went: each notch is an ordinary arrow hotkey, so the
+/// Mac lights its card off the keys it actually applied. Nothing is held down
+/// between the two phases, so a press that never ends leaves nothing stuck.
+public enum ArrowPadPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    /// The key went down, and said again every couple of seconds while it is
+    /// held: a finger resting between notches is silent, and the Mac closes a
+    /// card that has gone quiet.
+    case begin = 1
+    case end = 2
+}
+
+public struct ArrowPadPayload: Codable, Equatable, Sendable {
+    public let phase: ArrowPadPhase
+
+    public init(phase: ArrowPadPhase) {
+        self.phase = phase
+    }
+}
+
+/// Where the talk button is, which is what decides whether the Mac's card is
+/// on screen at all.
+public enum TranscriptPreviewPhase: UInt8, Codable, CaseIterable, Sendable {
+    /// The button is down. The words are everything heard so far, and none of
+    /// them yet is the card saying it is listening.
+    case live = 1
+    /// The button is up, so the card goes down. It carries no words.
+    case ended = 2
+}
+
+/// Which bar the finger is sitting on, and so what letting go would do. The
+/// Mac lights the same bar the phone is showing, so the two screens agree
+/// about what happens next without the Mac knowing where anyone's thumb is.
+public enum TranscriptPreviewArmed: UInt8, Codable, CaseIterable, Sendable {
+    /// The finger is on the talk button itself: the words are typed as they
+    /// always were.
+    case none = 0
+    /// Releasing types the words and presses Return behind them.
+    case send = 1
+    /// Releasing throws the utterance away.
+    case cancel = 2
+}
+
+/// The words the phone's recogniser has heard so far, on their way to the Mac
+/// card. Each message carries the whole current preview rather than a change
+/// to it, so a dropped one is repaired by the next instead of leaving the two
+/// ends disagreeing. Words are not what puts the card up or takes it down;
+/// the phase is, so an empty `live` payload is valid and means "listening".
+public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
+    /// A glance at the tail of a sentence, not a transcript: several of these
+    /// a second share the link with the typing they are previewing, so the cap
+    /// is what decides how many BLE fragments a partial costs.  The words ride
+    /// as a JSON string rather than an array of bytes, which would cost about
+    /// four bytes of envelope for each one of them.
+    public static let maximumUTF8Bytes = 128
+
+    public let phase: TranscriptPreviewPhase
+    public let text: String
+    /// The bar the finger is over as these words were heard. It rides with
+    /// every preview rather than in messages of its own, so a lost one is
+    /// repaired by the next preview like the words are.
+    public let armed: TranscriptPreviewArmed
+
+    public init(
+        phase: TranscriptPreviewPhase = .live,
+        text: String,
+        armed: TranscriptPreviewArmed = .none
+    ) throws {
+        let byteCount = text.utf8.count
+        guard byteCount <= Self.maximumUTF8Bytes else {
+            throw ProtocolError.fieldTooLarge(
+                "transcript_preview", actual: byteCount, limit: Self.maximumUTF8Bytes
+            )
+        }
+        self.phase = phase
+        self.text = text
+        self.armed = armed
+    }
 }
 
 /// Holding a modifier and walking with Tab: Command for the app switcher,
@@ -499,6 +720,10 @@ public enum DeleteScrubPhase: UInt8, Codable, CaseIterable, Equatable, Sendable 
     case restore = 3
     /// The key came up, so what this press deleted can no longer be restored.
     case end = 4
+    /// The finger slid up or down and the key now takes off a different unit.
+    /// It erases nothing; it exists so the Mac's card can relight while the
+    /// press is still held, which a bare latch flip would otherwise never say.
+    case unitChanged = 5
 }
 
 /// What one notch stands for. The two delete keys differ in nothing else.
@@ -615,6 +840,9 @@ public enum MessagePayload: Codable, Equatable, Sendable {
     case deleteScrub(DeleteScrubPayload)
     case vocabulary(VocabularyPayload)
     case spokenText(SpokenTextPayload)
+    case keyPicker(KeyPickerPayload)
+    case transcriptPreview(TranscriptPreviewPayload)
+    case arrowPad(ArrowPadPayload)
     case motionPointerDelta(MotionPointerDeltaPayload)
     case acknowledgement(AcknowledgementPayload)
     case connectionStatus(ConnectionStatusPayload)
@@ -635,6 +863,9 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .deleteScrub: return .deleteScrub
         case .vocabulary: return .vocabulary
         case .spokenText: return .spokenText
+        case .keyPicker: return .keyPicker
+        case .transcriptPreview: return .transcriptPreview
+        case .arrowPad: return .arrowPad
         case .motionPointerDelta: return .motionPointerDelta
         case .acknowledgement: return .acknowledgement
         case .connectionStatus: return .connectionStatus
@@ -679,6 +910,12 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             self = .vocabulary(try container.decode(VocabularyPayload.self, forKey: .value))
         case .spokenText:
             self = .spokenText(try container.decode(SpokenTextPayload.self, forKey: .value))
+        case .keyPicker:
+            self = .keyPicker(try container.decode(KeyPickerPayload.self, forKey: .value))
+        case .transcriptPreview:
+            self = .transcriptPreview(try container.decode(TranscriptPreviewPayload.self, forKey: .value))
+        case .arrowPad:
+            self = .arrowPad(try container.decode(ArrowPadPayload.self, forKey: .value))
         case .motionPointerDelta:
             self = .motionPointerDelta(try container.decode(MotionPointerDeltaPayload.self, forKey: .value))
         case .acknowledgement:
@@ -710,6 +947,9 @@ public enum MessagePayload: Codable, Equatable, Sendable {
         case .deleteScrub(let value): try container.encode(value, forKey: .value)
         case .vocabulary(let value): try container.encode(value, forKey: .value)
         case .spokenText(let value): try container.encode(value, forKey: .value)
+        case .keyPicker(let value): try container.encode(value, forKey: .value)
+        case .transcriptPreview(let value): try container.encode(value, forKey: .value)
+        case .arrowPad(let value): try container.encode(value, forKey: .value)
         case .motionPointerDelta(let value): try container.encode(value, forKey: .value)
         case .acknowledgement(let value): try container.encode(value, forKey: .value)
         case .connectionStatus(let value): try container.encode(value, forKey: .value)
@@ -744,7 +984,12 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
             }
-        case .hotkey, .tabWalk, .deleteScrub, .vocabulary:
+        // A cell riding along on `begin` or `cancel` is ignored rather than
+        // refused: only what `commit` names is ever fired.  A commit cell is
+        // not checked against `KeyPickerGrid` either, because a plain hotkey
+        // already carries every `HotkeyAction`, and refusing an off-grid cell
+        // would only make an older Mac reject a newer phone's grid.
+        case .hotkey, .tabWalk, .deleteScrub, .vocabulary, .keyPicker, .arrowPad:
             break
         case .spokenText(let value):
             guard !value.utf8.bytes.isEmpty else {
@@ -752,6 +997,27 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             }
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
+            }
+        case .transcriptPreview(let value):
+            // No empty check, unlike spoken text: a live preview with no words
+            // is the card saying it is listening, sent the moment the talk
+            // button goes down.
+            guard value.text.utf8.count <= TranscriptPreviewPayload.maximumUTF8Bytes else {
+                throw ProtocolError.fieldTooLarge(
+                    "transcript_preview",
+                    actual: value.text.utf8.count,
+                    limit: TranscriptPreviewPayload.maximumUTF8Bytes
+                )
+            }
+            // The end of a hold carries no words, so words with it mean the
+            // two ends disagree about which message this is.
+            guard value.phase == .live || value.text.isEmpty else {
+                throw ProtocolError.invalidField("transcript_preview_ended_words")
+            }
+            // The card is going down: there is no bar left to light, and one
+            // named here would be a bar the Mac lit as the words vanished.
+            guard value.phase == .live || value.armed == .none else {
+                throw ProtocolError.invalidField("transcript_preview_ended_armed")
             }
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")

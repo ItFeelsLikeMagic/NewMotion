@@ -145,6 +145,12 @@ public final class DeleteScrubCoordinator {
             let outcome = flush()
             reset()
             return outcome
+        case .unitChanged:
+            // The unit rides on every later notch anyway, so this changes
+            // nothing here.  It exists for the card, and touching held notches
+            // or the snapshot would make a slide up rewrite what the press has
+            // already taken.
+            return "deleteScrub unit \(payload.granularity)"
         }
     }
 

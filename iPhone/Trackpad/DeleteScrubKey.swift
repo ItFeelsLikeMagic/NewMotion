@@ -15,20 +15,18 @@ import NewMotionShared
 /// has been asked for, because that is when the Mac starts waking the focused
 /// field and a Chromium field takes seconds to wake.  A tap therefore costs
 /// three small messages instead of one, which is nothing beside the cursor.
+///
+/// What the press owes the Mac lives in `DeleteScrubPress`, so the whole
+/// gesture can be tested without a touch; this view is the glass and the hand.
 struct DeleteScrubKey: View {
     let send: (RemoteHotkey) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
 
-    @State private var tracker = DeleteScrubTracker()
-    @State private var latch = DeleteGranularityLatch()
-    @State private var isHeld = false
-    /// A press that changed the unit was about the unit, not about deleting,
-    /// so it must not also rub a character out when the finger lifts.
-    @State private var hasChangedUnit = false
+    @State private var press = DeleteScrubPress()
 
     var body: some View {
         label
-            .heldKeyStyle(isHeld: isHeld)
+            .heldKeyStyle(isHeld: press.hasBegun)
             // The count is always in the tree and only fades, because swapping
             // it in and out rebuilds the surface below: the removed view leaves
             // the window, which reads as a cancelled press, and the slide dies
@@ -36,89 +34,82 @@ struct DeleteScrubKey: View {
             .overlay(alignment: .topTrailing) { count }
             .holdSlide(
                 "delete_scrub",
-                spokenName: "\(hotkey.spokenName). Hold and slide left to erase, right to undo, up for words.",
+                spokenName: "\(press.hotkey.spokenName). Hold and slide left to erase, right to undo, up for words.",
                 onPhase: handle
             )
     }
 
-    private var granularity: DeleteScrubGranularity {
-        latch.isWord ? .word : .character
-    }
-
-    private var hotkey: RemoteHotkey {
-        latch.isWord ? .deleteWordBackward : .deleteBackward
-    }
-
     /// The unit is named on the key, because it is the one thing about the key
-    /// that changes and nothing else on screen says which way it is set.
+    /// that changes and nothing else on the phone says which way it is set.
     private var label: some View {
         VStack(spacing: 2) {
             Image(systemName: "delete.left")
-            Text(latch.isWord ? "word" : "char")
+            Text(press.isWord ? "word" : "char")
                 .font(.caption2)
         }
     }
 
     private var count: some View {
-        Text("\(tracker.steps)")
+        Text("\(press.steps)")
             .font(.caption2.monospacedDigit())
             .padding(.horizontal, 4)
             .background(Color.black.opacity(0.35), in: Capsule())
             .padding(2)
-            .opacity(tracker.steps > 0 ? 1 : 0)
+            .opacity(press.steps > 0 ? 1 : 0)
     }
 
     private func handle(_ phase: HoldSlidePhase) {
         switch phase {
         case .began:
-            guard !isHeld else { return }
-            isHeld = true
-            hasChangedUnit = false
-            tracker = DeleteScrubTracker()
-            latch.reset()
-            scrub(.begin, granularity)
-            Haptics.play(.press)
+            dispatch(press.begin())
         case let .moved(translationX, translationY):
-            guard isHeld else { return }
-            // The unit is settled before the notches are counted, so a slide
-            // that goes up and across erases what the key now says it will.
-            if latch.advance(translationY: translationY) {
-                hasChangedUnit = true
-                Haptics.play(.modeChange)
-            }
-            let steps = tracker.advance(translationX: translationX)
-            guard !steps.isEmpty else { return }
-            for step in steps {
-                scrub(step.phase, granularity)
-                // The tick is the whole point: it is how a thumb counts
-                // characters off a screen it is not looking at.  Coming back
-                // gets a softer thud, so the two directions are not one event
-                // to the hand.
-                Haptics.play(step == .delete ? .step : .release)
-            }
+            dispatch(press.move(translationX: translationX, translationY: translationY))
         case .ended:
-            finish(sendKey: !tracker.hasStepped && !hasChangedUnit)
+            finish(committing: true)
         case .cancelled:
-            finish(sendKey: false)
+            finish(committing: false)
         }
     }
 
-    private func finish(sendKey: Bool) {
-        guard isHeld else { return }
-        isHeld = false
-        // The lift is also where the Mac erases anything it had to hold back,
-        // so it arrives even for a tap that never slid.
-        scrub(.end, granularity)
-        if sendKey { send(hotkey) }
+    private func finish(committing: Bool) {
+        guard press.hasBegun else { return }
+        // Read before the lift, which empties the press.
+        let steps = press.steps
+        let slid = press.hasStepped
+        let unit = press.isWord ? "word" : "character"
+        dispatch(press.lift(committing: committing))
         IPhoneDebugLog.emit("delete_scrub", [
-            "steps": "\(tracker.steps)",
-            "slid": tracker.hasStepped ? "yes" : "no",
-            "unit": latch.isWord ? "word" : "character"
+            "steps": "\(steps)",
+            "slid": slid ? "yes" : "no",
+            "unit": unit
         ])
-        tracker = DeleteScrubTracker()
-        // The key reports back to characters as soon as the finger lifts, so
-        // the label never shows a mode from a press that already ended.
-        latch.reset()
+    }
+
+    private func dispatch(_ messages: [DeleteScrubPress.Message]) {
+        for message in messages {
+            switch message {
+            case let .scrub(phase, granularity):
+                scrub(phase, granularity)
+                if let feel = Self.feel(for: phase) { Haptics.play(feel) }
+            case let .key(hotkey):
+                send(hotkey)
+            }
+        }
+    }
+
+    /// The tick is the whole point: it is how a thumb counts characters off a
+    /// screen it is not looking at.  Coming back gets a softer thud, so the two
+    /// directions are not one event to the hand, and a unit flip gets a third
+    /// feel again because it changes what every later notch takes.  The lift
+    /// is silent: the finger already knows it lifted.
+    private static func feel(for phase: DeleteScrubPhase) -> Haptics.Feedback? {
+        switch phase {
+        case .begin: return .press
+        case .delete: return .step
+        case .restore: return .release
+        case .unitChanged: return .modeChange
+        case .end: return nil
+        }
     }
 }
 #endif

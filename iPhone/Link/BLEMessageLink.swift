@@ -104,10 +104,15 @@ final class BLEMessageLink: MessageLink, @unchecked Sendable {
         ) else { return .tooLarge }
         // A `latestWins` message takes the wire or the caller's answer, never a
         // queue: a stored cursor delta replays a path the hand has already
-        // left.  Everything else queues, and only if the whole of it fits,
-        // because half a message is one the Mac can never put back together.
+        // left.  Anything that has to be measured first goes only if the whole
+        // of it fits, because half a message is one the Mac can never put back
+        // together, and a caller told `busy` after the first fragment has
+        // already lost the rest.  A `latestWins` message of one fragment cannot
+        // be cut in half and simply asks the wire, which is what keeps the
+        // measuring off every cursor delta.
         let queued = delivery.mayQueue
-        if queued, fragments.count > peripheral.queueCapacity(on: channel) { return .busy }
+        if queued || fragments.count > 1,
+           fragments.count > peripheral.queueCapacity(on: channel) { return .busy }
         for fragment in fragments {
             switch peripheral.send(fragment, on: channel, enqueue: queued) {
             case .sent, .queued:

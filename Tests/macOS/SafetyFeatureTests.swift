@@ -306,6 +306,87 @@ final class SafetyFeatureTests: XCTestCase {
         }
     }
 
+    /// The picker's four new cells.  Each is a letter chord, so each has to
+    /// follow the layout rather than a fixed QWERTY position.
+    func testPickerChordsAreCommandLetters() {
+        let expected: [(MacAllowedHotkey, [PhysicalKeyTransition])] = [
+            (.cut, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 7, isDown: true),
+                PhysicalKeyTransition(keyCode: 7, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.save, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 1, isDown: true),
+                PhysicalKeyTransition(keyCode: 1, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.find, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 3, isDown: true),
+                PhysicalKeyTransition(keyCode: 3, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ]),
+            (.previousWindow, [
+                PhysicalKeyTransition(keyCode: 55, isDown: true),
+                PhysicalKeyTransition(keyCode: 56, isDown: true),
+                PhysicalKeyTransition(keyCode: 50, isDown: true),
+                PhysicalKeyTransition(keyCode: 50, isDown: false),
+                PhysicalKeyTransition(keyCode: 56, isDown: false),
+                PhysicalKeyTransition(keyCode: 55, isDown: false)
+            ])
+        ]
+        for (hotkey, transitions) in expected {
+            XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: hotkey), transitions, "\(hotkey)")
+
+            let payload = try? SharedInputProtocolAdapter.payload(for: .hotkey(hotkey))
+            XCTAssertEqual(
+                payload.flatMap { try? SharedInputProtocolAdapter.command(for: $0) },
+                .hotkey(hotkey),
+                "\(hotkey)"
+            )
+        }
+
+        // Dvorak keeps ` where QWERTY has it but moves the letters, so each
+        // chord has to be posted at the key that types its letter now.
+        let dvorak = StubKeyboardLayout(codes: ["x": 7, "s": 41, "f": 15, "`": 50])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .save, layout: dvorak), [
+            PhysicalKeyTransition(keyCode: 55, isDown: true),
+            PhysicalKeyTransition(keyCode: 41, isDown: true),
+            PhysicalKeyTransition(keyCode: 41, isDown: false),
+            PhysicalKeyTransition(keyCode: 55, isDown: false)
+        ])
+        XCTAssertEqual(HotkeyPhysicalSequence.transitions(for: .find, layout: dvorak), [
+            PhysicalKeyTransition(keyCode: 55, isDown: true),
+            PhysicalKeyTransition(keyCode: 15, isDown: true),
+            PhysicalKeyTransition(keyCode: 15, isDown: false),
+            PhysicalKeyTransition(keyCode: 55, isDown: false)
+        ])
+        // A layout that cannot place the letter still has to produce the chord.
+        XCTAssertEqual(
+            HotkeyPhysicalSequence.transitions(for: .cut, layout: StubKeyboardLayout(codes: [:])),
+            HotkeyPhysicalSequence.transitions(for: .cut)
+        )
+    }
+
+    /// The picker never reaches the injector as a picker: the cell it commits
+    /// is submitted as an ordinary hotkey, so it takes the same policy path.
+    func testPickerAndPreviewMessagesAreNotCommands() throws {
+        XCTAssertThrowsError(
+            try SharedInputProtocolAdapter.command(
+                for: .keyPicker(KeyPickerPayload(phase: .commit, cell: .save))
+            )
+        )
+
+        // Built outside the assertion: a throw from the constructor would
+        // otherwise satisfy it without the adapter ever being asked.
+        let preview = try TranscriptPreviewPayload(text: "hello")
+        XCTAssertThrowsError(
+            try SharedInputProtocolAdapter.command(for: .transcriptPreview(preview))
+        )
+    }
+
     func testWindowAndTabChordsCarryTheirModifier() {
         let expected: [(MacAllowedHotkey, UInt16, UInt16)] = [
             (.nextWindow, 55, 50),

@@ -1,10 +1,10 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
-/// The upright layout: trackpad on top, keys under both thumbs.  Every key is
-/// in one of the two clusters, so nothing needs a stretch past the row a thumb
-/// rests on, and each cluster keeps its frequent keys in the column nearest
-/// the hold bar.
+/// The upright layout: trackpad on top, keys under both thumbs.  Every key a
+/// thumb taps is in one of the two clusters, so nothing needs a stretch past
+/// the row a thumb rests on, and each cluster keeps its frequent keys in the
+/// column nearest the hold bar.
 struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     @ObservedObject var pushToTalk: PushToTalkController
     let keys: RemoteKeys
@@ -28,35 +28,73 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
                         .clearOfKeyboard()
                 }
 
-                thumbClusters
+                // Send goes above the microphone, where the clusters cannot
+                // make room for it, so the pad gives up the height instead:
+                // it is the only thing here that stretches, so it shrinks by
+                // exactly what the bar takes and nothing below it moves.
+                if pushToTalk.isHolding {
+                    chordBar(.send)
+                }
+
+                thumbRow
+
+                if pushToTalk.isHolding {
+                    chordBar(.cancel)
+                } else {
+                    pickerRow
+                }
             }
             .padding(RemoteKeyMetrics.contentPadding)
         }
+    }
+
+    /// The picker is a grid, not a key: it wants more room to slide across
+    /// than a cluster cell gives it, and it belongs to neither thumb.  A row
+    /// of its own under both clusters is the widest space left, and either
+    /// thumb reaches it without leaving the phone.  It lends that row to the
+    /// Cancel bar for as long as a hold is on.
+    private var pickerRow: some View {
+        keys.commandPicker
+            .frame(maxWidth: .infinity)
+            .frame(height: RemoteKeyMetrics.keyHeight)
+    }
+
+    /// A key's height, the whole width the keys had: the bar is a target for a
+    /// thumb already sliding, not something anyone aims at.
+    private func chordBar(_ zone: PushToTalkZone) -> some View {
+        PushToTalkZoneBar(controller: pushToTalk, zone: zone)
+            .frame(height: RemoteKeyMetrics.keyHeight)
     }
 
     /// The inner column of each cluster is the one a thumb finds first, so
     /// return and delete sit against the hold bar on the right and copy and
     /// paste on the left.  The three keys that are held and dragged take the
     /// outer half, where a thumb has room to travel without leaving the phone.
-    private var thumbClusters: some View {
+    /// A hold clears both clusters out of the row and the microphone spreads
+    /// across it, keeping the height it had so the thumb's target holds still.
+    private var thumbRow: some View {
         HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
-            cluster {
-                slot { keys.escape }
-                slot { keys.copy }
-            } bottom: {
-                slot { keys.appSwitcher }
-                slot { keys.paste }
+            if !pushToTalk.isHolding {
+                cluster {
+                    slot { keys.escape }
+                    slot { keys.copy }
+                } bottom: {
+                    slot { keys.appSwitcher }
+                    slot { keys.paste }
+                }
             }
 
-            PushToTalkButton(controller: pushToTalk)
+            PushToTalkButton(controller: pushToTalk, micHeight: RemoteKeyMetrics.clusterHeight)
                 .frame(maxWidth: .infinity)
 
-            cluster {
-                slot { keys.returnKey }
-                slot { keys.nextTab }
-            } bottom: {
-                slot { keys.delete }
-                slot { keys.select }
+            if !pushToTalk.isHolding {
+                cluster {
+                    slot { keys.returnKey }
+                    slot { keys.nextTab }
+                } bottom: {
+                    slot { keys.delete }
+                    slot { keys.select }
+                }
             }
         }
     }
