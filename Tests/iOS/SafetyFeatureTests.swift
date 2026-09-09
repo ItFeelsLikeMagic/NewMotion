@@ -578,6 +578,25 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertEqual(lifted.zones, [.send])
     }
 
+    /// The layouts put the two bars up and take the keys down on this flag
+    /// alone, so it has to cover the whole hold and nothing either side of it.
+    @MainActor
+    func testTheHoldFlagCoversThePressToTheRelease() {
+        let (_, ptt, _) = makePushToTalk(log: EventLog())
+        XCTAssertFalse(ptt.isHolding)
+
+        ptt.pressed()
+        voiceQueue.sync {}
+        XCTAssertTrue(ptt.isHolding)
+
+        ptt.dragged(to: CGPoint(x: 60, y: 620))
+        XCTAssertTrue(ptt.isHolding, "sliding onto a bar is still the same hold")
+
+        ptt.released()
+        voiceQueue.sync {}
+        XCTAssertFalse(ptt.isHolding)
+    }
+
     /// Backing off a bar puts the utterance back on its plain path.
     @MainActor
     func testDraggingBackOffABarStillSends() {

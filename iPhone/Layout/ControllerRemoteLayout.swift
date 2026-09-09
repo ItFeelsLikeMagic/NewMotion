@@ -60,12 +60,20 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
             // next to it as the way out of whatever that drag opened.  The
             // picker slides across a whole grid, so it takes the far end,
             // where a slide has the most room before it leaves the phone.
-            HStack(spacing: RemoteKeyMetrics.spacing) {
-                slot { keys.commandPicker }
-                slot { keys.copy }
-                slot { keys.paste }
-                slot { keys.appSwitcher }
-                slot { keys.escape }
+            // A hold takes both rows away and puts the two chord bars there.
+            if pushToTalk.isHolding {
+                // Exactly the row's height, so the microphone's top edge does
+                // not move out from under the thumb the moment it lands.
+                PushToTalkZoneBar(controller: pushToTalk, zone: .send)
+                    .frame(height: RemoteKeyMetrics.keyHeight)
+            } else {
+                HStack(spacing: RemoteKeyMetrics.spacing) {
+                    slot { keys.commandPicker }
+                    slot { keys.copy }
+                    slot { keys.paste }
+                    slot { keys.appSwitcher }
+                    slot { keys.escape }
+                }
             }
 
             // The hold bar is the point of the whole column, so it takes every
@@ -73,11 +81,18 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
             PushToTalkButton(controller: pushToTalk)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(spacing: RemoteKeyMetrics.spacing) {
-                slot { keys.nextTab }
-                slot { keys.select }
-                slot { keys.returnKey }
-                slot { keys.delete }
+            if pushToTalk.isHolding {
+                // Nothing is below it to push down, so Cancel splits the rest
+                // of the column with the microphone rather than taking a row.
+                PushToTalkZoneBar(controller: pushToTalk, zone: .cancel)
+                    .frame(minHeight: RemoteKeyMetrics.keyHeight, maxHeight: .infinity)
+            } else {
+                HStack(spacing: RemoteKeyMetrics.spacing) {
+                    slot { keys.nextTab }
+                    slot { keys.select }
+                    slot { keys.returnKey }
+                    slot { keys.delete }
+                }
             }
         }
         .frame(width: (width - 2 * RemoteKeyMetrics.contentPadding) * Self.keyColumnShare)

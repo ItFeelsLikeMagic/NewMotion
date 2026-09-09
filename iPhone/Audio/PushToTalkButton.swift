@@ -210,29 +210,44 @@ final class PushToTalkController: ObservableObject {
     }
 }
 
+/// Slid onto, never tapped: the hold owns the touch from press to release, so
+/// a bar only reports where it is and the controller hit-tests it.  A layout
+/// places it, and only while the finger is down: it takes the room the keys
+/// give up, which is more than the talk button has beside it.
+struct PushToTalkZoneBar: View {
+    @ObservedObject var controller: PushToTalkController
+    let zone: PushToTalkZone
+
+    var body: some View {
+        let armed = controller.armedZone == zone
+        return Text(zone.title)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(armed ? Color.white : Color.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(armed ? zone.color : Color.secondary.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .allowsHitTesting(false)
+            .animation(.easeOut(duration: 0.12), value: armed)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                controller.setZoneFrame(zone, frame)
+            }
+    }
+}
+
 /// A local-only hold gesture.  The callback is never driven by a decoded
 /// remote command; the audio controller itself also enforces that boundary.
 struct PushToTalkButton: View {
-    /// The microphone keeps the full height of a key cluster and the bars sit
-    /// beyond it, so the stack stands taller than the clusters beside it and
-    /// the thumb's target is as big as it was before the bars arrived.
-    private enum Metrics {
-        static let barHeight: Double = 34
-        static let spacing: Double = 6
-        static let micHeight = RemoteKeyMetrics.clusterHeight
-    }
-
     @ObservedObject var controller: PushToTalkController
+    /// The height the microphone takes.  Upright it is pinned, so the bars a
+    /// layout opens around it during a hold cannot shift the thumb's target;
+    /// sideways it is left open and the mic takes what the column has spare.
+    var micHeight: Double?
     @State private var isPressed = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 6) {
-            VStack(spacing: Metrics.spacing) {
-                bar(.send)
-                microphone
-                bar(.cancel)
-            }
+            microphone
 
             if !controller.status.isEmpty {
                 Text(controller.status)
@@ -246,7 +261,7 @@ struct PushToTalkButton: View {
     private var microphone: some View {
         Image(systemName: icon)
             .font(.system(size: 34, weight: .medium))
-            .frame(maxWidth: .infinity, minHeight: Metrics.micHeight, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: shortestMic, maxHeight: tallestMic)
             .contentShape(Rectangle())
             .background(tint)
             .foregroundStyle(.white)
@@ -261,22 +276,9 @@ struct PushToTalkButton: View {
             .onAppear { Haptics.prepare() }
     }
 
-    /// Slid onto, never tapped: the hold owns the touch from press to release,
-    /// so a bar only reports where it is and the controller hit-tests it.
-    private func bar(_ zone: PushToTalkZone) -> some View {
-        let armed = controller.armedZone == zone
-        return Text(zone.title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(armed ? Color.white : Color.secondary)
-            .frame(maxWidth: .infinity, minHeight: Metrics.barHeight)
-            .background(armed ? zone.color : Color.secondary.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .allowsHitTesting(false)
-            .animation(.easeOut(duration: 0.12), value: armed)
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                controller.setZoneFrame(zone, frame)
-            }
-    }
+    private var shortestMic: Double { micHeight ?? RemoteKeyMetrics.clusterHeight }
+
+    private var tallestMic: Double { micHeight ?? .infinity }
 
     /// The same icon as the bar the finger is over, so the button under the
     /// thumb and the bar it is sitting on say one thing.
