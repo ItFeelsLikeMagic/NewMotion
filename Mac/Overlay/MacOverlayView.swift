@@ -183,7 +183,13 @@ struct MacOverlayView: View {
                 .background(shape.fill(Color(nsColor: .windowBackgroundColor).opacity(style.backing)))
                 .background(shape.fill(Color.primary.opacity(wash)))
             if style.glass != .frosted, #available(macOS 26, *) {
-                inner.glassEffect(glass, in: shape)
+                // The glass is its own layer under the scrim rather than an
+                // effect on the tile, so it can be faded without the letters.
+                inner.background(
+                    shape.fill(.clear)
+                        .glassEffect(glass, in: shape)
+                        .opacity(style.glassOpacity)
+                )
             } else if isLit, style.tintsLitKey {
                 inner.background(shape.fill(Color.accentColor))
             } else {

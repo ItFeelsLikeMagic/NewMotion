@@ -61,6 +61,8 @@ struct MacOverlayStyleSection: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 Toggle("Tint the lit key", isOn: $styles.style.tintsLitKey)
+                slider("Glass opacity", $styles.style.glassOpacity,
+                       in: MacOverlayStyle.glassOpacityRange, step: 0.05, decimals: 2)
                 slider("Backing", $styles.style.backing,
                        in: MacOverlayStyle.backingRange, step: 0.05, decimals: 2)
 

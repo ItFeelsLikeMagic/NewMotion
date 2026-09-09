@@ -19,6 +19,7 @@ final class OverlayStyleTests: XCTestCase {
         var style = MacOverlayStyle.standard
         style.glass = .frosted
         style.tintsLitKey = false
+        style.glassOpacity = 0.35
         style.backing = 0.4
         style.tileSide = 110
         style.tileCorner = 6

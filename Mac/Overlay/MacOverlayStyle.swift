@@ -34,6 +34,10 @@ struct MacOverlayStyle: Codable, Equatable, Sendable {
     /// neighbours. Off trades that for a plain dim highlight, for an accent
     /// colour that disappears into the wallpaper behind it.
     var tintsLitKey = true
+    /// How much of the glass is drawn at all. Apple's glass comes in two
+    /// strengths and no dial, so this fades the whole pane, edge and blur
+    /// together, towards nothing; the letters stay solid.
+    var glassOpacity: Double = 1
     /// A scrim between the glass and the letters. Clear glass shows whatever
     /// is behind it straight through, and some wallpapers swallow the type.
     var backing: Double = 0
@@ -63,6 +67,7 @@ struct MacOverlayStyle: Codable, Equatable, Sendable {
     /// Today's look, and what a decode that fails falls back to.
     static let standard = MacOverlayStyle()
 
+    static let glassOpacityRange: ClosedRange<Double> = 0...1
     static let backingRange: ClosedRange<Double> = 0...0.7
     static let tileSideRange: ClosedRange<Double> = 56...128
     static let tileCornerRange: ClosedRange<Double> = 4...40
