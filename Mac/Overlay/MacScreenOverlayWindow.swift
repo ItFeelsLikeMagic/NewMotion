@@ -75,11 +75,21 @@ final class MacScreenOverlayWindow {
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
         // The panel is one fixed size and the card is centred in it, so it is
-        // the middle of the panel that is aimed a fifth of the way up.
+        // the middle of the panel that is aimed a fifth of the way up. Pinned
+        // inside the visible frame afterwards: the panel is taller than a fifth
+        // of a short display, and aiming alone would hang it off the bottom.
+        let x = visible.midX - size.width / 2
+        let y = visible.minY + visible.height / 5 - size.height / 2
         panel.setFrameOrigin(NSPoint(
-            x: (visible.midX - size.width / 2).rounded(),
-            y: (visible.minY + visible.height / 5 - size.height / 2).rounded()
+            x: Self.pinned(x, low: visible.minX, high: visible.maxX - size.width),
+            y: Self.pinned(y, low: visible.minY, high: visible.maxY - size.height)
         ))
+    }
+
+    /// A panel wider or taller than the screen has no room to be pinned into,
+    /// so it starts at the visible frame's edge and overhangs the far one.
+    private static func pinned(_ value: CGFloat, low: CGFloat, high: CGFloat) -> CGFloat {
+        max(low, min(value, max(low, high))).rounded()
     }
 
     private func fade(_ panel: NSPanel, to alpha: CGFloat) {
