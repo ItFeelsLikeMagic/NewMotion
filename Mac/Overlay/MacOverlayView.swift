@@ -14,24 +14,31 @@ struct MacOverlayView: View {
 
     var body: some View {
         content
-            .padding(.horizontal, MacOverlayStyle.cardPadding.width)
-            .padding(.vertical, MacOverlayStyle.cardPadding.height)
-            .background(cardBackground)
+            .padding(MacOverlayStyle.cardPadding)
+            .background(pane)
             .fixedSize()
             .animation(MacOverlayStyle.fade, value: shape)
             .frame(width: MacOverlayStyle.panelSize.width, height: MacOverlayStyle.panelSize.height)
     }
 
-    /// Only the cards that are text get a slab behind them, because only text
-    /// is unreadable on a wallpaper. The tiles carry their own material, and a
-    /// second one behind them would box in a grid that reads better floating.
+    /// One sheet of glass behind the whole card, the way the app switcher sits
+    /// over a desktop: almost nothing through the middle, and a rim that bends
+    /// what is behind it. Regular glass rather than the clear the tiles use,
+    /// because that rim is the whole of what makes it read as glass. It is a
+    /// background, not a container: a glass container draws its own glass over
+    /// everything inside it, and took the tiles' letters with it.
     @ViewBuilder
-    private var cardBackground: some View {
+    private var pane: some View {
+        let shape = RoundedRectangle(cornerRadius: MacOverlayStyle.cardCorner, style: .continuous)
         switch shown.content {
-        case .transcript, .hint:
-            RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.ultraThinMaterial)
-        case .nothing, .picker, .arrows, .delete:
+        case .nothing:
             EmptyView()
+        case .picker, .arrows, .delete, .transcript, .hint:
+            if #available(macOS 26, *) {
+                shape.fill(.clear).glassEffect(.regular, in: shape)
+            } else {
+                shape.fill(.ultraThinMaterial)
+            }
         }
     }
 
@@ -121,7 +128,8 @@ struct MacOverlayView: View {
     /// and slide. Stacked the way the finger moves: up on the phone is Word, so
     /// Word sits on top. And a line saying what across does, since the card is
     /// up before the finger has moved and that is the moment the reminder is
-    /// worth anything. It gets a slab of its own; the card behind it is clear.
+    /// worth anything. It gets a slab of its own, so it reads as another key
+    /// rather than as writing on the pane.
     private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
         VStack(spacing: MacOverlayStyle.tileSpacing) {
             ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in

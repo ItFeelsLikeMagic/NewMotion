@@ -17,11 +17,10 @@ final class OverlayStyleTests: XCTestCase {
             return MacOverlayStyle.rowOffset(index) + across
         }.max() ?? 0
         let tall: CGFloat = span(rows.count)
-        let sides: CGFloat = 2 * (MacOverlayStyle.cardPadding.width + MacOverlayStyle.spareRoom)
-        let ends: CGFloat = 2 * (MacOverlayStyle.cardPadding.height + MacOverlayStyle.spareRoom)
+        let room: CGFloat = 2 * (MacOverlayStyle.cardPadding + MacOverlayStyle.spareRoom)
 
-        XCTAssertEqual(MacOverlayStyle.panelSize.width, max(widest, MacOverlayStyle.maximumWidth) + sides)
-        XCTAssertEqual(MacOverlayStyle.panelSize.height, tall + ends)
+        XCTAssertEqual(MacOverlayStyle.panelSize.width, max(widest, MacOverlayStyle.maximumWidth) + room)
+        XCTAssertEqual(MacOverlayStyle.panelSize.height, tall + room)
     }
 
     /// Tiles end to end with a gap between each pair, which is what the grid
