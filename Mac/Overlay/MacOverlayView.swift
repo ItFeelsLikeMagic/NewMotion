@@ -23,10 +23,11 @@ struct MacOverlayView: View {
 
     /// One sheet of glass behind the whole card, the way the app switcher sits
     /// over a desktop: almost nothing through the middle, and a rim that bends
-    /// what is behind it. Regular glass rather than the clear the tiles use,
-    /// because that rim is the whole of what makes it read as glass. It is a
-    /// background, not a container: a glass container draws its own glass over
-    /// everything inside it, and took the tiles' letters with it.
+    /// what is behind it. Clear glass, because regular is a frosted slab on a
+    /// dark desktop and hides what it sits on; the rim is what makes clear
+    /// read as glass. It is a background, not a container: a glass container
+    /// draws its own glass over everything inside it, and took the tiles'
+    /// letters with it.
     @ViewBuilder
     private var pane: some View {
         let shape = RoundedRectangle(cornerRadius: MacOverlayStyle.cardCorner, style: .continuous)
@@ -35,7 +36,7 @@ struct MacOverlayView: View {
             EmptyView()
         case .picker, .arrows, .delete, .transcript, .hint:
             if #available(macOS 26, *) {
-                shape.fill(.clear).glassEffect(.regular, in: shape)
+                shape.fill(.clear).glassEffect(.clear, in: shape)
             } else {
                 shape.fill(.ultraThinMaterial)
             }
