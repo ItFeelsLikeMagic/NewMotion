@@ -17,21 +17,6 @@ final class MacScreenOverlayWindow {
     /// hide a card that is still on its way in, and leave it up for good.
     private var isShowing = false
 
-    init(style: MacOverlayStyle) {
-        shown.style = style
-    }
-
-    /// The style is tuned from the menu bar with a card deliberately left on
-    /// screen, so a slider has to land on the card as it moves.
-    func restyle(_ style: MacOverlayStyle) {
-        shown.style = style
-        guard let panel else { return }
-        let size = style.panelSize
-        guard panel.frame.size != size else { return }
-        panel.setContentSize(size)
-        if isShowing { position(panel) }
-    }
-
     func show(_ content: MacOverlayContent) {
         let panel = panel ?? makePanel()
         // Already up: the card redraws itself and nothing else happens. Placing
@@ -62,7 +47,7 @@ final class MacScreenOverlayWindow {
 
     private func makePanel() -> NSPanel {
         let panel = NonFocusingPanel(
-            contentRect: NSRect(origin: .zero, size: shown.style.panelSize),
+            contentRect: NSRect(origin: .zero, size: MacOverlayStyle.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -114,7 +99,7 @@ final class MacScreenOverlayWindow {
 
     private func fade(_ panel: NSPanel, to alpha: CGFloat) {
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = shown.style.fadeDuration
+            context.duration = MacOverlayStyle.fadeDuration
             panel.animator().alphaValue = alpha
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated { self?.orderOutIfFadedAway() }
@@ -148,7 +133,5 @@ private final class NonFocusingPanel: NSPanel {
 @MainActor
 final class MacOverlayContentBox: ObservableObject {
     @Published var content: MacOverlayContent = .nothing
-    /// Rare by comparison: a person moving a slider, never the packet path.
-    @Published var style: MacOverlayStyle = .standard
 }
 #endif

@@ -145,10 +145,6 @@ final class MacRemoteAppModel: ObservableObject {
     /// exists from launch; the panel it drives is only built once something
     /// asks to be drawn, which is never under the test host.
     let overlay = MacOverlayPresenter()
-    /// The look of the card, tuned from the menu bar and kept between launches.
-    let overlayStyle = MacOverlayStyleStore()
-    /// Which card, if any, the menu bar is holding up to be looked at.
-    @Published private(set) var overlayPreview: MacOverlayPreview = .off
     private var overlayWindow: MacScreenOverlayWindow?
 
     /// The parameters exist so a test can put a fake radio, a fake clock, and
@@ -261,9 +257,6 @@ final class MacRemoteAppModel: ObservableObject {
 
         overlay.onChange = { [weak self] content in
             self?.drawOverlay(content)
-        }
-        overlayStyle.onChange = { [weak self] style in
-            self?.overlayWindow?.restyle(style)
         }
 
         if !inert {
@@ -443,15 +436,9 @@ final class MacRemoteAppModel: ObservableObject {
             return
         }
         guard !MacHostRuntime.isInert else { return }
-        let window = overlayWindow ?? MacScreenOverlayWindow(style: overlayStyle.style)
+        let window = overlayWindow ?? MacScreenOverlayWindow()
         overlayWindow = window
         window.show(content)
-    }
-
-    /// Holds a card up so the sliders in the menu bar have something to move.
-    func setOverlayPreview(_ preview: MacOverlayPreview) {
-        overlayPreview = preview
-        overlay.preview(preview.content)
     }
 
     private func handleLinkState(_ state: RemoteLinkState) {
@@ -1231,9 +1218,6 @@ struct MacRemoteStatusView: View {
     var body: some View {
         content
             .onAppear { model.recheckAccessibility() }
-            // A preview card has no timeout, so the popover closing is the
-            // only thing that can take it down.
-            .onDisappear { model.setOverlayPreview(.off) }
     }
 
     private var content: some View {
@@ -1287,14 +1271,6 @@ struct MacRemoteStatusView: View {
             ))
             .font(.caption)
             .help("Off by default: splitting a scroll makes apps accelerate it less, so the page moves a shorter distance for the same flick.")
-
-            MacOverlayStyleSection(
-                styles: model.overlayStyle,
-                preview: Binding(
-                    get: { model.overlayPreview },
-                    set: { model.setOverlayPreview($0) }
-                )
-            )
 
             Button(model.isPaused ? "Resume Remote Control" : "Pause Remote Control") {
                 model.togglePause()

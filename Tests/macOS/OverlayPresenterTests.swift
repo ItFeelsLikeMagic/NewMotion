@@ -454,25 +454,6 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .delete(granularity: .word))
     }
 
-    /// Someone tuning the look has a card up on purpose. It has to beat a
-    /// picker, and it has to outlive a phone connecting or dropping, which is
-    /// the one thing on this card that `clearAll` does not take away.
-    func testAPreviewOutranksAPickerAndSurvivesClearAll() {
-        let (presenter, _) = make()
-        presenter.beginPicker()
-        presenter.highlight(.cut)
-
-        presenter.preview(.delete(granularity: .word))
-        XCTAssertEqual(presenter.content, .delete(granularity: .word))
-
-        presenter.clearAll()
-        XCTAssertEqual(presenter.content, .delete(granularity: .word))
-
-        // And nothing but turning it off takes it down again.
-        presenter.preview(nil)
-        XCTAssertEqual(presenter.content, .nothing)
-    }
-
     /// The card goes up on the key, not on the first arrow: the pad is held
     /// before anything has been sent, and that is when the four keys are worth
     /// showing.  Nothing is lit until an arrow has actually landed.
