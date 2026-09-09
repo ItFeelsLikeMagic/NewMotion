@@ -82,10 +82,10 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if pushToTalk.isHolding {
-                // Nothing is below it to push down, so Cancel splits the rest
-                // of the column with the microphone rather than taking a row.
+                // The bottom row's height too, so the microphone is exactly
+                // the size it was before the finger landed.
                 PushToTalkZoneBar(controller: pushToTalk, zone: .cancel)
-                    .frame(minHeight: RemoteKeyMetrics.keyHeight, maxHeight: .infinity)
+                    .frame(height: RemoteKeyMetrics.keyHeight)
             } else {
                 HStack(spacing: RemoteKeyMetrics.spacing) {
                     slot { keys.nextTab }
