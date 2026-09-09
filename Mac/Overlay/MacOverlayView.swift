@@ -168,18 +168,18 @@ struct MacOverlayView: View {
         .modifier(Slab(shape: RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous), isLit: isLit))
     }
 
-    /// Liquid Glass where the Mac has it, so the keys sit on the wallpaper
-    /// the way the system's own floating controls do; a material slab with a
-    /// hairline on the Macs before it, which reads the same from across a
-    /// room.  The lit key is the glass tinted, not a flat fill, so it keeps
-    /// the same edge as its neighbours.
+    /// Liquid Glass where the Mac has it, the clear kind, so the keys sit on
+    /// the wallpaper the way the system's own floating controls do and the
+    /// screen stays visible through them; a material slab with a hairline on
+    /// the Macs before it.  The lit key is the glass tinted, not a flat fill,
+    /// so it keeps the same edge as its neighbours.
     private struct Slab<S: InsettableShape>: ViewModifier {
         let shape: S
         let isLit: Bool
 
         func body(content: Content) -> some View {
             if #available(macOS 26, *) {
-                let glass: Glass = isLit ? Glass.regular.tint(Color.accentColor) : Glass.regular
+                let glass: Glass = isLit ? Glass.clear.tint(Color.accentColor) : Glass.clear
                 content.glassEffect(glass, in: shape)
             } else if isLit {
                 content.background(shape.fill(Color.accentColor))
