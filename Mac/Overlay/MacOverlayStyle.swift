@@ -34,6 +34,9 @@ enum MacOverlayStyle {
     /// The one pane every card sits on. Round enough to read as a floating
     /// sheet rather than a tile grown large, the way the app switcher does.
     static let cardCorner: CGFloat = 24
+    /// How far in from the edge the sheet's glass reaches before the middle
+    /// goes fully clear.
+    static let rimWidth: CGFloat = 18
     /// Room between the content and the pane's edge. The middle of the glass
     /// is almost nothing to look at; the rim is the whole effect, so the card
     /// has to leave it somewhere to be.
