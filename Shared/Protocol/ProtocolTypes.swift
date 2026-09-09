@@ -601,10 +601,21 @@ public enum KeyPickerGrid {
     ]
 }
 
+/// Where the talk button is, which is what decides whether the Mac's card is
+/// on screen at all.
+public enum TranscriptPreviewPhase: UInt8, Codable, CaseIterable, Sendable {
+    /// The button is down. The words are everything heard so far, and none of
+    /// them yet is the card saying it is listening.
+    case live = 1
+    /// The button is up, so the card goes down. It carries no words.
+    case ended = 2
+}
+
 /// The words the phone's recogniser has heard so far, on their way to the Mac
 /// card. Each message carries the whole current preview rather than a change
 /// to it, so a dropped one is repaired by the next instead of leaving the two
-/// ends disagreeing. An empty payload means "clear", and is valid.
+/// ends disagreeing. Words are not what puts the card up or takes it down;
+/// the phase is, so an empty `live` payload is valid and means "listening".
 public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
     /// A glance at the tail of a sentence, not a transcript, so far below
     /// `ProtocolBytes.maximumCount`: ten of these a second share the link with
@@ -613,19 +624,21 @@ public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
     /// is what decides how many BLE fragments a partial costs.
     public static let maximumUTF8Bytes = 128
 
+    public let phase: TranscriptPreviewPhase
     public let utf8: ProtocolBytes
 
-    public init(utf8: [UInt8]) throws {
+    public init(phase: TranscriptPreviewPhase = .live, utf8: [UInt8]) throws {
         guard utf8.count <= Self.maximumUTF8Bytes else {
             throw ProtocolError.fieldTooLarge(
                 "transcript_preview", actual: utf8.count, limit: Self.maximumUTF8Bytes
             )
         }
+        self.phase = phase
         self.utf8 = try ProtocolBytes(bytes: utf8)
     }
 
-    public init(text: String) throws {
-        try self.init(utf8: Array(text.utf8))
+    public init(phase: TranscriptPreviewPhase = .live, text: String) throws {
+        try self.init(phase: phase, utf8: Array(text.utf8))
     }
 
     public var text: String? {
@@ -943,9 +956,9 @@ public enum MessagePayload: Codable, Equatable, Sendable {
                 throw ProtocolError.invalidUTF8
             }
         case .transcriptPreview(let value):
-            // No empty check, unlike spoken text: an empty preview is the
-            // message that clears the card, and refusing it would break every
-            // clear.
+            // No empty check, unlike spoken text: a live preview with no words
+            // is the card saying it is listening, sent the moment the talk
+            // button goes down.
             guard value.utf8.bytes.count <= TranscriptPreviewPayload.maximumUTF8Bytes else {
                 throw ProtocolError.fieldTooLarge(
                     "transcript_preview",
@@ -955,6 +968,11 @@ public enum MessagePayload: Codable, Equatable, Sendable {
             }
             guard value.text != nil else {
                 throw ProtocolError.invalidUTF8
+            }
+            // The end of a hold carries no words, so words with it mean the
+            // two ends disagree about which message this is.
+            guard value.phase == .live || value.utf8.bytes.isEmpty else {
+                throw ProtocolError.invalidField("transcript_preview_ended_words")
             }
         case .motionPointerDelta(let value):
             try validateDelta(x: value.deltaX, y: value.deltaY, field: "motion_pointer_delta")

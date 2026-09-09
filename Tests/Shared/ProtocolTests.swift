@@ -121,6 +121,10 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(MessageType.keyPicker.rawValue, 19)
         XCTAssertEqual(MessageType.transcriptPreview.rawValue, 20)
 
+        XCTAssertEqual(TranscriptPreviewPhase.live.rawValue, 1)
+        XCTAssertEqual(TranscriptPreviewPhase.ended.rawValue, 2)
+        XCTAssertEqual(TranscriptPreviewPhase.allCases.count, 2)
+
         // 5 is the next free number after `end`, and a retired one is never
         // handed back out: an older Mac reads an unknown phase as a phase it
         // once knew and acts on it.
@@ -158,13 +162,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(KeyPickerGrid.cell(named: "quit"))
     }
 
-    /// The preview is unreliable on purpose, and an empty one is the message
-    /// that clears the card, so unlike spoken text it must pass validation.
-    func testTranscriptPreviewRoundTripsAndAcceptsAnEmptyClear() throws {
+    /// The preview is unreliable on purpose, and a live one with no words is
+    /// the card saying it is listening, so unlike spoken text it must pass
+    /// validation.
+    func testTranscriptPreviewRoundTripsAndAcceptsAnEmptyLiveHold() throws {
         XCTAssertEqual(MessageType.transcriptPreview.deliveryClass, .unreliable)
 
-        for text in ["", "héllo there"] {
-            let payload = MessagePayload.transcriptPreview(try TranscriptPreviewPayload(text: text))
+        let cases: [(TranscriptPreviewPhase, String)] = [
+            (.live, ""),
+            (.live, "héllo there"),
+            (.ended, "")
+        ]
+        for (phase, text) in cases {
+            let payload = MessagePayload.transcriptPreview(
+                try TranscriptPreviewPayload(phase: phase, text: text)
+            )
+            try payload.validate()
             let envelope = ProtocolEnvelope(
                 sessionID: sessionID,
                 sequence: 1,
@@ -176,7 +189,19 @@ final class ProtocolTests: XCTestCase {
             guard case let .transcriptPreview(value) = decoded.payload else {
                 return XCTFail("wrong payload")
             }
+            XCTAssertEqual(value.phase, phase)
             XCTAssertEqual(value.text, text)
+        }
+    }
+
+    /// The end of a hold takes the card down, so words riding along with it
+    /// mean the two ends disagree about which message this is.
+    func testTranscriptPreviewRefusesWordsOnAnEndedHold() throws {
+        let payload = MessagePayload.transcriptPreview(
+            try TranscriptPreviewPayload(phase: .ended, text: "héllo there")
+        )
+        XCTAssertThrowsError(try payload.validate()) { error in
+            XCTAssertEqual(error as? ProtocolError, .invalidField("transcript_preview_ended_words"))
         }
     }
 
@@ -194,7 +219,7 @@ final class ProtocolTests: XCTestCase {
 
         // The sender's bound is not the receiver's: a message that arrives
         // over the limit has to be refused on the way in as well.
-        let oversized = #"{"utf8":[\#(Array(repeating: "97", count: 129).joined(separator: ","))]}"#
+        let oversized = #"{"phase":1,"utf8":[\#(Array(repeating: "97", count: 129).joined(separator: ","))]}"#
         let value = try JSONDecoder().decode(TranscriptPreviewPayload.self, from: Data(oversized.utf8))
         XCTAssertThrowsError(try MessagePayload.transcriptPreview(value).validate()) { error in
             XCTAssertEqual(

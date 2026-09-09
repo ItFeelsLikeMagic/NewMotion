@@ -10,7 +10,8 @@ public enum MacOverlayContent: Equatable, Sendable {
     case picker(cell: HotkeyAction?)
     /// A delete key is held. `granularity` is the unit it will take off next.
     case delete(granularity: DeleteScrubGranularity)
-    /// The words the phone is hearing, on their way to being typed.
+    /// The words the phone is hearing, on their way to being typed. Empty
+    /// while the talk button is down and nothing has been said yet.
     case transcript(String)
     case hint(String)
 }
@@ -65,9 +66,10 @@ public final class MacOverlayPresenter {
     public static let pickerSilenceTimeout: TimeInterval = 6
     /// Long enough to read one line, short enough not to be in the way.
     public static let hintDuration: TimeInterval = 2
-    /// The preview channel is unreliable, so a lost "clear" must not strand
-    /// words on screen. This timeout is the real guarantee; the empty message
-    /// only makes the common case instant.
+    /// The preview channel is unreliable, so a lost end must not strand the
+    /// card on screen. This timeout is the real guarantee; the ended message
+    /// only makes the common case instant. The phone repeats its preview once
+    /// a second, silent hold or not, so a card that is still wanted survives.
     public static let transcriptIdleTimeout: TimeInterval = 2
     /// Three plain deletes inside this window is someone rubbing a word out
     /// one press at a time, which is exactly who has not found the slide.
@@ -176,14 +178,16 @@ public final class MacOverlayPresenter {
         endDelete(generation: deleteGeneration)
     }
 
-    /// The words the phone has heard so far. Empty means clear.
+    /// The words the phone has heard so far, none of them yet while the talk
+    /// button is down and nobody has spoken. Empty puts the card up listening
+    /// rather than taking it down; `clearTranscript` is the only way down.
     public func showTranscript(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Dictation is already held back at a password field; a preview of it
         // has to be too, or a spoken password paints itself on the screen.
         // Checked here so the words are not even held, and again in `wanted`
         // so anything that redraws takes down a preview already on screen.
-        guard !trimmed.isEmpty, !isSecureInputActive() else {
+        guard !isSecureInputActive() else {
             clearTranscript()
             return
         }

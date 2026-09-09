@@ -61,14 +61,16 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
-    /// A pause before any words means there is nothing to keep alive, and an
-    /// empty message is the one that clears the card.
-    func testAnEmptyPreviewIsNeverKeptAlive() {
+    /// The talk button going down offers no words at all, and that empty
+    /// preview is the listening card: it goes out, and it is kept alive like
+    /// any other, or the Mac's idle clear takes the card mid-hold.
+    func testAnEmptyPreviewIsSentAndKeptAlive() {
         var throttle = TranscriptPreviewThrottle()
 
-        XCTAssertNil(throttle.sends("", at: 0))
-        XCTAssertNil(throttle.sends("", at: 5))
-        XCTAssertEqual(throttle.sentCount, 0)
+        XCTAssertEqual(throttle.sends("", at: 0), "")
+        XCTAssertNil(throttle.sends("", at: 0.5))
+        XCTAssertEqual(throttle.sends("", at: 1), "")
+        XCTAssertEqual(throttle.sentCount, 2)
     }
 
     func testNoMoreThanTenASecond() {
@@ -129,15 +131,19 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         XCTAssertEqual(tail.count, 3)
     }
 
-    /// The end of an utterance clears the card once, and only when there is
-    /// something on it.
-    func testClearingIsAskedForOnlyWhenSomethingWasSent() {
+    /// The end of an utterance takes the card down once, and only when there
+    /// is a card up.
+    func testClearingIsAskedForOnlyWhenACardIsUp() {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertFalse(throttle.clear())
         _ = throttle.sends("hello", at: 0)
         XCTAssertTrue(throttle.clear())
         XCTAssertFalse(throttle.clear())
+
+        // A card with no words on it is still a card to take down.
+        _ = throttle.sends("", at: 1)
+        XCTAssertTrue(throttle.clear())
     }
 
     /// The next utterance starts from nothing, so the same words spoken twice
@@ -228,6 +234,64 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
         clock.value += 0.5
         model.keepVoicePreviewAlive()
         XCTAssertEqual(link.dataMessageCount, afterFirstPartial)
+    }
+
+    /// The card is the hint that the Mac is listening, so it goes up with the
+    /// finger rather than with the first word.
+    func testTheButtonGoingDownPutsAnEmptyPreviewOnTheWire() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+
+        let before = link.dataMessageCount
+        model.beginVoicePreview()
+        XCTAssertEqual(link.dataMessageCount, before + 1, "the card goes up before a word is said")
+
+        // Still nobody talking, and the Mac's idle clear is coming.
+        clock.value += 1
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, before + 2)
+    }
+
+    /// The finger lifting is what takes the card down, and the tick goes with
+    /// it so an idle phone is not repeating anything.
+    func testTheButtonComingUpEndsTheHoldAndStopsTheTick() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+
+        model.beginVoicePreview()
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        let beforeRelease = link.dataMessageCount
+
+        model.endVoicePreview()
+        XCTAssertEqual(link.dataMessageCount, beforeRelease + 1, "the end of the hold goes out")
+
+        clock.value += 5
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, beforeRelease + 1)
+    }
+
+    /// A phrase typed with the finger still down leaves the card up and blank:
+    /// the next phrase is already being listened for.
+    func testAPhraseFinishingMidHoldGoesBackToListening() async throws {
+        let clock = PreviewClock(1_000)
+        let link = FakeMessageLink()
+        let model = try await pairedModel(link: link, clock: clock)
+
+        model.beginVoicePreview()
+        model.onDeviceVoice.onPartialText?("hello there")
+        try await settle()
+        let beforeFinish = link.dataMessageCount
+
+        model.onDeviceVoice.onUtteranceFinished?()
+        try await settle()
+        XCTAssertEqual(link.dataMessageCount, beforeFinish + 1, "the words are blanked, the card stays")
+
+        clock.value += 1
+        model.keepVoicePreviewAlive()
+        XCTAssertEqual(link.dataMessageCount, beforeFinish + 2, "the tick is still holding the card up")
     }
 
     /// The utterance ending stops the tick, so a phone sitting idle is not

@@ -18,6 +18,10 @@ final class PushToTalkController: ObservableObject {
 
     private let audio: LocalPushToTalkAudioController
     private let activity: @MainActor (String) -> Void
+    /// Told the finger is down before the microphone is asked for, so the
+    /// Mac's card can say it is listening without waiting on a permission
+    /// prompt or an audio session.
+    private let hold: @MainActor (Bool) -> Void
     private let logContext: @MainActor () -> [String: String]
     private var isHeld = false
     private var zoneFrames: [PushToTalkZone: CGRect] = [:]
@@ -25,10 +29,12 @@ final class PushToTalkController: ObservableObject {
     init(
         audio: LocalPushToTalkAudioController,
         activity: @escaping @MainActor (String) -> Void,
+        hold: @escaping @MainActor (Bool) -> Void = { _ in },
         logContext: @escaping @MainActor () -> [String: String]
     ) {
         self.audio = audio
         self.activity = activity
+        self.hold = hold
         self.logContext = logContext
     }
 
@@ -36,6 +42,7 @@ final class PushToTalkController: ObservableObject {
         isHeld = true
         isHolding = true
         armedZone = nil
+        hold(true)
         start()
     }
 
@@ -70,6 +77,7 @@ final class PushToTalkController: ObservableObject {
         isHolding = false
         let zone = armedZone
         armedZone = nil
+        hold(false)
         switch zone {
         case .some:
             audio.pushToTalkCancelled()

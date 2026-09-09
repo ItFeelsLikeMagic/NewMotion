@@ -770,7 +770,10 @@ final class MacRemoteAppModel: ObservableObject {
             // Spoken words, on their way to the card and nowhere else. This
             // must not touch `lastApplicationMessage`, whose `didSet` copies
             // it into the debug snapshot ten times a second.
-            overlay.showTranscript(value.text ?? "")
+            switch value.phase {
+            case .live: overlay.showTranscript(value.text ?? "")
+            case .ended: overlay.clearTranscript()
+            }
         case let .spokenText(value):
             // The finished words are about to be typed, so the guess at them
             // has done its job.

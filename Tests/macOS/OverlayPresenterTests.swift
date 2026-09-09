@@ -179,9 +179,35 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.content, .transcript("the newest words"))
     }
 
-    func testAnEmptyPreviewClearsTheTranscript() {
+    /// The talk button going down puts the card up before a word is said, so
+    /// an empty preview blanks the words rather than taking the card away.
+    func testAnEmptyPreviewLeavesTheCardUpListening() {
         let (presenter, _) = make()
+        presenter.showTranscript("")
+        XCTAssertEqual(presenter.content, .transcript(""))
+
         presenter.showTranscript("some words")
+        presenter.showTranscript("")
+        XCTAssertEqual(presenter.content, .transcript(""))
+
+        presenter.clearTranscript()
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The listening card is kept alive by the phone like any other, so it
+    /// goes the same way if the phone falls silent.
+    func testTheListeningCardClearsItselfWhenThePhoneFallsSilent() {
+        let (presenter, clock) = make()
+        presenter.showTranscript("")
+        clock.fire(.transcript)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// A password field stops the card going up at all, empty or not.
+    func testSecureInputBlocksTheListeningCard() {
+        let secure = SecureInputFlag()
+        let (presenter, _) = make(secure: secure)
+        secure.isOn = true
         presenter.showTranscript("")
         XCTAssertEqual(presenter.content, .nothing)
     }

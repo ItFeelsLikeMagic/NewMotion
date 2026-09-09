@@ -170,5 +170,27 @@ final class OverlayDispatchTests: XCTestCase {
 
         try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "spoken words")))
         XCTAssertEqual(model.lastApplicationMessage, "hotkey blocked")
+
+        try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(phase: .ended, text: "")))
+        XCTAssertEqual(model.lastApplicationMessage, "hotkey blocked")
+    }
+
+    /// The talk button decides whether the card is up, not the words: a live
+    /// preview with none yet is the phone saying it is listening.
+    func testTheHoldPutsTheCardUpAndItsEndTakesItDown() throws {
+        let model = MacRemoteAppModel()
+
+        try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "")))
+        XCTAssertEqual(model.overlay.content, .transcript(""))
+
+        try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "spoken words")))
+        XCTAssertEqual(model.overlay.content, .transcript("spoken words"))
+
+        // The phrase was typed, but the finger is still down.
+        try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(text: "")))
+        XCTAssertEqual(model.overlay.content, .transcript(""))
+
+        try model.dispatchApplication(.transcriptPreview(TranscriptPreviewPayload(phase: .ended, text: "")))
+        XCTAssertEqual(model.overlay.content, .nothing)
     }
 }

@@ -69,12 +69,12 @@ public struct TranscriptPreviewThrottle: Sendable {
             of: text.trimmingCharacters(in: .whitespacesAndNewlines),
             maximumUTF8Bytes: maximumUTF8Bytes
         )
-        if tail == lastSent {
+        if tail == lastSent, let sinceLastSend {
             // Words the card is already showing, so this is only worth the
-            // wire once the Mac's idle clear is close.  An empty preview is
-            // never worth repeating: there is nothing to keep alive.
-            guard !tail.isEmpty, let sinceLastSend,
-                  sinceLastSend >= keepaliveInterval else { return .nothing }
+            // wire once the Mac's idle clear is close.  An empty preview
+            // counts: while the talk button is held it is the card saying it
+            // is listening, and it has to be kept alive like any other.
+            guard sinceLastSend >= keepaliveInterval else { return .nothing }
         }
         return .send(tail)
     }
@@ -88,11 +88,11 @@ public struct TranscriptPreviewThrottle: Sendable {
         sentCount += 1
     }
 
-    /// Whether the Mac still has words on its card, and so needs the empty
-    /// message that clears them.  The utterance is over either way, so the
-    /// throttle starts again from nothing.
+    /// Whether the Mac has a card up at all, and so needs the message that
+    /// takes it down.  A card with no words on it still counts.  The utterance
+    /// is over either way, so the throttle starts again from nothing.
     public mutating func clear() -> Bool {
-        let hadPreview = !lastSent.isEmpty
+        let hadPreview = lastSentAt != nil
         self = TranscriptPreviewThrottle(
             minimumInterval: minimumInterval,
             keepaliveInterval: keepaliveInterval,

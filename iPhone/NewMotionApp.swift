@@ -102,6 +102,9 @@ final class NewMotionFeatureModel: ObservableObject {
     private(set) lazy var pushToTalk = PushToTalkController(
         audio: audioController,
         activity: { [weak self] in self?.latestAction = $0 },
+        hold: { [weak self] isHeld in
+            if isHeld { self?.beginVoicePreview() } else { self?.endVoicePreview() }
+        },
         logContext: { [weak self] in
             [
                 "link": self?.linkState.label ?? "unknown",
@@ -154,8 +157,12 @@ final class NewMotionFeatureModel: ObservableObject {
     /// preview so it can tell a revision from a repeat; nothing is stored past
     /// the utterance.
     private var previewThrottle = TranscriptPreviewThrottle()
-    /// Runs only while there is a preview to keep alive.
+    /// Runs only while there is a card on the Mac to keep alive.
     private var previewKeepalive: Timer?
+    /// True from the moment the talk button goes down until it lifts.  The
+    /// Mac's card is up for exactly that long, so a phrase finishing mid-hold
+    /// blanks it back to listening instead of taking it down.
+    private var isTalkHeld = false
     /// The newest words the throttle held back, and the one-shot wait that
     /// puts them on the wire the moment its window opens.  Not published: the
     /// banner already has them.
@@ -272,9 +279,11 @@ final class NewMotionFeatureModel: ObservableObject {
         audioController.onUtteranceStart = { onDevice.begin(boostWords: boost.words) }
         audioController.onChunk = { onDevice.append($0) }
         audioController.onUtteranceEnd = { onDevice.end() }
+        // A cancel also arrives from outside the button: a call, a route
+        // change, the app going away.  The card goes with the microphone.
         audioController.onUtteranceCancel = { [weak self] in
             onDevice.cancel()
-            Task { @MainActor in self?.clearVoicePreview() }
+            Task { @MainActor in self?.endVoicePreview() }
         }
         onDeviceVoice.onText = { [weak self] text in
             Task { @MainActor in self?.typeTranscribedText(text) }
@@ -1088,12 +1097,13 @@ final class NewMotionFeatureModel: ObservableObject {
         pendingPreview = nil
     }
 
-    /// Someone pausing mid-sentence stops the analyser revising, so nothing
-    /// reaches the Mac and its two-second idle clear takes the words away
-    /// while the talk button is still held.  This puts the same words back on
-    /// the wire once a second until the utterance ends.
+    /// Someone pausing mid-sentence stops the analyser revising, and a button
+    /// held before the first word never started it.  Either way nothing would
+    /// reach the Mac and its two-second idle clear would take the card away
+    /// with the finger still down.  This puts the same preview back on the
+    /// wire once a second, words or not, until the button lifts.
     func keepVoicePreviewAlive() {
-        guard !voicePreview.isEmpty else { return }
+        guard previewKeepalive != nil else { return }
         sendVoicePreview(voicePreview)
     }
 
@@ -1104,22 +1114,45 @@ final class NewMotionFeatureModel: ObservableObject {
         }
     }
 
-    /// The utterance is over, so the preview goes.  The empty message only
-    /// makes the common case instant; the Mac clears itself if it never lands.
+    /// The talk button went down.  The card goes up empty right away, so the
+    /// hint that the Mac is listening does not wait on the first word.
+    func beginVoicePreview() {
+        isTalkHeld = true
+        startPreviewKeepalive()
+        sendVoicePreview("")
+    }
+
+    /// The talk button came up, or the microphone was taken away.  The card
+    /// goes down and the tick that held it there stops.
+    func endVoicePreview() {
+        isTalkHeld = false
+        clearVoicePreview()
+    }
+
+    /// The utterance is over.  While the button is still down the Mac keeps
+    /// its card, blank again, because the next phrase is already being
+    /// listened for; only the button lifting takes it down.  The ended message
+    /// only makes that instant; the Mac clears itself if it never lands.
     private func clearVoicePreview() {
         voicePreview = ""
-        previewKeepalive?.invalidate()
-        previewKeepalive = nil
         // Words still waiting on the window belong to an utterance that is
-        // over, and the card is about to be cleared of them anyway.
+        // over, and the card is about to be blanked of them anyway.
         cancelTrailingPreview()
         let previews = previewThrottle.sentCount
         let characters = previewThrottle.characterCount
-        guard previewThrottle.clear() else { return }
-        if isControllable, let payload = try? TranscriptPreviewPayload(text: "") {
-            _ = inputUplink.sendTranscriptPreview(payload)
+        let hadCard = previewThrottle.clear()
+        if hadCard {
+            IPhoneDebugLog.emit("voice_preview", ["sent": "\(previews)", "chars": "\(characters)"])
         }
-        IPhoneDebugLog.emit("voice_preview", ["sent": "\(previews)", "chars": "\(characters)"])
+        guard !isTalkHeld else {
+            sendVoicePreview("")
+            return
+        }
+        previewKeepalive?.invalidate()
+        previewKeepalive = nil
+        guard hadCard, isControllable,
+              let payload = try? TranscriptPreviewPayload(phase: .ended, text: "") else { return }
+        _ = inputUplink.sendTranscriptPreview(payload)
     }
 
     /// The on-device route's one delivery point.  A finished sentence crosses
