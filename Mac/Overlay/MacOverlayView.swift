@@ -7,61 +7,19 @@ import NewMotionShared
 #endif
 
 /// The card itself: one thing at a time, sized to what it says, centred in a
-/// pane of one fixed size. Every number it draws from lives in
+/// pane of one fixed size. The keys float on the desktop with nothing behind
+/// them: a sheet under the whole card only ever looked like a frosted slab,
+/// since the glass that bends its edges is kept for the focused window, and
+/// this card must never be that. Every number it draws from lives in
 /// `MacOverlayStyle`.
 struct MacOverlayView: View {
     @ObservedObject var shown: MacOverlayContentBox
 
     var body: some View {
         content
-            .padding(MacOverlayStyle.cardPadding)
-            .background(pane)
             .fixedSize()
             .animation(MacOverlayStyle.fade, value: shape)
             .frame(width: MacOverlayStyle.panelSize.width, height: MacOverlayStyle.panelSize.height)
-    }
-
-    /// One sheet of glass behind the whole card, the way the app switcher sits
-    /// over a desktop: nothing at all through the middle, and a rim that bends
-    /// what is behind it. Apple's glass blurs and greys whatever it covers,
-    /// even the clear kind, so the glass here is a ring, a shape of its own
-    /// rather than a masked sheet: masking or fading a glass view flattens it
-    /// to a tint, and it is the live edge of a glass shape that refracts. A
-    /// ring has two such edges. It is a background, not a container: a glass
-    /// container draws its own glass over everything inside it, and took the
-    /// tiles' letters with it.
-    @ViewBuilder
-    private var pane: some View {
-        let shape = RoundedRectangle(cornerRadius: MacOverlayStyle.cardCorner, style: .continuous)
-        let rim = Rim(corner: MacOverlayStyle.cardCorner, width: MacOverlayStyle.rimWidth)
-        switch shown.content {
-        case .nothing:
-            EmptyView()
-        case .picker, .arrows, .delete, .transcript, .hint:
-            ZStack {
-                if #available(macOS 26, *) {
-                    Color.clear.glassEffect(.clear, in: rim)
-                } else {
-                    rim.fill(.ultraThinMaterial)
-                }
-                shape.fill(Color.white.opacity(0.03))
-                shape.strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
-            }
-        }
-    }
-
-    /// The outline of a rounded rectangle as a band `width` across, drawn in
-    /// from the edge, which is what a stroke is when it is filled.
-    private struct Rim: Shape {
-        let corner: CGFloat
-        let width: CGFloat
-
-        func path(in rect: CGRect) -> Path {
-            RoundedRectangle(cornerRadius: corner, style: .continuous)
-                .inset(by: width / 2)
-                .path(in: rect)
-                .strokedPath(StrokeStyle(lineWidth: width))
-        }
     }
 
     /// What the fade is allowed to notice.  A card arriving or leaving, and a
@@ -112,21 +70,44 @@ struct MacOverlayView: View {
     }
 
     /// `lit` is the hotkey the phone named, and no hotkey means the Cancel
-    /// cell, which is what an open card starts on.
+    /// cell, which is what an open card starts on.  The keys arrive as a
+    /// wave: each one rises into place a beat after the one up and to the
+    /// left of it, so the card rolls in from the corner the press starts in.
     private func grid(lit: HotkeyAction?) -> some View {
         VStack(alignment: .leading, spacing: MacOverlayStyle.tileSpacing) {
             ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
                 HStack(spacing: MacOverlayStyle.tileSpacing) {
-                    ForEach(row, id: \.self) { cell in
+                    ForEach(Array(row.enumerated()), id: \.element) { column, cell in
                         tile(
                             cap: cell == .cancel ? .symbol("trash.fill") : KeyPickerGrid.keyCap(for: cell).map(Cap.key),
                             name: KeyPickerGrid.displayName(for: cell) ?? "",
                             isLit: cell.hotkey == lit
                         )
+                        .modifier(Wave(beat: index + column))
                     }
                 }
                 .padding(.leading, MacOverlayStyle.rowOffset(index))
             }
+        }
+    }
+
+    /// One key's part in the wave: hidden and a little low until its beat,
+    /// then up and in with a small overshoot, which is the swing.  The state
+    /// is the key's own, so it starts over each time the card is put up and
+    /// is untouched while the card only changes which key is lit.
+    private struct Wave: ViewModifier {
+        let beat: Int
+        @State private var risen = false
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(risen ? 1 : 0)
+                .offset(y: risen ? 0 : MacOverlayStyle.waveRise)
+                .onAppear {
+                    withAnimation(MacOverlayStyle.waveSwing.delay(Double(beat) * MacOverlayStyle.waveBeat)) {
+                        risen = true
+                    }
+                }
         }
     }
 

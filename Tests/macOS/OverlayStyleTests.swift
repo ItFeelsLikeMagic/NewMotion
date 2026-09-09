@@ -17,7 +17,7 @@ final class OverlayStyleTests: XCTestCase {
             return MacOverlayStyle.rowOffset(index) + across
         }.max() ?? 0
         let tall: CGFloat = span(rows.count)
-        let room: CGFloat = 2 * (MacOverlayStyle.cardPadding + MacOverlayStyle.spareRoom)
+        let room: CGFloat = 2 * MacOverlayStyle.spareRoom
 
         XCTAssertEqual(MacOverlayStyle.panelSize.width, max(widest, MacOverlayStyle.maximumWidth) + room)
         XCTAssertEqual(MacOverlayStyle.panelSize.height, tall + room)

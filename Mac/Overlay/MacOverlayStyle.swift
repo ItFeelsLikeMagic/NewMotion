@@ -31,15 +31,13 @@ enum MacOverlayStyle {
     static let stagger: CGFloat = 0.25
     static let fadeDuration: TimeInterval = 0.12
 
-    /// The one pane every card sits on. Round enough to read as a floating
-    /// sheet rather than a tile grown large, the way the app switcher does.
-    static let cardCorner: CGFloat = 24
-    /// How wide the band of glass at the sheet's edge is; the middle is bare.
-    static let rimWidth: CGFloat = 14
-    /// Room between the content and the pane's edge. The middle of the glass
-    /// is almost nothing to look at; the rim is the whole effect, so the card
-    /// has to leave it somewhere to be.
-    static let cardPadding: CGFloat = 22
+    /// The wave the picker's keys come in on: how long each key waits on the
+    /// one before it, how far below its place it starts, and the swing that
+    /// carries it up and a touch past before it settles.
+    static let waveBeat: TimeInterval = 0.035
+    static let waveRise: CGFloat = 14
+    static var waveSwing: Animation { .spring(response: 0.38, dampingFraction: 0.55) }
+
     /// Clear, click-through room around the card, so the card itself never has
     /// to be measured: measuring it meant reading a view that was still
     /// animating, and the first card of a session came up the size of an empty
@@ -51,8 +49,8 @@ enum MacOverlayStyle {
     /// The pane the card floats in, taken from the picker because the picker
     /// is the largest thing the card can be.
     static let panelSize = CGSize(
-        width: max(pickerSize.width, maximumWidth) + 2 * (cardPadding + spareRoom),
-        height: pickerSize.height + 2 * (cardPadding + spareRoom)
+        width: max(pickerSize.width, maximumWidth) + 2 * spareRoom,
+        height: pickerSize.height + 2 * spareRoom
     )
 
     /// A tile with no key of its own carries its whole name instead, so its
