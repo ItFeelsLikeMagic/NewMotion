@@ -20,12 +20,16 @@ public enum FocusedText: Equatable, Sendable {
     }
 }
 
-/// The field either side of the caret.  A held delete key only ever erases
-/// from the caret backwards, so `head` is the part that shrinks and `tail` is
-/// the part that has to stay put for a reading to mean anything: a caret that
-/// moved without deleting shows up as a tail that grew.
+/// What sits in front of the caret.  A held delete key only ever erases from
+/// the caret backwards, so the text behind it is the only part worth reading.
+///
+/// On a field short enough to copy whole, `head` is everything before the
+/// caret.  On a longer one it is a window on to the end of that, which is what
+/// keeps a read costing the same on a note of any length.  `reachesStart` is
+/// what tells the two apart: false means `head` running out is the edge of the
+/// window and not the beginning of the text.
 public enum FocusedCaretText: Equatable, Sendable {
-    case split(head: String, tail: String)
+    case split(head: String, reachesStart: Bool)
     case unavailable(String)
 
     public var label: String {
@@ -63,8 +67,11 @@ public final class AXFocusedTextReader: FocusedTextReading {
     /// Long enough for a busy app to answer, short enough that a wedged one
     /// costs the utterance a quarter second instead of the whole thing.
     private static let messagingTimeout: Float = 0.25
-    /// Past this the field is a document rather than an input, and walking the
-    /// whole of one to find the caret costs more than the read is worth.
+    /// The most text one read will copy.  A field under it is read whole; a
+    /// longer one is read as the window of this many characters in front of the
+    /// caret, so what a read costs stays flat as a note grows.  The debug
+    /// server's whole-field read has no window to fall back on and refuses
+    /// anything past it.
     static let maximumUnits = 4_000
 
     public init() {}
@@ -100,21 +107,21 @@ public final class AXFocusedTextReader: FocusedTextReading {
         return .text(text)
     }
 
-    /// Where the caret is and what sits either side of it.  Unlike
-    /// `focusedText`, this does not insist the caret be at the very end: a
-    /// held delete key erases backwards from wherever it is, and after a slide
-    /// that ran past the start of a line it very often is not at the end.
-    /// This is the read the delete key uses; `focusedText` only serves the
-    /// debug server's account of what Accessibility can see.
+    /// Where the caret is and what sits in front of it.  Unlike `focusedText`,
+    /// this does not insist the caret be at the very end: a held delete key
+    /// erases backwards from wherever it is, and after a slide that ran past
+    /// the start of a line it very often is not at the end.
+    ///
+    /// A field too long to copy is asked for the window in front of its caret
+    /// instead of the whole of its text.  Copying a whole note on the actor
+    /// that carries the cursor is what a delete key in a long note used to
+    /// cost, and it was thrown away unread for being too long.  This is the
+    /// read the delete key uses; `focusedText` only serves the debug server's
+    /// account of what Accessibility can see.
     public func textAroundCaret() -> FocusedCaretText {
         let focused = focusedElement()
         guard let field = focused.value else { return .unavailable(label("focus", focused.error)) }
         AXUIElementSetMessagingTimeout(field, Self.messagingTimeout)
-
-        let value: (value: String?, error: AXError) = copy(kAXValueAttribute, from: field)
-        guard let text = value.value else { return .unavailable(label("value", value.error)) }
-        let units = (text as NSString).length
-        guard units <= Self.maximumUnits else { return .unavailable("tooLong") }
 
         let range: (value: AXValue?, error: AXError) = copy(kAXSelectedTextRangeAttribute, from: field)
         guard let selected = range.value else { return .unavailable(label("range", range.error)) }
@@ -123,7 +130,36 @@ public final class AXFocusedTextReader: FocusedTextReading {
         // A selection is not a caret, and Delete would take the selection
         // instead of the character before it.
         guard caret.length == 0 else { return .unavailable("selection") }
-        guard caret.location >= 0, caret.location <= units else { return .unavailable("range:bounds") }
+        guard caret.location >= 0 else { return .unavailable("range:bounds") }
+
+        // The length is asked for on its own, because measuring the field by
+        // copying it is the whole of the cost being avoided here.
+        if let units = characterCount(of: field), units > Self.maximumUnits {
+            guard caret.location <= units else { return .unavailable("range:bounds") }
+            // Chromium's container element, described below.  In a field this
+            // long a caret at the very start is far more likely to be that than
+            // the truth.
+            guard caret.location > 0 else { return .unavailable("range:zero") }
+            // The length has already said the whole field is more than a read
+            // can afford, so an app that will not serve a range is not offered
+            // a second chance to hand the whole of it over.
+            guard let window = windowBeforeCaret(in: field, caret: caret.location) else {
+                return .unavailable("noRange")
+            }
+            return window
+        }
+        return wholeField(of: field, caret: caret.location)
+    }
+
+    /// Everything in front of the caret, for a field short enough that copying
+    /// it whole beats a second round trip.  It is also the only path open to an
+    /// app that publishes no length of its own.
+    private func wholeField(of field: AXUIElement, caret: Int) -> FocusedCaretText {
+        let value: (value: String?, error: AXError) = copy(kAXValueAttribute, from: field)
+        guard let text = value.value else { return .unavailable(label("value", value.error)) }
+        let whole = text as NSString
+        guard whole.length <= Self.maximumUnits else { return .unavailable("tooLong") }
+        guard caret <= whole.length else { return .unavailable("range:bounds") }
         // Chromium, and so every Electron app, hands back a container element
         // for a contenteditable every so often, and a container does not track
         // the caret: it answers {0, 0} while its value holds the whole field.
@@ -132,12 +168,37 @@ public final class AXFocusedTextReader: FocusedTextReading {
         // genuinely at the start has nothing in front of it for a delete key to
         // take, so refusing both costs nothing and the next read gets the real
         // element.
-        guard caret.location > 0 || units == 0 else { return .unavailable("range:zero") }
-        let field_ = text as NSString
-        return .split(
-            head: field_.substring(to: caret.location),
-            tail: field_.substring(from: caret.location)
+        guard caret > 0 || whole.length == 0 else { return .unavailable("range:zero") }
+        return .split(head: whole.substring(to: caret), reachesStart: true)
+    }
+
+    /// The last `maximumUnits` characters before the caret, asked for by range
+    /// so the copy does not grow with the document.  Nil when the app will not
+    /// serve one, which leaves the whole-field read to answer or to refuse.
+    private func windowBeforeCaret(in field: AXUIElement, caret: Int) -> FocusedCaretText? {
+        let start = max(0, caret - Self.maximumUnits)
+        var wanted = CFRange(location: start, length: caret - start)
+        guard let asked = AXValueCreate(.cfRange, &wanted) else { return nil }
+        var raw: CFTypeRef?
+        let error = AXUIElementCopyParameterizedAttributeValue(
+            field,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            asked,
+            &raw
         )
+        guard error == .success, let text = raw as? String else { return nil }
+        // An app that answers with less than was asked for clipped the range at
+        // an end this cannot identify, so the window no longer starts where the
+        // count says and a word measured against its edge would be a guess.
+        guard (text as NSString).length == wanted.length else { return nil }
+        return .split(head: text, reachesStart: start == 0)
+    }
+
+    /// How long the field is, without copying it.  Nil when the app publishes
+    /// no length, which is the signal to fall back to reading it whole.
+    private func characterCount(of field: AXUIElement) -> Int? {
+        let count: (value: NSNumber?, error: AXError) = copy(kAXNumberOfCharactersAttribute, from: field)
+        return count.value?.intValue
     }
 
     /// A label-only account of what Accessibility can see right now, for the

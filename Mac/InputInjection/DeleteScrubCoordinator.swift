@@ -34,6 +34,12 @@ extension SafeInputInjector: RemoteInputSubmitting {}
 /// A slide that runs past the start of the text presses nothing at all, so
 /// overshooting is free and everything it did erase still comes back.
 ///
+/// A field too long to copy is read as a window on to the end of it rather
+/// than the whole thing, so a note of any length costs one flat read.  A slide
+/// long enough to reach the far edge of that window has nothing left to count
+/// against, and from there its notches are held exactly like an unreadable
+/// field's: they go out at the lift as the key the phone would have tapped.
+///
 /// A notch taken before the field has answered erases nothing.  It is held: the
 /// count goes up, a slide back takes one off it, and whatever is still held
 /// when the finger lifts goes out then as the plain key the phone would have
@@ -75,6 +81,10 @@ public final class DeleteScrubCoordinator {
     /// True once the field has answered.  Kept apart from `remaining` being
     /// empty, which is the ordinary state of a press that erased everything.
     private var hasSnapshot = false
+    /// Whether `remaining` runs back to the start of the field.  False means it
+    /// is a window on to a long one, so its far end is the edge of the reading
+    /// rather than the beginning of the text.
+    private var windowReachesStart = true
     /// What each notch took, newest last.  Restoring walks back along it, so a
     /// notch always gives back exactly what its own delete took.
     private var removed: [String] = []
@@ -159,14 +169,24 @@ public final class DeleteScrubCoordinator {
     private func press() -> String {
         var outcome = "deleteScrub delete start"
         while let granularity = held.first {
-            let length = min(Self.runLength(in: remaining, granularity: granularity), Self.maximumRun)
+            let run = Self.runLength(in: remaining, granularity: granularity)
+            // The run wants everything that was read.  Where the reading ran
+            // back to the start of the field, that is an overshoot and there is
+            // nothing there to take.  Where it is only the edge of a window on
+            // to a long field, the word may carry on past it and the length is
+            // a guess, so the notch is held and the lift decides it instead.
+            guard run < remaining.count || windowReachesStart else {
+                readFailure = "window"
+                return "deleteScrub delete window"
+            }
             // Past the start of the text.  Pressing nothing is what makes an
             // overshoot free: the notches already taken are still restorable,
             // and the ones still held ask for nothing.
-            guard length > 0 else {
+            guard run > 0 else {
                 held = []
                 return "deleteScrub delete start"
             }
+            let length = min(run, Self.maximumRun)
             held.removeFirst()
             guard deleteBackward(length) else { return "deleteScrub delete failed" }
             removed.append(String(remaining.suffix(length)))
@@ -223,7 +243,12 @@ public final class DeleteScrubCoordinator {
     /// is what an Electron tree still being built needs.  The tries are spaced
     /// and counted, so an app that never answers cannot spend the press on the
     /// main actor.
+    ///
+    /// The first answer is the only one.  Looking again mid-press would read a
+    /// field that has not necessarily taken in the keys already sent to it, and
+    /// counting the same characters twice erases them twice.
     private func takeSnapshotIfDue() {
+        guard !hasSnapshot else { return }
         guard let focusedText else {
             readFailure = "noReader"
             return
@@ -239,13 +264,14 @@ public final class DeleteScrubCoordinator {
         reads += 1
 
         let answer = focusedText.textAroundCaret()
-        guard case let .split(head, _) = answer else {
+        guard case let .split(head, reachesStart) = answer else {
             readFailure = answer.label
             return
         }
         // An empty head is an answer like any other: there is nothing in front
         // of the caret, so every notch of this press presses nothing.
         remaining = Array(head)
+        windowReachesStart = reachesStart
         hasSnapshot = true
     }
 
@@ -256,6 +282,7 @@ public final class DeleteScrubCoordinator {
     private func reset() {
         remaining = []
         hasSnapshot = false
+        windowReachesStart = true
         removed = []
         held = []
         reads = 0
