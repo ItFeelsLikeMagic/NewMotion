@@ -106,6 +106,8 @@ public final class MacOverlayPresenter {
     private var pendingDeleteUnit: DeleteScrubGranularity?
     private var transcript: String?
     private var hint: String?
+    /// A card held up while someone tunes the look from the menu bar.
+    private var previewContent: MacOverlayContent?
     private var pickerGeneration: UInt64 = 0
     private var transcriptGeneration: UInt64 = 0
     private var hintGeneration: UInt64 = 0
@@ -228,9 +230,22 @@ public final class MacOverlayPresenter {
         showHint(Self.deleteSlideHint)
     }
 
+    /// Pins a card on screen for as long as the menu bar is tuning the look,
+    /// with no timeout of its own: every slider move has to be visible, and a
+    /// card that expired mid-drag would hide the thing being adjusted.
+    /// `preview(nil)` is the only way down.
+    public func preview(_ content: MacOverlayContent?) {
+        previewContent = content
+        refresh()
+    }
+
     /// A disconnect, a watchdog release, or any lifecycle transition that
     /// takes held input away. Nothing on the card outlives the session it
     /// belongs to.
+    ///
+    /// The preview is left alone on purpose: it belongs to the popover that is
+    /// open, not to the phone session whose held input this is releasing, and
+    /// a phone connecting or dropping mid-tune must not clear the screen.
     public func clearAll() {
         isPickerOpen = false
         litCell = nil
@@ -296,6 +311,13 @@ public final class MacOverlayPresenter {
     }
 
     private var wanted: MacOverlayContent {
+        // Outranks the phone: someone is looking at this card on purpose.
+        if let previewContent {
+            // The gate is the same one dictation gets, in case a preview is
+            // ever asked for with words in it.
+            if case .transcript = previewContent, isSecureInputActive() { return .nothing }
+            return previewContent
+        }
         if isPickerOpen { return .picker(cell: litCell) }
         // A held key outranks the words: the finger is on the delete key, so
         // whatever was dictated a moment ago is not what is being looked at.

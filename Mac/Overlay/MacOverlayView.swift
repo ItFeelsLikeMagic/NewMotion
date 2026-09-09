@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 
 #if canImport(NewMotionShared)
@@ -6,48 +7,21 @@ import NewMotionShared
 #endif
 
 /// The card itself: one thing at a time, sized to what it says, centred in a
-/// pane of one fixed size.
+/// pane of one fixed size. Every number it draws from lives in
+/// `MacOverlayStyle`, so the menu bar can tune the look while a card is up.
 struct MacOverlayView: View {
-    /// Keycaps, not labels: the picker is read out of the corner of an eye
-    /// while a thumb is already moving, so a tile is big enough to hit with a
-    /// glance and square enough to read as a key.
-    private static let tileSide: CGFloat = 84
-    private static let tileCorner: CGFloat = 18
-    private static let tileSpacing: CGFloat = 10
-    private static let capFontSize: CGFloat = 30
-    /// A tile with no key of its own carries its whole name instead, so its
-    /// type has to fit across the square rather than sit on one line of it.
-    private static let plainFontSize: CGFloat = 18
-    private static let cardPadding = CGSize(width: 18, height: 14)
-    /// How far each row of the grid starts in from the one above, in tiles.
-    /// A keyboard's rows are offset like this, and the offset is most of what
-    /// tells a hand which row it is looking at.
-    private static let rowOffsets: [CGFloat] = [0, 0.25, 0.75]
-    /// Clear, click-through room around the card, so the panel never has to be
-    /// measured or resized: measuring it meant reading a view that was still
-    /// animating, and the first card of a session came up the size of an empty
-    /// one. The spare room costs nothing.
-    private static let spareRoom: CGFloat = 60
-    /// The pane the card floats in, fixed, and taken from the picker because
-    /// the picker is the largest thing the card can be.
-    static let panelSize = CGSize(
-        width: max(pickerSize.width, maximumWidth) + 2 * (cardPadding.width + spareRoom),
-        height: pickerSize.height + 2 * (cardPadding.height + spareRoom)
-    )
-    /// Long enough for a line of dictation without reaching across a display.
-    private static let maximumWidth: CGFloat = 460
-    private static let fade: Animation = .easeInOut(duration: 0.12)
-
     @ObservedObject var shown: MacOverlayContentBox
+
+    private var style: MacOverlayStyle { shown.style }
 
     var body: some View {
         content
-            .padding(.horizontal, Self.cardPadding.width)
-            .padding(.vertical, Self.cardPadding.height)
+            .padding(.horizontal, MacOverlayStyle.cardPadding.width)
+            .padding(.vertical, MacOverlayStyle.cardPadding.height)
             .background(cardBackground)
             .fixedSize()
-            .animation(Self.fade, value: shape)
-            .frame(width: Self.panelSize.width, height: Self.panelSize.height)
+            .animation(style.fade, value: shape)
+            .frame(width: style.panelSize.width, height: style.panelSize.height)
     }
 
     /// Only the cards that are text get a slab behind them, because only text
@@ -107,10 +81,10 @@ struct MacOverlayView: View {
     /// `lit` is the hotkey the phone named, and no hotkey means the Cancel
     /// cell, which is what an open card starts on.
     private func grid(lit: HotkeyAction?) -> some View {
-        Glassed(spacing: Self.tileSpacing) {
-            VStack(alignment: .leading, spacing: Self.tileSpacing) {
+        Glassed(spacing: CGFloat(style.tileSpacing)) {
+            VStack(alignment: .leading, spacing: CGFloat(style.tileSpacing)) {
                 ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
-                    HStack(spacing: Self.tileSpacing) {
+                    HStack(spacing: CGFloat(style.tileSpacing)) {
                         ForEach(row, id: \.self) { cell in
                             tile(
                                 cap: KeyPickerGrid.keyCap(for: cell),
@@ -119,7 +93,7 @@ struct MacOverlayView: View {
                             )
                         }
                     }
-                    .padding(.leading, Self.rowOffset(index))
+                    .padding(.leading, style.rowOffset(index))
                 }
             }
         }
@@ -131,17 +105,19 @@ struct MacOverlayView: View {
     /// up before the finger has moved and that is the moment the reminder is
     /// worth anything. It gets a slab of its own; the card behind it is clear.
     private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
-        Glassed(spacing: Self.tileSpacing) {
-            VStack(spacing: Self.tileSpacing) {
+        Glassed(spacing: CGFloat(style.tileSpacing)) {
+            VStack(spacing: CGFloat(style.tileSpacing)) {
                 ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in
                     tile(cap: nil, name: Self.unitName(unit), isLit: unit == lit)
                 }
-                Text("Slide left to erase, right to restore")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .modifier(Slab(shape: Capsule(), isLit: false))
+                if style.captionOnDeleteCard {
+                    Text("Slide left to erase, right to restore")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .modifier(Slab(shape: Capsule(), isLit: false, style: style))
+                }
             }
         }
     }
@@ -151,43 +127,84 @@ struct MacOverlayView: View {
         VStack(spacing: 2) {
             if let cap {
                 Text(cap)
-                    .font(.system(size: Self.capFontSize, weight: .medium, design: .rounded))
-                Text(name)
-                    .font(.caption)
-                    .foregroundStyle(isLit ? Color.white.opacity(0.85) : Color.secondary)
+                    .font(.system(size: style.capFontSize, weight: style.capWeight, design: .rounded))
+                if style.showsNames {
+                    Text(name)
+                        .font(.system(size: style.nameFontSize))
+                        .foregroundStyle(nameColour(isLit: isLit))
+                }
             } else {
                 Text(name)
-                    .font(.system(size: Self.plainFontSize, weight: .medium, design: .rounded))
+                    .font(.system(size: style.plainFontSize, weight: style.capWeight, design: .rounded))
             }
         }
         .lineLimit(1)
         .minimumScaleFactor(0.6)
         .padding(.horizontal, 6)
-        .frame(width: Self.tileSide, height: Self.tileSide)
-        .foregroundStyle(isLit ? Color.white : Color.primary)
-        .modifier(Slab(shape: RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous), isLit: isLit))
+        .frame(width: style.tileSide, height: style.tileSide)
+        .foregroundStyle(isLit && style.tintsLitKey ? Color.white : Color.primary)
+        .shadow(
+            color: style.textShadow ? Color.black.opacity(0.45) : .clear,
+            radius: style.textShadow ? 2 : 0,
+            y: style.textShadow ? 1 : 0
+        )
+        .modifier(Slab(
+            shape: RoundedRectangle(cornerRadius: style.tileCorner, style: .continuous),
+            isLit: isLit,
+            style: style
+        ))
     }
 
-    /// Liquid Glass where the Mac has it, the clear kind, so the keys sit on
-    /// the wallpaper the way the system's own floating controls do and the
-    /// screen stays visible through them; a material slab with a hairline on
-    /// the Macs before it.  The lit key is the glass tinted, not a flat fill,
-    /// so it keeps the same edge as its neighbours.
+    /// The name under the cap is quieter than the cap itself, and on a tinted
+    /// key it has to stay white or it drops out of the accent colour.
+    private func nameColour(isLit: Bool) -> Color {
+        guard isLit else { return .secondary }
+        return style.tintsLitKey ? Color.white.opacity(0.85) : Color.primary.opacity(0.7)
+    }
+
+    /// Liquid Glass where the Mac has it, so the keys sit on the wallpaper the
+    /// way the system's own floating controls do; a material slab with a
+    /// hairline where it does not, and wherever the style asks for one.  The
+    /// lit key is the glass tinted, not a flat fill, so it keeps the same edge
+    /// as its neighbours; untinted it is a dim wash and a heavier edge, which
+    /// survives a wallpaper the accent colour is already in.
     private struct Slab<S: InsettableShape>: ViewModifier {
         let shape: S
         let isLit: Bool
+        let style: MacOverlayStyle
 
+        @ViewBuilder
         func body(content: Content) -> some View {
-            if #available(macOS 26, *) {
-                let glass: Glass = isLit ? Glass.clear.tint(Color.accentColor) : Glass.clear
-                content.glassEffect(glass, in: shape)
-            } else if isLit {
-                content.background(shape.fill(Color.accentColor))
+            // Both fills sit between the glass and the letters: a scrim behind
+            // the glass would be hidden by it and do nothing for legibility.
+            // The window colour, not a fixed one, so the scrim stays under the
+            // type in both appearances instead of on top of it in one.
+            let inner = content
+                .background(shape.fill(Color(nsColor: .windowBackgroundColor).opacity(style.backing)))
+                .background(shape.fill(Color.primary.opacity(wash)))
+            if style.glass != .frosted, #available(macOS 26, *) {
+                inner.glassEffect(glass, in: shape)
+            } else if isLit, style.tintsLitKey {
+                inner.background(shape.fill(Color.accentColor))
             } else {
-                content
+                inner
                     .background(shape.fill(.regularMaterial))
-                    .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+                    .overlay(shape.strokeBorder(edge, lineWidth: isLit ? 2 : 1))
             }
+        }
+
+        @available(macOS 26, *)
+        private var glass: Glass {
+            let base: Glass = style.glass == .regular ? .regular : .clear
+            return isLit && style.tintsLitKey ? base.tint(Color.accentColor) : base
+        }
+
+        private var wash: Double {
+            isLit && !style.tintsLitKey ? 0.18 : 0
+        }
+
+        private var edge: Color {
+            Color.primary.opacity(isLit ? 0.5 : 0.12)
         }
     }
 
@@ -204,26 +221,6 @@ struct MacOverlayView: View {
                 inner()
             }
         }
-    }
-
-    private static func rowOffset(_ index: Int) -> CGFloat {
-        guard index < rowOffsets.count else { return 0 }
-        return tileSide * rowOffsets[index]
-    }
-
-    /// The grid laid out, so the panel can be sized from the same numbers that
-    /// draw it instead of a measurement taken while it animates.
-    private static var pickerSize: CGSize {
-        let rows = KeyPickerGrid.rows
-        let widths = rows.enumerated().map { index, row in
-            rowOffset(index) + span(rows: row.count)
-        }
-        return CGSize(width: widths.max() ?? 0, height: span(rows: rows.count))
-    }
-
-    private static func span(rows count: Int) -> CGFloat {
-        guard count > 0 else { return 0 }
-        return CGFloat(count) * tileSide + CGFloat(count - 1) * tileSpacing
     }
 
     private static func unitName(_ unit: DeleteScrubGranularity) -> String {
@@ -245,7 +242,7 @@ struct MacOverlayView: View {
             .lineLimit(2)
             .truncationMode(.head)
             .multilineTextAlignment(.leading)
-            .frame(width: Self.maximumWidth, alignment: .leading)
+            .frame(width: MacOverlayStyle.maximumWidth, alignment: .leading)
     }
 }
 #endif
