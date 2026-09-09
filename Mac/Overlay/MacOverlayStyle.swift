@@ -107,7 +107,9 @@ struct MacOverlayStyle: Codable, Equatable, Sendable {
 
     /// How far row `index` starts in from the left edge of the grid.
     func rowOffset(_ index: Int) -> CGFloat {
-        let offsets: [Double] = [0, stagger, 3 * stagger]
+        // Cancel sits alone above the keys, flush left like the escape key it
+        // stands for, so the stepping starts under it.
+        let offsets: [Double] = [0, 0, stagger, 3 * stagger]
         guard index < offsets.count else { return 0 }
         return CGFloat(tileSide * offsets[index])
     }

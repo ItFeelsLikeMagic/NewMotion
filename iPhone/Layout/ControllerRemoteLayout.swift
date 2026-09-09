@@ -55,17 +55,17 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
     /// margins the whole screen used to carry.
     private func keyColumn(width: Double, screenEdge: Edge) -> some View {
         VStack(spacing: RemoteKeyMetrics.spacing) {
-            // The keys a thumb reaches for least sit furthest from the hold
-            // bar, and the two that are held and dragged sit beside it, so a
-            // drag starts from where the thumb already rests.  The picker is
-            // the other Command chord chooser, so it sits beside the app
-            // switcher rather than among the keys that fire on a tap.
+            // The app switcher, held and dragged, sits beside the hold bar so
+            // a drag starts from where the thumb already rests, with escape
+            // next to it as the way out of whatever that drag opened.  The
+            // picker slides across a whole grid, so it takes the far end,
+            // where a slide has the most room before it leaves the phone.
             HStack(spacing: RemoteKeyMetrics.spacing) {
-                slot { keys.escape }
+                slot { keys.commandPicker }
                 slot { keys.copy }
                 slot { keys.paste }
                 slot { keys.appSwitcher }
-                slot { keys.commandPicker }
+                slot { keys.escape }
             }
 
             // The hold bar is the point of the whole column, so it takes every

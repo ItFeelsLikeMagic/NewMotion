@@ -81,20 +81,18 @@ struct MacOverlayView: View {
     /// `lit` is the hotkey the phone named, and no hotkey means the Cancel
     /// cell, which is what an open card starts on.
     private func grid(lit: HotkeyAction?) -> some View {
-        Glassed(spacing: CGFloat(style.tileSpacing)) {
-            VStack(alignment: .leading, spacing: CGFloat(style.tileSpacing)) {
-                ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
-                    HStack(spacing: CGFloat(style.tileSpacing)) {
-                        ForEach(row, id: \.self) { cell in
-                            tile(
-                                cap: KeyPickerGrid.keyCap(for: cell),
-                                name: KeyPickerGrid.displayName(for: cell) ?? "",
-                                isLit: cell.hotkey == lit
-                            )
-                        }
+        VStack(alignment: .leading, spacing: CGFloat(style.tileSpacing)) {
+            ForEach(Array(KeyPickerGrid.rows.enumerated()), id: \.offset) { index, row in
+                HStack(spacing: CGFloat(style.tileSpacing)) {
+                    ForEach(row, id: \.self) { cell in
+                        tile(
+                            cap: KeyPickerGrid.keyCap(for: cell),
+                            name: KeyPickerGrid.displayName(for: cell) ?? "",
+                            isLit: cell.hotkey == lit
+                        )
                     }
-                    .padding(.leading, style.rowOffset(index))
                 }
+                .padding(.leading, style.rowOffset(index))
             }
         }
     }
@@ -105,19 +103,17 @@ struct MacOverlayView: View {
     /// up before the finger has moved and that is the moment the reminder is
     /// worth anything. It gets a slab of its own; the card behind it is clear.
     private func deleteUnits(lit: DeleteScrubGranularity) -> some View {
-        Glassed(spacing: CGFloat(style.tileSpacing)) {
-            VStack(spacing: CGFloat(style.tileSpacing)) {
-                ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in
-                    tile(cap: nil, name: Self.unitName(unit), isLit: unit == lit)
-                }
-                if style.captionOnDeleteCard {
-                    Text("Slide left to erase, right to restore")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .modifier(Slab(shape: Capsule(), isLit: false, style: style))
-                }
+        VStack(spacing: CGFloat(style.tileSpacing)) {
+            ForEach(DeleteScrubGranularity.allCases.reversed(), id: \.self) { unit in
+                tile(cap: nil, name: Self.unitName(unit), isLit: unit == lit)
+            }
+            if style.captionOnDeleteCard {
+                Text("Slide left to erase, right to restore")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .modifier(Slab(shape: Capsule(), isLit: false, style: style))
             }
         }
     }
@@ -185,6 +181,9 @@ struct MacOverlayView: View {
             if style.glass != .frosted, #available(macOS 26, *) {
                 // The glass is its own layer under the scrim rather than an
                 // effect on the tile, so it can be faded without the letters.
+                // It is also why the tiles share no glass container: a
+                // container draws its glass over everything else inside it,
+                // and took the letters with it.
                 inner.background(
                     shape.fill(.clear)
                         .glassEffect(glass, in: shape)
@@ -211,21 +210,6 @@ struct MacOverlayView: View {
 
         private var edge: Color {
             Color.primary.opacity(isLit ? 0.5 : 0.12)
-        }
-    }
-
-    /// Glass tiles this close together are meant to share one container, so
-    /// the highlight moving between keys blends rather than snaps.
-    private struct Glassed<Inner: View>: View {
-        let spacing: CGFloat
-        @ViewBuilder let inner: () -> Inner
-
-        var body: some View {
-            if #available(macOS 26, *) {
-                GlassEffectContainer(spacing: spacing) { inner() }
-            } else {
-                inner()
-            }
         }
     }
 

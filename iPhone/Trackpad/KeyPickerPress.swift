@@ -47,7 +47,9 @@ public struct KeyPickerPress: Equatable, Sendable {
     /// Overshoot is absorbed rather than banked: a step off the edge, or into
     /// a row that is a cell shorter, is dropped instead of counted, so a step
     /// back moves the highlight at once rather than after retracing every
-    /// notch spent on nothing.
+    /// notch spent on nothing.  The one exception is the Cancel row on top:
+    /// a step up out of the keys lands on Cancel from any column, because
+    /// sliding up is the way out and should not need finding a corner.
     public mutating func notch(_ step: SlideStep) -> [KeyPickerPayload] {
         guard hasBegun else { return [] }
         var nextRow = row
@@ -58,8 +60,10 @@ public struct KeyPickerPress: Equatable, Sendable {
         case .up: nextRow -= 1
         case .down: nextRow += 1
         }
+        if nextRow == 0 { nextColumn = 0 }
         guard KeyPickerGrid.rows.indices.contains(nextRow),
-              KeyPickerGrid.rows[nextRow].indices.contains(nextColumn) else { return [] }
+              KeyPickerGrid.rows[nextRow].indices.contains(nextColumn),
+              (nextRow, nextColumn) != (row, column) else { return [] }
         row = nextRow
         column = nextColumn
         return [KeyPickerPayload(phase: .highlight, cell: cell.hotkey)]

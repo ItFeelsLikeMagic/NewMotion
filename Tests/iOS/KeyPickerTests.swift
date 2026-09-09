@@ -7,8 +7,9 @@ import XCTest
 /// the Mac should light, and telling a press left on Cancel from one that was
 /// aimed somewhere.
 final class KeyPickerPressTests: XCTestCase {
-    /// The cell one notch to the right of where a press starts.
-    private let secondCell = KeyPickerGrid.rows[0][1]
+    /// The cell one notch down from where a press starts: Cancel has a row to
+    /// itself, so down is the only way off it.
+    private let secondCell = KeyPickerGrid.rows[1][0]
 
     /// Touch-down opens the card on Cancel, so it is already on the Mac screen
     /// before the finger has moved and lifting there fires nothing.
@@ -33,12 +34,12 @@ final class KeyPickerPressTests: XCTestCase {
 
     /// Every notch moves one cell, the first one included: the press already
     /// has an aim, so nothing has to be spent lighting one.
-    func testTheFirstNotchRightLeavesCancelForTheCellBesideIt() {
+    func testTheFirstNotchDownLeavesCancelForTheKeyBelowIt() {
         var press = KeyPickerPress()
         _ = press.begin()
 
         XCTAssertEqual(
-            press.notch(.right),
+            press.notch(.down),
             [KeyPickerPayload(phase: .highlight, cell: secondCell.hotkey)]
         )
         XCTAssertEqual(press.cell, secondCell)
@@ -48,14 +49,15 @@ final class KeyPickerPressTests: XCTestCase {
         var press = KeyPickerPress()
         _ = press.begin()
 
+        _ = press.notch(.down)
         _ = press.notch(.right)
         XCTAssertEqual(
             press.notch(.right),
-            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[0][2].hotkey)]
+            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[1][2].hotkey)]
         )
         XCTAssertEqual(
             press.notch(.down),
-            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[1][2].hotkey)]
+            [KeyPickerPayload(phase: .highlight, cell: KeyPickerGrid.rows[2][2].hotkey)]
         )
     }
 
@@ -67,11 +69,25 @@ final class KeyPickerPressTests: XCTestCase {
 
         XCTAssertEqual(press.notch(.left), [])
         XCTAssertEqual(press.notch(.up), [])
+        XCTAssertEqual(press.notch(.right), [])
         XCTAssertEqual(press.cell, .cancel)
         XCTAssertEqual(
-            press.notch(.right),
+            press.notch(.down),
             [KeyPickerPayload(phase: .highlight, cell: secondCell.hotkey)]
         )
+    }
+
+    /// Sliding up is the way out, so the top of every column is Cancel, not
+    /// an edge that swallows the step.
+    func testAStepUpFromAnyTopRowKeyLandsOnCancel() {
+        var press = KeyPickerPress()
+        _ = press.begin()
+        _ = press.notch(.down)
+        for _ in 0..<4 { _ = press.notch(.right) }
+        XCTAssertEqual(press.cell, KeyPickerGrid.rows[1][4])
+
+        XCTAssertEqual(press.notch(.up), [KeyPickerPayload(phase: .highlight, cell: nil)])
+        XCTAssertEqual(press.cell, .cancel)
     }
 
     func testAStepBackUndoesAStepForward() {
@@ -89,19 +105,20 @@ final class KeyPickerPressTests: XCTestCase {
         XCTAssertEqual(press.cell, .cancel)
     }
 
-    /// The home row is shorter than the top one, so the column the top row
-    /// allows is off the end of it.  The highlight stays where it is rather
-    /// than wrapping.
+    /// The home row is shorter than the top row of keys, so the column the
+    /// top row allows is off the end of it.  The highlight stays where it is
+    /// rather than wrapping.
     func testDroppingIntoAShorterRowFromItsMissingColumnIsIgnored() {
         var press = KeyPickerPress()
         _ = press.begin()
-        XCTAssertLessThan(KeyPickerGrid.rows[1].count, KeyPickerGrid.rows[0].count)
-        XCTAssertEqual(KeyPickerGrid.rows[0].count, 6)
+        XCTAssertLessThan(KeyPickerGrid.rows[2].count, KeyPickerGrid.rows[1].count)
+        XCTAssertEqual(KeyPickerGrid.rows[1].count, 5)
 
-        for _ in 0..<6 { _ = press.notch(.right) }
-        XCTAssertEqual(press.cell, KeyPickerGrid.rows[0][5])
+        _ = press.notch(.down)
+        for _ in 0..<5 { _ = press.notch(.right) }
+        XCTAssertEqual(press.cell, KeyPickerGrid.rows[1][4])
         XCTAssertEqual(press.notch(.down), [])
-        XCTAssertEqual(press.cell, KeyPickerGrid.rows[0][5])
+        XCTAssertEqual(press.cell, KeyPickerGrid.rows[1][4])
     }
 
     /// A press left on Cancel still closes the card it opened, and names no
@@ -137,7 +154,7 @@ final class KeyPickerPressTests: XCTestCase {
 
         var slid = KeyPickerPress()
         _ = slid.begin()
-        _ = slid.notch(.right)
+        _ = slid.notch(.down)
         XCTAssertEqual(slid.lift(committing: false), KeyPickerPayload(phase: .cancel))
     }
 
@@ -149,7 +166,7 @@ final class KeyPickerPressTests: XCTestCase {
         _ = press.begin()
         XCTAssertEqual(press.keepalive, KeyPickerPayload(phase: .highlight, cell: nil))
 
-        _ = press.notch(.right)
+        _ = press.notch(.down)
         XCTAssertEqual(
             press.keepalive,
             KeyPickerPayload(phase: .highlight, cell: secondCell.hotkey)

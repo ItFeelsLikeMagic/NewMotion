@@ -530,12 +530,15 @@ public enum KeyPickerCell: Equatable, Hashable, Sendable {
 /// fire different things.
 public enum KeyPickerGrid {
     /// Laid out like the keys themselves, so a hand that knows where C is on
-    /// a keyboard knows where to slide: escape and the top-row keys across the
-    /// top, the home-row keys under them, the Z X C V run along the bottom.
-    /// A shifted key sits beside its plain twin.  Cancel is first, so it is
-    /// where a press starts and a finger that never moves fires nothing.
+    /// a keyboard knows where to slide: escape alone on top, the top-row keys
+    /// under it, the home-row keys under those, the Z X C V run along the
+    /// bottom.  A shifted key sits beside its plain twin.  Cancel is first, so
+    /// it is where a press starts and a finger that never moves fires
+    /// nothing, and it is a row of its own so that sliding up out of the keys
+    /// from anywhere is the way out.
     public static let rows: [[KeyPickerCell]] = [
-        [.cancel, .hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.closeWindow), .hotkey(.newTab), .hotkey(.deleteLineBackward)],
+        [.cancel],
+        [.hotkey(.nextWindow), .hotkey(.previousWindow), .hotkey(.closeWindow), .hotkey(.newTab), .hotkey(.deleteLineBackward)],
         [.hotkey(.selectAll), .hotkey(.save), .hotkey(.find)],
         [.hotkey(.undo), .hotkey(.redo), .hotkey(.cut), .hotkey(.copy), .hotkey(.paste), .hotkey(.newItem)]
     ]

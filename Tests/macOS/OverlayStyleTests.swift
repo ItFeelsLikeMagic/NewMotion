@@ -64,8 +64,9 @@ final class OverlayStyleTests: XCTestCase {
     func testTheStandardStaggerIsTheOffsetTheGridHad() {
         let style = MacOverlayStyle.standard
         XCTAssertEqual(style.rowOffset(0), 0)
-        XCTAssertEqual(style.rowOffset(1), 21, accuracy: 0.001)
-        XCTAssertEqual(style.rowOffset(2), 63, accuracy: 0.001)
-        XCTAssertEqual(style.rowOffset(3), 0)
+        XCTAssertEqual(style.rowOffset(1), 0)
+        XCTAssertEqual(style.rowOffset(2), 21, accuracy: 0.001)
+        XCTAssertEqual(style.rowOffset(3), 63, accuracy: 0.001)
+        XCTAssertEqual(style.rowOffset(4), 0)
     }
 }
