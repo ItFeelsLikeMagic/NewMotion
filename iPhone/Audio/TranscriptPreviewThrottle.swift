@@ -28,9 +28,11 @@ public struct TranscriptPreviewThrottle: Sendable {
 
     /// How long the same words may sit unsent.  The Mac wipes its card after
     /// two silent seconds, which is the guarantee against a lost clear on an
-    /// unreliable channel, so a pause mid-sentence has to be answered with the
-    /// same words again well inside that.
-    public static let keepaliveInterval: Double = 1
+    /// unreliable channel.  The timer that repeats the words runs at this
+    /// interval too, so the gap between two sends can reach twice it, and a
+    /// message can still be lost on the way: half a second keeps the worst
+    /// gap at one second, and a lost repeat inside the Mac's two.
+    public static let keepaliveInterval: Double = 0.5
 
     /// Previews this utterance has put on the wire.
     public private(set) var sentCount = 0

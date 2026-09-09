@@ -1101,7 +1101,7 @@ final class NewMotionFeatureModel: ObservableObject {
     /// held before the first word never started it.  Either way nothing would
     /// reach the Mac and its two-second idle clear would take the card away
     /// with the finger still down.  This puts the same preview back on the
-    /// wire once a second, words or not, until the button lifts.
+    /// wire twice a second, words or not, until the button lifts.
     func keepVoicePreviewAlive() {
         guard previewKeepalive != nil else { return }
         sendVoicePreview(voicePreview)

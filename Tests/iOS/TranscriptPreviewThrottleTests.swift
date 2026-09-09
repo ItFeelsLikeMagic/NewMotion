@@ -32,20 +32,20 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
-        XCTAssertNil(throttle.sends("hello", at: 0.3))
-        XCTAssertNil(throttle.sends("  hello \n", at: 0.6))
+        XCTAssertNil(throttle.sends("hello", at: 0.2))
+        XCTAssertNil(throttle.sends("  hello \n", at: 0.45))
         XCTAssertEqual(throttle.sentCount, 1)
     }
 
     /// Someone pausing mid-sentence sends nothing new, and the Mac wipes its
-    /// card after two silent seconds. So the same words go out again, once a
-    /// second, and the words stay up until the talk button is let go.
-    func testUnchangedWordsGoOutAgainAfterASecond() {
+    /// card after two silent seconds. So the same words go out again, twice
+    /// a second, and the words stay up until the talk button is let go.
+    func testUnchangedWordsGoOutAgainAfterHalfASecond() {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
-        XCTAssertEqual(throttle.sends("hello", at: 1), "hello")
-        XCTAssertEqual(throttle.sends("  hello \n", at: 2), "hello")
+        XCTAssertEqual(throttle.sends("hello", at: 0.5), "hello")
+        XCTAssertEqual(throttle.sends("  hello \n", at: 1), "hello")
         XCTAssertEqual(throttle.sentCount, 3)
     }
 
@@ -55,9 +55,9 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.sends("hello", at: 0), "hello")
-        XCTAssertNil(throttle.sends("hello", at: 0.5))
-        XCTAssertNil(throttle.sends("hello", at: 0.99))
-        XCTAssertEqual(throttle.sends("hello", at: 1.0), "hello")
+        XCTAssertNil(throttle.sends("hello", at: 0.25))
+        XCTAssertNil(throttle.sends("hello", at: 0.49))
+        XCTAssertEqual(throttle.sends("hello", at: 0.5), "hello")
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
@@ -68,8 +68,8 @@ final class TranscriptPreviewThrottleTests: XCTestCase {
         var throttle = TranscriptPreviewThrottle()
 
         XCTAssertEqual(throttle.sends("", at: 0), "")
-        XCTAssertNil(throttle.sends("", at: 0.5))
-        XCTAssertEqual(throttle.sends("", at: 1), "")
+        XCTAssertNil(throttle.sends("", at: 0.25))
+        XCTAssertEqual(throttle.sends("", at: 0.5), "")
         XCTAssertEqual(throttle.sentCount, 2)
     }
 
@@ -220,9 +220,9 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
         XCTAssertEqual(link.dataMessageCount, afterFirstPartial + 2)
     }
 
-    /// A tick inside the second is the analyser's own repeat rate, and it must
-    /// not turn into traffic.
-    func testTicksInsideTheSecondSendNothing() async throws {
+    /// A tick inside the interval is the analyser's own repeat rate, and it
+    /// must not turn into traffic.
+    func testTicksInsideTheIntervalSendNothing() async throws {
         let clock = PreviewClock(1_000)
         let link = FakeMessageLink()
         let model = try await pairedModel(link: link, clock: clock)
@@ -231,7 +231,7 @@ final class VoicePreviewKeepaliveTests: XCTestCase {
         try await settle()
         let afterFirstPartial = link.dataMessageCount
 
-        clock.value += 0.5
+        clock.value += 0.25
         model.keepVoicePreviewAlive()
         XCTAssertEqual(link.dataMessageCount, afterFirstPartial)
     }

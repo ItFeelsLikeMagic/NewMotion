@@ -68,8 +68,9 @@ public final class MacOverlayPresenter {
     public static let hintDuration: TimeInterval = 2
     /// The preview channel is unreliable, so a lost end must not strand the
     /// card on screen. This timeout is the real guarantee; the ended message
-    /// only makes the common case instant. The phone repeats its preview once
-    /// a second, silent hold or not, so a card that is still wanted survives.
+    /// only makes the common case instant. The phone repeats its preview
+    /// twice a second, silent hold or not, so a card that is still wanted
+    /// survives even a lost repeat.
     public static let transcriptIdleTimeout: TimeInterval = 2
     /// Three plain deletes inside this window is someone rubbing a word out
     /// one press at a time, which is exactly who has not found the slide.
