@@ -56,7 +56,6 @@ curl -fSL $PROGRESS --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-ti
     || die "could not download $DMG_URL" "$RETRY"
 
 # Same checks Gatekeeper makes on a double-click, before anything is mounted.
-printf 'Verifying signature and notarization...\n'
 spctl --assess --type open --context context:primary-signature "$WORK/NewMotion.dmg" >/dev/null 2>&1 \
     || die "the downloaded disk image is not notarized by Apple, so it was not installed." \
         "$REPORT"
@@ -131,15 +130,3 @@ else
     printf '\nNewMotion %s is installed at %s but did not launch.\nOpen it yourself:\n  open "%s"\n' \
         "$VERSION" "$APP" "$APP"
 fi
-
-cat <<DONE
-It lives in the menu bar, not the Dock, and updates itself from now on.
-
-Next steps:
-  1. Click Allow when it asks to use Bluetooth. That is how it reaches your iPhone.
-  2. Open System Settings > Privacy & Security > Accessibility and turn on NewMotion.
-     It cannot move the cursor or type without this.
-  3. Click the menu bar icon to pair your iPhone.
-
-Stuck? $ISSUES_URL
-DONE
