@@ -25,35 +25,21 @@ public enum OnDeviceVoiceReadiness: Equatable, Sendable {
     }
 }
 
-/// Splits the free-text Settings field into boost phrases.  Kept platform-free
-/// so it can be tested without a microphone.
+/// Trims the Mac's screen words down to a boost list the recogniser will
+/// take.  Kept platform-free so it can be tested without a microphone.
 public enum VoiceBoostWords {
     public static let maximumPhrases = 100
 
-    /// The hand-typed list wins on order, because it is the one the owner
-    /// chose deliberately; the Mac's screen words fill the rest of the budget.
-    /// Case-insensitive, so a name typed once is not boosted twice.
-    public static func merge(typed: [String], fromMac: [String]) -> [String] {
-        var seen = Set(typed.map { $0.lowercased() })
-        var merged = typed
-        for phrase in fromMac where !seen.contains(phrase.lowercased()) {
-            guard merged.count < maximumPhrases else { break }
-            seen.insert(phrase.lowercased())
-            merged.append(phrase)
+    /// Order is the Mac's, because it walked the screen front to back.
+    /// Case-insensitive, so a name seen twice is not boosted twice.
+    public static func limited(_ phrases: [String]) -> [String] {
+        var seen = Set<String>()
+        var kept: [String] = []
+        for phrase in phrases where seen.insert(phrase.lowercased()).inserted {
+            guard kept.count < maximumPhrases else { break }
+            kept.append(phrase)
         }
-        return merged
-    }
-
-    public static func parse(_ raw: String) -> [String] {
-        raw
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .reduce(into: [String]()) { unique, phrase in
-                guard unique.count < maximumPhrases,
-                      !unique.contains(where: { $0.caseInsensitiveCompare(phrase) == .orderedSame }) else { return }
-                unique.append(phrase)
-            }
+        return kept
     }
 }
 

@@ -3,52 +3,41 @@ import XCTest
 @testable import NewMotion_iOS
 @testable import NewMotionShared
 
-/// The boost list the Settings field feeds to Apple's recogniser. Whatever is
-/// typed there is a person's rough notes, so parsing has to survive stray
-/// commas, blank lines, and the same name entered twice.
+/// The boost list handed to Apple's recogniser. It is the Mac's walk of its
+/// own screen, so it can arrive long and can name the same thing twice.
 final class VoiceBoostWordsTests: XCTestCase {
-    func testSplitsOnCommasAndNewlines() {
+    func testKeepsTheMacsOrder() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("Testaflight, Ollama\nXcode"),
+            VoiceBoostWords.limited(["Testaflight", "Ollama", "Xcode"]),
             ["Testaflight", "Ollama", "Xcode"]
-        )
-    }
-
-    func testTrimsSpacesAndDropsEmptyEntries() {
-        XCTAssertEqual(
-            VoiceBoostWords.parse("  Testaflight ,, \n , Ollama  \n\n"),
-            ["Testaflight", "Ollama"]
         )
     }
 
     func testKeepsTheFirstSpellingOfARepeatedPhrase() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("Testaflight, testaflight, TESTAFLIGHT, Ollama"),
+            VoiceBoostWords.limited(["Testaflight", "testaflight", "TESTAFLIGHT", "Ollama"]),
             ["Testaflight", "Ollama"]
         )
     }
 
     func testKeepsMultiWordPhrasesWhole() {
         XCTAssertEqual(
-            VoiceBoostWords.parse("NewMotion, air mouse"),
+            VoiceBoostWords.limited(["NewMotion", "air mouse"]),
             ["NewMotion", "air mouse"]
         )
     }
 
-    func testEmptyFieldYieldsNoPhrases() {
-        XCTAssertEqual(VoiceBoostWords.parse(""), [])
-        XCTAssertEqual(VoiceBoostWords.parse("   \n , , "), [])
+    func testEmptyScreenYieldsNoPhrases() {
+        XCTAssertEqual(VoiceBoostWords.limited([]), [])
     }
 
-    /// The recogniser is given a bounded list, so a pasted document cannot
+    /// The recogniser is given a bounded list, so a screen full of text cannot
     /// turn one press into an unbounded context.
     func testStopsAtTheMaximum() {
-        let raw = (0..<(VoiceBoostWords.maximumPhrases + 50))
-            .map { "word\($0)" }
-            .joined(separator: ",")
-        let parsed = VoiceBoostWords.parse(raw)
-        XCTAssertEqual(parsed.count, VoiceBoostWords.maximumPhrases)
-        XCTAssertEqual(parsed.first, "word0")
+        let seen = (0..<(VoiceBoostWords.maximumPhrases + 50)).map { "word\($0)" }
+        let kept = VoiceBoostWords.limited(seen)
+        XCTAssertEqual(kept.count, VoiceBoostWords.maximumPhrases)
+        XCTAssertEqual(kept.first, "word0")
     }
 }
 
@@ -109,39 +98,6 @@ final class VoicePreviewEndTests: XCTestCase {
     /// The model answers its recogniser through a main-actor hop.
     private func settle() async throws {
         try await Task.sleep(for: .milliseconds(80))
-    }
-}
-
-/// The Mac's screen words and the owner's typed words become one list, and a
-/// finished sentence has to fit the wire.
-final class VoiceBoostMergeTests: XCTestCase {
-    func testTypedWordsComeFirstAndMacWordsFillTheRest() {
-        XCTAssertEqual(
-            VoiceBoostWords.merge(typed: ["Testaflight"], fromMac: ["Xcode", "Ollama"]),
-            ["Testaflight", "Xcode", "Ollama"]
-        )
-    }
-
-    func testAWordInBothListsIsBoostedOnce() {
-        XCTAssertEqual(
-            VoiceBoostWords.merge(typed: ["Ollama"], fromMac: ["ollama", "Xcode"]),
-            ["Ollama", "Xcode"]
-        )
-    }
-
-    func testEitherListAloneIsFine() {
-        XCTAssertEqual(VoiceBoostWords.merge(typed: [], fromMac: ["Xcode"]), ["Xcode"])
-        XCTAssertEqual(VoiceBoostWords.merge(typed: ["Xcode"], fromMac: []), ["Xcode"])
-        XCTAssertEqual(VoiceBoostWords.merge(typed: [], fromMac: []), [])
-    }
-
-    /// The screen can offer more than the recogniser should be given, and the
-    /// owner's own words are the ones that must survive the trim.
-    func testMergeStopsAtTheMaximumAndKeepsTypedWords() {
-        let mac = (0..<200).map { "screen\($0)" }
-        let merged = VoiceBoostWords.merge(typed: ["Testaflight"], fromMac: mac)
-        XCTAssertEqual(merged.count, VoiceBoostWords.maximumPhrases)
-        XCTAssertEqual(merged.first, "Testaflight")
     }
 }
 
