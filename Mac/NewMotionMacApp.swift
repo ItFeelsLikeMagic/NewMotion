@@ -19,6 +19,33 @@ private extension RemoteLinkState {
     }
 }
 
+private extension BLEPeripheralManagerState {
+    var label: String {
+        switch self {
+        case .unknown, .resetting: return "Starting"
+        case .unsupported: return "Not available"
+        case .unauthorized: return "Not allowed"
+        case .poweredOff: return "Off"
+        case .poweredOn: return "On"
+        }
+    }
+
+    /// The link folds all of these into one unavailable state, so this is the
+    /// only place anyone is told which one they are looking at.
+    var hint: String? {
+        switch self {
+        case .unauthorized:
+            return "Turn on NewMotion in System Settings, Privacy & Security, Bluetooth, then quit and reopen NewMotion. macOS asks for this once and does not ask again."
+        case .poweredOff:
+            return "Turn Bluetooth on in Control Center or System Settings."
+        case .unsupported:
+            return "This Mac has no Bluetooth radio the app can use."
+        case .unknown, .resetting, .poweredOn:
+            return nil
+        }
+    }
+}
+
 /// The macOS test bundle uses the real app as its test host, so every
 /// `xcodebuild test` run launches this app. Bluetooth and the login Keychain
 /// re-prompt on each unsigned rebuild, so the host stays inert under tests and
@@ -110,6 +137,7 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var status: RemoteMenuBarStatus = .disconnected { didSet { publishDebugState() } }
     @Published private(set) var accessibility: AccessibilityState = .unknown { didSet { publishDebugState() } }
     @Published private(set) var linkState: RemoteLinkState = .unavailable { didSet { publishDebugState() } }
+    @Published private(set) var radio: BLEPeripheralManagerState = .unknown
     @Published private(set) var pairingState: MacPairingOfferState = .idle { didSet { publishDebugState() } }
     @Published private(set) var pairingProgress: MacPairingProgress = .idle { didSet { publishDebugState() } }
     /// Set while the Allow/Deny prompt is up for a phone with this name.
@@ -215,7 +243,11 @@ final class MacRemoteAppModel: ObservableObject {
         link.onError = { [weak self] error in
             MainActor.assumeIsolated { self?.handleLinkError(error) }
         }
+        link.onRadioState = { [weak self] state in
+            MainActor.assumeIsolated { self?.radio = state }
+        }
         handleLinkState(link.state)
+        radio = link.radioState
         pairingOffer.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.pairingState = state
@@ -287,8 +319,14 @@ final class MacRemoteAppModel: ObservableObject {
     /// the Settings pane where the switch lives.  Either way the poll below
     /// notices the grant without the user coming back here.
     func requestAccessibility() {
-        openAccessibilitySettings()
+        openPrivacySettings(anchor: "Privacy_Accessibility")
         apply(injector.refreshAccessibility(prompt: true))
+    }
+
+    /// Core Bluetooth puts its dialog up once per install and never again, so
+    /// a denial can only be undone in Settings.
+    func requestBluetooth() {
+        openPrivacySettings(anchor: "Privacy_Bluetooth")
     }
 
     /// Called whenever the menu bar window opens.  Nothing refuses a command
@@ -335,10 +373,10 @@ final class MacRemoteAppModel: ObservableObject {
         accessibilityTimer = nil
     }
 
-    private func openAccessibilitySettings() {
+    private func openPrivacySettings(anchor: String) {
         let candidates = [
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?Privacy_Accessibility"
+            "x-apple.systempreferences:com.apple.preference.security?\(anchor)",
+            "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?\(anchor)"
         ]
         for candidate in candidates {
             if let url = URL(string: candidate), NSWorkspace.shared.open(url) { return }
@@ -1239,6 +1277,16 @@ struct MacRemoteStatusView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Same rule as the grant above: a radio that is on says nothing
+            // worth a row, and these three states each name something to do.
+            if let hint = model.radio.hint {
+                LabeledContent("Bluetooth", value: model.radio.label)
+                    .font(.caption)
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Label(model.pairingProgress.title,
                   systemImage: model.pairingProgress.isAuthenticated ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
                 .font(.caption)
@@ -1265,6 +1313,11 @@ struct MacRemoteStatusView: View {
             if model.accessibility != .granted {
                 Button("Open Accessibility Settings") {
                     model.requestAccessibility()
+                }
+            }
+            if model.radio == .unauthorized {
+                Button("Open Bluetooth Settings") {
+                    model.requestBluetooth()
                 }
             }
 

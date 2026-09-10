@@ -31,8 +31,14 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     public var onMessage: ((LinkChannel, Data) -> Void)?
     public var onReadyToSend: (() -> Void)?
     public var onError: ((LinkError) -> Void)?
+    public var onRadioState: ((BLEPeripheralManagerState) -> Void)?
 
     public var state: RemoteLinkState { Self.linkState(for: lifecycle) }
+
+    /// Kept because `state` folds every reason the link cannot run into
+    /// `unavailable`, and a denied permission and a switched-off radio need
+    /// different things from whoever is reading.
+    public private(set) var radioState: BLEPeripheralManagerState = .unknown
 
     public var peerName: String? {
         let name = (connectedPeripheral ?? pendingPeripheral)?.name?
@@ -269,6 +275,8 @@ public final class BLEMessageLink: MessageLink, @unchecked Sendable {
     }
 
     private func handleAdapterState(_ managerState: BLEPeripheralManagerState) {
+        radioState = managerState
+        onRadioState?(managerState)
         switch managerState {
         case .poweredOn:
             if lifecycle == .waitingForBluetooth { start() }
