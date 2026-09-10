@@ -12,6 +12,11 @@ import Foundation
 /// Cursor and scroll glide independently, because they are separate streams
 /// that happen to share a link.  Anything that is not travel flushes both, so a
 /// click still lands where the cursor was heading rather than behind it.
+///
+/// Scrolling pays for the glide twice over: splitting one flick into several
+/// smaller ones makes macOS and the app accelerate it less, so the page travels
+/// a shorter distance, and the momentum tail arrives as uneven steps.  Smooth
+/// motion is worth both.
 public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
     /// One tick per frame on a 120 Hz display.  A 60 Hz display simply
     /// composites two ticks into one frame, which costs nothing.
@@ -71,7 +76,6 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
     private var pointer = Glide()
     private var scroll = Glide()
     private var timer: DispatchSourceTimer?
-    private var scrollFlag = false
     /// Fixed for the life of the sink, so it needs no lock.
     private let minimumSmoothed: Double
 
@@ -84,26 +88,10 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
 
     public init(
         wrapping sink: InputEventSink,
-        scroll: Bool = false,
         minimumSmoothed: Double = SmoothedTravelSink.defaultMinimumSmoothed
     ) {
         self.wrapped = sink
-        self.scrollFlag = scroll
         self.minimumSmoothed = max(0, minimumSmoothed)
-    }
-
-    /// Off by default.  Splitting one scroll into several smaller ones makes
-    /// macOS and the app on screen accelerate it less, so the page moves a
-    /// shorter distance for the same flick, and the momentum tail arrives as
-    /// uneven steps.  The glide is not worth those two costs.
-    public var smoothsScroll: Bool {
-        get { lock.withLock { scrollFlag } }
-        set {
-            lock.lock()
-            scrollFlag = newValue
-            lock.unlock()
-            if !newValue { flush() }
-        }
     }
 
     public func send(_ event: InjectedInputEvent) throws {
@@ -122,10 +110,6 @@ public final class SmoothedTravelSink: InputEventSink, @unchecked Sendable {
             lock.unlock()
             startTimerIfNeeded()
         case let .scroll(delta):
-            guard smoothsScroll else {
-                try wrapped.send(event)
-                return
-            }
             lock.lock()
             scroll.add(x: delta.x, y: delta.y, frames: Self.glideFrames)
             lock.unlock()
