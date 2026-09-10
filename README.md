@@ -38,8 +38,9 @@ script from the internet into a shell; that is a fair instinct.
 **Mac companion, by hand.** Download `NewMotion.dmg` from
 [Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), open it, and
 drag NewMotion into Applications. It is signed and notarized by Apple, so it
-opens without a warning. It lives in the menu bar, not the Dock. Grant it
-Accessibility access when asked; that is what lets it move your cursor and type.
+opens without a warning. It lives in the menu bar, not the Dock. It asks to use
+Bluetooth on first launch, which is how it reaches the phone, and it needs
+Accessibility access, which is what lets it move your cursor and type.
 
 There is a `NewMotion.zip` beside it holding the same notarized app, if you
 would rather have a plain file. Either works. The disk image is the one to lead
@@ -82,7 +83,7 @@ The full policy: [NewMotion Privacy Policy](https://itfeelslikemagic.github.io/N
 
 ## Requirements
 
-- macOS 15 or later, Apple silicon
+- macOS 15 or later, Apple silicon or Intel
 - iOS 18 or later. Dictation needs iOS 26 or later, where Apple's on-device
   speech engine lives; everything else works on iOS 18.
 - Xcode 27 to build. Developed against 27.0 beta and Swift 6.4.

@@ -136,9 +136,10 @@ cat <<DONE
 It lives in the menu bar, not the Dock, and updates itself from now on.
 
 Next steps:
-  1. Open System Settings > Privacy & Security > Accessibility and turn on NewMotion.
+  1. Click Allow when it asks to use Bluetooth. That is how it reaches your iPhone.
+  2. Open System Settings > Privacy & Security > Accessibility and turn on NewMotion.
      It cannot move the cursor or type without this.
-  2. Click the menu bar icon to pair your iPhone.
+  3. Click the menu bar icon to pair your iPhone.
 
 Stuck? $ISSUES_URL
 DONE
