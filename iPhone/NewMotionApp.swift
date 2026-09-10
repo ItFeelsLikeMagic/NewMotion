@@ -1530,7 +1530,11 @@ struct NewMotionControlView: View {
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(phase)
         }
+        // The screen has turned by the time this lands, which is both the
+        // moment a held-back sheet may start and the moment the tilt axis is
+        // worth re-reading.
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { _ in
+            InterfaceOrientationLock.screenTurned()
             model.screenGeometryChanged()
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
@@ -1570,12 +1574,11 @@ private struct RemoteControlScreen: View {
             .onChange(of: isSettingsShowing) { _, showing in
                 if showing { isKeyboardShowing = false }
                 model.setTrackpadVisible(!showing)
-                // Settings is a list to read rather than a surface to hold, so
-                // it stands the phone up whichever way the remote behind it
-                // faces, and hands the orientation back on the way out.
-                InterfaceOrientationLock.applyAfterPresentation(
-                    showing ? .portrait : model.layoutMode.orientations
-                )
+                // Done turns the screen before it dismisses; a swipe down has
+                // no such moment, so the orientation is handed back here.
+                if !showing {
+                    InterfaceOrientationLock.applyAfterPresentation(model.layoutMode.orientations)
+                }
             }
     }
 
@@ -1642,7 +1645,11 @@ private struct RemoteControlScreen: View {
     /// area while these have to stay clear of it.
     private var trackpadControls: some View {
         ZStack {
-            SettingsButton { isSettingsShowing = true }
+            // Settings is a list to read rather than a surface to hold, so it
+            // stands the phone up whichever way the remote behind it faces.
+            SettingsButton {
+                InterfaceOrientationLock.turn(to: .portrait) { isSettingsShowing = true }
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             MissionControlButton { model.handleRemoteInputEvents([.missionControl]) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -1780,7 +1787,9 @@ private struct RemoteSettingsSheet: View {
             .navigationTitle("Settings")
             .onAppear { Haptics.prepare() }
             .toolbar {
-                Button("Done", action: Haptics.tap { dismiss() })
+                Button("Done", action: Haptics.tap {
+                    InterfaceOrientationLock.turn(to: model.layoutMode.orientations) { dismiss() }
+                })
             }
         }
     }
