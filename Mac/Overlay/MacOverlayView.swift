@@ -249,14 +249,14 @@ struct MacOverlayView: View {
             // The words sit in a slab of their own, like the bars, so the
             // card reads as three keys with the middle one holding the words.
             Text(text.isEmpty ? "Listening…" : text)
-                .font(.title3)
+                .font(.system(size: MacOverlayStyle.transcriptFontSize, weight: .medium, design: .rounded))
                 .foregroundStyle(text.isEmpty ? Color.secondary : Color.primary)
                 .lineLimit(2)
                 .truncationMode(.head)
                 .multilineTextAlignment(.leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, minHeight: MacOverlayStyle.transcriptMinHeight, alignment: .leading)
                 .modifier(Slab(
                     shape: RoundedRectangle(cornerRadius: 10, style: .continuous),
                     isLit: false
