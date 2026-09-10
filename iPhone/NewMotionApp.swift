@@ -936,6 +936,7 @@ final class NewMotionFeatureModel: ObservableObject {
         reconnectFailures = 0
         _ = lifecycle.handle(.trustAdded)
         latestAction = "Paired with \(displayName)"
+        Haptics.play(.success)
         IPhoneDebugLog.emit("paired", ["link": linkState.label])
         do {
             let summary = try pairingCoordinator.rememberPairedMac(
@@ -995,6 +996,7 @@ final class NewMotionFeatureModel: ObservableObject {
         isPaired = false
         handshakeHelloSent = false
         if qrInProgress {
+            Haptics.play(.failure)
             pairingConfirmed = false
             link.stop()
             latestAction = "Pairing failed; scan a new Mac QR code"
@@ -1353,9 +1355,18 @@ final class NewMotionFeatureModel: ObservableObject {
         switch event {
         case .pointer: label = "Cursor move"
         case .scroll: label = "Trackpad scroll"
-        case .leftClick: label = "Left click"
-        case .rightClick: label = "Right click"
-        case .doubleClick: label = "Double click"
+        // The glass gives nothing back, so a tap that became a click is only
+        // knowable by the buzz.  The corner buttons carry their own, so
+        // Mission Control and app windows are not felt twice here.
+        case .leftClick:
+            label = "Left click"
+            Haptics.play(.press)
+        case .rightClick:
+            label = "Right click"
+            Haptics.play(.press)
+        case .doubleClick:
+            label = "Double click"
+            Haptics.play(.press)
         case .dragBegan:
             label = "Drag began"
             Haptics.play(.gestureBegan)
@@ -1862,10 +1873,10 @@ private struct RemoteSettingsSheet: View {
                     LabeledContent("Link", value: model.linkStatus)
                     LabeledContent("Link round trip", value: model.linkLatency)
                     if model.trustedMacs.count > 1 {
-                        Picker("Mac", selection: Binding(
+                        Picker("Mac", selection: Haptics.feel(.step, Binding(
                             get: { model.selectedMac?.deviceID },
                             set: { if let id = $0 { model.selectMac(id) } }
-                        )) {
+                        ))) {
                             ForEach(model.trustedMacs, id: \.deviceID) { mac in
                                 Text(mac.displayName).tag(Optional(mac.deviceID))
                             }
@@ -1884,10 +1895,10 @@ private struct RemoteSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
-                            value: Binding(
+                            value: Haptics.feel(.step, Binding(
                                 get: { model.trackpadSensitivityX },
                                 set: { model.setTrackpadSensitivity(x: $0) }
-                            ),
+                            )),
                             in: 0.5...6,
                             step: 0.1
                         )
@@ -1897,10 +1908,10 @@ private struct RemoteSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
-                            value: Binding(
+                            value: Haptics.feel(.step, Binding(
                                 get: { model.trackpadSensitivityY },
                                 set: { model.setTrackpadSensitivity(y: $0) }
-                            ),
+                            )),
                             in: 0.5...6,
                             step: 0.1
                         )
@@ -1910,10 +1921,10 @@ private struct RemoteSettingsSheet: View {
                 Section("Layout") {
                     Toggle(
                         "Mirror horizontal mode",
-                        isOn: Binding(
+                        isOn: Haptics.feel(.press, Binding(
                             get: { model.mirrorHorizontalLayout },
                             set: { model.setMirrorHorizontalLayout($0) }
-                        )
+                        ))
                     )
                     Text("Trackpad on the left, keys on the right, for the left hand.")
                         .font(.caption)
@@ -1926,10 +1937,10 @@ private struct RemoteSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
-                            value: Binding(
+                            value: Haptics.feel(.step, Binding(
                                 get: { model.trackpadScrollSensitivity },
                                 set: { model.setTrackpadSensitivity(scroll: $0) }
-                            ),
+                            )),
                             in: 0.5...6,
                             step: 0.1
                         )
@@ -1941,10 +1952,10 @@ private struct RemoteSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
-                            value: Binding(
+                            value: Haptics.feel(.step, Binding(
                                 get: { model.scrollMomentum },
                                 set: { model.setScrollMomentum($0) }
-                            ),
+                            )),
                             in: 0...1,
                             step: 0.05
                         )
@@ -1954,10 +1965,10 @@ private struct RemoteSettingsSheet: View {
                 Section {
                     Toggle(
                         "Point the phone to move the cursor",
-                        isOn: Binding(
+                        isOn: Haptics.feel(.press, Binding(
                             get: { model.airMouseEnabled },
                             set: { model.setAirMouseEnabled($0) }
-                        )
+                        ))
                     )
                     Text(model.airMouseStatus)
                         .font(.caption)
@@ -1967,10 +1978,10 @@ private struct RemoteSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Slider(
-                            value: Binding(
+                            value: Haptics.feel(.step, Binding(
                                 get: { model.airMouseSensitivity },
                                 set: { model.setAirMouseSensitivity($0) }
-                            ),
+                            )),
                             in: 500...6_000,
                             step: 100
                         )
@@ -2025,6 +2036,7 @@ private struct RemoteSettingsSheet: View {
 #endif
             }
             .navigationTitle("Settings")
+            .onAppear { Haptics.prepare() }
             .toolbar {
                 Button("Done", action: Haptics.tap { dismiss() })
             }
