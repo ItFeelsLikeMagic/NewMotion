@@ -80,7 +80,7 @@ struct CommandPickerKey: View {
                 keepalive.update(press.keepalive)
                 // The thump is how a thumb counts cells off a screen it is not
                 // looking at, so it has to be felt over the slide itself.
-                Haptics.play(.pickerStep)
+                Haptics.play(.firmStep)
             }
         case .ended:
             finish(committing: true)
