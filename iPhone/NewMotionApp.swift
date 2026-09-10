@@ -19,6 +19,45 @@ private extension RemoteLinkState {
     }
 }
 
+/// What the air mouse is doing.  Settings shows only the cases the toggle
+/// cannot already tell you, so a state that is simply "on" or "off" stays
+/// silent and the screen stays short.
+enum AirMouseState: Equatable, Sendable {
+    case off
+    case active
+    /// Enabled and healthy, but the trackpad is behind the settings sheet.
+    case notAiming
+    /// Enabled and healthy, but the app is not in front.
+    case waitingForApp
+    case unpaired
+    case noSensor
+    case failed
+    case sendFailed
+
+    var label: String {
+        switch self {
+        case .off: return "Air mouse off"
+        case .active: return "Air mouse active"
+        case .notAiming: return "Close Settings to aim"
+        case .waitingForApp: return "Air mouse waits for the app"
+        case .unpaired: return "Pair before using air mouse"
+        case .noSensor: return "This iPhone has no motion sensor"
+        case .failed: return "Air mouse could not start"
+        case .sendFailed: return "Air mouse send failed"
+        }
+    }
+
+    /// The line under the toggle, or nil when the toggle says it already.
+    var problem: String? {
+        switch self {
+        case .off, .active, .notAiming, .waitingForApp: return nil
+        case .unpaired: return "Pair with a Mac first."
+        case .noSensor: return "This iPhone has no motion sensor."
+        case .failed, .sendFailed: return "The air mouse could not start."
+        }
+    }
+}
+
 /// A deliberately small view model for the prototype UI.  It owns the local
 /// push-to-talk and motion sessions, but it does not invent a second transport
 /// path: feature adapters continue to emit the shared protocol payloads the
@@ -29,11 +68,9 @@ final class NewMotionFeatureModel: ObservableObject {
 
     @Published var latestAction = "Not paired"
     @Published var isPaired = false
-    @Published var airMouseStatus = "Air mouse off"
+    @Published var airMouseState = AirMouseState.off
     @Published var airMouseEnabled = UserDefaults.standard.bool(forKey: "airMouseEnabled")
     @Published var airMouseSensitivity = UserDefaults.standard.object(forKey: "airMouseSensitivity") as? Double ?? 2_400
-    @Published var voiceBoostWords = UserDefaults.standard.string(forKey: "voiceBoostWords") ?? ""
-    @Published var onDeviceVoiceStatus = OnDeviceVoiceReadiness.preparing.label
     /// The words heard so far in the utterance under way, shown on the remote
     /// and cleared when it ends. Never logged and never stored.
     @Published var voicePreview = ""
@@ -69,12 +106,9 @@ final class NewMotionFeatureModel: ObservableObject {
         return DeviceSlug.name(forIdentityKey: pairingCoordinator.identity.publicKey)
     }
     /// Round trip over the link, measured end to end from this app.
-    @Published var linkLatency = "Not measured"
-
     /// What the connection is doing, in words the settings screen can show.
     var linkStatus: String { linkState.label }
 
-    private static let pingBurstCount = 5
     /// How often the phone pings on its own, and how long the summary line
     /// covers.  Both are slow enough that neither costs the link anything.
     private static let autoPingInterval: TimeInterval = 2
@@ -91,10 +125,6 @@ final class NewMotionFeatureModel: ObservableObject {
     private var lastHeardFromMac: TimeInterval = 0
     /// Sends still waiting for a pong, oldest first.
     private var pingSentAt: [TimeInterval] = []
-    private var pingSamples: [Double] = []
-    /// Pongs still owed to a manual burst.  A burst owns the on-screen number
-    /// and the per-ping log lines; the automatic ping is silent.
-    private var pingBurstRemaining = 0
     private var telemetryTimers: [Timer] = []
     private var isForeground = false
 
@@ -321,9 +351,6 @@ final class NewMotionFeatureModel: ObservableObject {
                 self?.clearVoicePreview()
             }
         }
-        onDeviceVoice.onReadiness = { [weak self] readiness in
-            Task { @MainActor in self?.onDeviceVoiceStatus = readiness.label }
-        }
         let center = NotificationCenter.default
         audioSessionObservers = [
             center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { note in
@@ -487,7 +514,7 @@ final class NewMotionFeatureModel: ObservableObject {
         airMouseEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "airMouseEnabled")
         refreshAirMouse()
-        latestAction = airMouseStatus
+        latestAction = airMouseState.label
     }
 
     /// The air mouse only tracks while the trackpad surface is on screen, so
@@ -502,17 +529,17 @@ final class NewMotionFeatureModel: ObservableObject {
         if !airMouseEnabled || !trackpadVisible { airScrollMomentum.stop() }
         guard airMouseEnabled else {
             _ = motionSession.setClutchHeld(false)
-            airMouseStatus = "Air mouse off"
+            airMouseState = .off
             return
         }
         guard isControllable else {
             _ = motionSession.setClutchHeld(false)
-            airMouseStatus = "Pair before using air mouse"
+            airMouseState = .unpaired
             return
         }
         guard trackpadVisible else {
             _ = motionSession.setClutchHeld(false)
-            airMouseStatus = "Air mouse starts on the trackpad"
+            airMouseState = .notAiming
             return
         }
         // The screen may have turned since the last hold, and the tilt axis
@@ -520,13 +547,13 @@ final class NewMotionFeatureModel: ObservableObject {
         motionSession.updateFilter(motionConfiguration)
         switch motionSession.setClutchHeld(true) {
         case .started:
-            airMouseStatus = "Air mouse active"
+            airMouseState = .active
         case .unavailable:
-            airMouseStatus = "This phone has no motion sensor"
+            airMouseState = .noSensor
         case .inactive, .none:
-            airMouseStatus = "Air mouse waits for the app"
+            airMouseState = .waitingForApp
         case .failed:
-            airMouseStatus = "Air mouse could not start"
+            airMouseState = .failed
         }
     }
 
@@ -538,31 +565,24 @@ final class NewMotionFeatureModel: ObservableObject {
         InterfaceOrientationLock.apply(mode.orientations)
     }
 
+    /// The tilt axis is read off the screen, and a rotation lands well after
+    /// the request for it returns, so the filter is set from the finished turn
+    /// rather than from the moment one was asked for.
+    func screenGeometryChanged() {
+        motionSession.updateFilter(motionConfiguration)
+    }
+
     func setMirrorHorizontalLayout(_ enabled: Bool) {
         mirrorHorizontalLayout = enabled
         UserDefaults.standard.set(enabled, forKey: "mirrorHorizontalLayout")
     }
 
-    func setVoiceBoostWords(_ raw: String) {
-        voiceBoostWords = raw
-        UserDefaults.standard.set(raw, forKey: "voiceBoostWords")
-        refreshVoiceBoost()
-    }
-
     /// Publishes the boost list to the voice queue and makes sure the model is
-    /// on its way down.  Called whenever either half of the list changes: the
-    /// Settings field here, or a fresh walk pushed by the Mac.
+    /// on its way down.  Called whenever the Mac pushes a fresh walk of its
+    /// screen, which is the whole of the list.
     private func refreshVoiceBoost() {
-        // The Settings field is a permanent extra on top of whatever the Mac
-        // can see, so a name you always want heard survives a window change.
-        voiceBoost.update(VoiceBoostWords.merge(
-            typed: VoiceBoostWords.parse(voiceBoostWords),
-            fromMac: macVocabulary
-        ))
-        guard onDeviceVoice.isSupported else {
-            onDeviceVoiceStatus = OnDeviceVoiceReadiness.unsupported.label
-            return
-        }
+        voiceBoost.update(VoiceBoostWords.limited(macVocabulary))
+        guard onDeviceVoice.isSupported else { return }
         onDeviceVoice.prepare()
     }
 
@@ -734,36 +754,10 @@ final class NewMotionFeatureModel: ObservableObject {
         }
     }
 
-    /// A burst rather than a single ping, because one sample cannot tell a
-    /// typical hop from one that waited out a slow connection slot. Pongs carry
-    /// no identifier, so they are matched to sends in order; the spacing is far
-    /// wider than the round trip, which keeps that honest.
-    func sendPing() {
-        guard isControllable else {
-            latestAction = "Pair first"
-            return
-        }
-        pingSamples.removeAll()
-        pingBurstRemaining = Self.pingBurstCount
-        linkLatency = "Measuring…"
-        latestAction = "Measuring link"
-        for index in 0..<Self.pingBurstCount {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(index * 250))
-                self?.sendOnePing(manual: true)
-            }
-        }
-    }
-
-    /// One ping every couple of seconds, so the round trip is already known
-    /// when the user thinks to ask.  It stands aside for a manual burst rather
-    /// than feeding it a pong the burst did not send for.
+    /// One ping every couple of seconds.  Pongs carry no identifier, so they
+    /// are matched to sends in order; the spacing is far wider than the round
+    /// trip, which keeps that honest.
     private func sendAutomaticPing() {
-        guard pingBurstRemaining == 0 else { return }
-        sendOnePing(manual: false)
-    }
-
-    private func sendOnePing(manual: Bool) {
         guard isControllable else { return }
         let now = uptime()
         expireOutstandingPings(now: now)
@@ -771,10 +765,8 @@ final class NewMotionFeatureModel: ObservableObject {
         guard inputUplink.send(.ping(PingPayload())) else {
             pingSentAt.removeLast()
             PhoneLatency.roundTrip.recordRefusal()
-            if manual { latestAction = "Ping failed" }
             return
         }
-        if manual { IPhoneDebugLog.emit("ping_sent", ["link": linkState.label]) }
     }
 
     /// Sends no pong can still belong to.  Without this one lost pong pairs
@@ -799,21 +791,6 @@ final class NewMotionFeatureModel: ObservableObject {
         guard !pingSentAt.isEmpty else { return }
         let sent = pingSentAt.removeFirst()
         PhoneLatency.roundTrip.record(seconds: now - sent)
-        guard pingBurstRemaining > 0 else { return }
-        pingBurstRemaining -= 1
-        let roundTrip = (now - sent) * 1_000
-        pingSamples.append(roundTrip)
-        let best = pingSamples.min() ?? roundTrip
-        let average = pingSamples.reduce(0, +) / Double(pingSamples.count)
-        linkLatency = String(
-            format: "%.0f ms average, %.0f ms best, %d of %d",
-            average,
-            best,
-            pingSamples.count,
-            Self.pingBurstCount
-        )
-        latestAction = "Pong from Mac"
-        IPhoneDebugLog.emit("ping_rtt", ["ms": String(format: "%.1f", roundTrip)])
     }
 
     /// The automatic ping and the summary line run only while a connected link
@@ -1029,7 +1006,7 @@ final class NewMotionFeatureModel: ObservableObject {
     func handleMotionDelta(_ delta: MotionPointerDelta) {
         guard isControllable else { return }
         guard delta.x.isFinite, delta.y.isFinite else {
-            airMouseStatus = "Air mouse send failed"
+            airMouseState = .sendFailed
             return
         }
         let travel = CursorDelta(x: delta.x, y: delta.y)
@@ -1553,6 +1530,9 @@ struct NewMotionControlView: View {
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(phase)
         }
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { _ in
+            model.screenGeometryChanged()
+        }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
             model.logPairingDiagnostics()
         }
@@ -1590,6 +1570,12 @@ private struct RemoteControlScreen: View {
             .onChange(of: isSettingsShowing) { _, showing in
                 if showing { isKeyboardShowing = false }
                 model.setTrackpadVisible(!showing)
+                // Settings is a list to read rather than a surface to hold, so
+                // it stands the phone up whichever way the remote behind it
+                // faces, and hands the orientation back on the way out.
+                InterfaceOrientationLock.applyAfterPresentation(
+                    showing ? .portrait : model.layoutMode.orientations
+                )
             }
     }
 
@@ -1754,219 +1740,42 @@ private struct KeyboardToggleButton: View {
     }
 }
 
+/// One slider row: name and number on one line, the track under it.  Every
+/// slider in Settings reads the same way, so the shape and the feel live here
+/// once rather than five times.
+private struct SettingSlider: View {
+    let title: String
+    let readout: String
+    let value: Binding<Double>
+    let range: ClosedRange<Double>
+    var step: Double = 0.1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            LabeledContent(title) {
+                Text(readout).foregroundStyle(.secondary)
+            }
+            Slider(value: Haptics.feel(.step, value), in: range, step: step)
+        }
+    }
+}
+
+/// Sliders that scale something read as a multiple of normal.
+private func multiplier(_ value: Double) -> String {
+    "\(value.formatted(.number.precision(.fractionLength(1))))x"
+}
+
 private struct RemoteSettingsSheet: View {
     @ObservedObject var model: NewMotionFeatureModel
-#if DEBUG
-    @ObservedObject private var debugLog = IPhoneDebugLog.shared
-#endif
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Pairing") {
-                    if let name = model.awaitingMacName {
-                        VStack(spacing: 10) {
-                            ProgressView()
-                            Text("Waiting for \(name)")
-                                .font(.headline)
-                            Text("Click Allow on the Mac to finish pairing.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button("Cancel", action: Haptics.tap { model.cancelPairing() })
-                                .buttonStyle(.bordered)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                    } else if model.isPairingVisible {
-                        PairingCameraPreview(capture: model.pairingCapture)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 240)
-                            .overlay(alignment: .top) {
-                                Text("Hold about 10 in (25 cm) from the code")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(.black.opacity(0.65), in: Capsule())
-                                    .foregroundStyle(.white)
-                                    .padding(.top, 8)
-                            }
-                            .listRowInsets(EdgeInsets())
-
-                        Button("Cancel scanner", action: Haptics.tap { model.cancelPairing() })
-                    } else {
-                        Button("Scan Mac QR Code", action: Haptics.tap { model.startPairing() })
-                        Button(
-                            model.isPaired ? "Ping Mac" : "Ping Mac (waiting)",
-                            action: Haptics.tap { model.sendPing() }
-                        )
-                    }
-
-                    LabeledContent("This iPhone", value: model.deviceName)
-                    LabeledContent("Link", value: model.linkStatus)
-                    LabeledContent("Link round trip", value: model.linkLatency)
-                    if model.trustedMacs.count > 1 {
-                        Picker("Mac", selection: Haptics.feel(.step, Binding(
-                            get: { model.selectedMac?.deviceID },
-                            set: { if let id = $0 { model.selectMac(id) } }
-                        ))) {
-                            ForEach(model.trustedMacs, id: \.deviceID) { mac in
-                                Text(mac.displayName).tag(Optional(mac.deviceID))
-                            }
-                        }
-                    } else if let trustedMacName = model.trustedMacName {
-                        LabeledContent("Trusted Mac", value: trustedMacName)
-                    }
-                    Text(model.latestAction)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Trackpad sensitivity") {
-                    VStack(alignment: .leading) {
-                        Text("Horizontal \(model.trackpadSensitivityX.formatted(.number.precision(.fractionLength(1))))x")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Haptics.feel(.step, Binding(
-                                get: { model.trackpadSensitivityX },
-                                set: { model.setTrackpadSensitivity(x: $0) }
-                            )),
-                            in: 0.5...6,
-                            step: 0.1
-                        )
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Vertical \(model.trackpadSensitivityY.formatted(.number.precision(.fractionLength(1))))x")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Haptics.feel(.step, Binding(
-                                get: { model.trackpadSensitivityY },
-                                set: { model.setTrackpadSensitivity(y: $0) }
-                            )),
-                            in: 0.5...6,
-                            step: 0.1
-                        )
-                    }
-                }
-
-                Section("Layout") {
-                    Toggle(
-                        "Mirror horizontal mode",
-                        isOn: Haptics.feel(.press, Binding(
-                            get: { model.mirrorHorizontalLayout },
-                            set: { model.setMirrorHorizontalLayout($0) }
-                        ))
-                    )
-                    Text("Trackpad on the left, keys on the right, for the left hand.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Scrolling") {
-                    VStack(alignment: .leading) {
-                        Text("Scroll speed \(model.trackpadScrollSensitivity.formatted(.number.precision(.fractionLength(1))))x")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Haptics.feel(.step, Binding(
-                                get: { model.trackpadScrollSensitivity },
-                                set: { model.setTrackpadSensitivity(scroll: $0) }
-                            )),
-                            in: 0.5...6,
-                            step: 0.1
-                        )
-                    }
-                    VStack(alignment: .leading) {
-                        Text(model.scrollMomentum == 0
-                             ? "Glide after a flick: off"
-                             : "Glide after a flick \(Int(model.scrollMomentum * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Haptics.feel(.step, Binding(
-                                get: { model.scrollMomentum },
-                                set: { model.setScrollMomentum($0) }
-                            )),
-                            in: 0...1,
-                            step: 0.05
-                        )
-                    }
-                }
-
-                Section {
-                    Toggle(
-                        "Point the phone to move the cursor",
-                        isOn: Haptics.feel(.press, Binding(
-                            get: { model.airMouseEnabled },
-                            set: { model.setAirMouseEnabled($0) }
-                        ))
-                    )
-                    Text(model.airMouseStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading) {
-                        Text("Pointer speed \(Int(model.airMouseSensitivity))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Haptics.feel(.step, Binding(
-                                get: { model.airMouseSensitivity },
-                                set: { model.setAirMouseSensitivity($0) }
-                            )),
-                            in: 500...6_000,
-                            step: 100
-                        )
-                    }
-                    .disabled(!model.airMouseEnabled)
-                } header: {
-                    Text("Air mouse")
-                } footer: {
-                    Text("Works on the Trackpad screen. Tap the trackpad to click while you aim.")
-                }
-
-                Section {
-                    LabeledContent("Status", value: model.onDeviceVoiceStatus)
-                        .font(.caption)
-                    TextField(
-                        "Ollama, Xcode, Testaflight",
-                        text: Binding(
-                            get: { model.voiceBoostWords },
-                            set: { model.setVoiceBoostWords($0) }
-                        ),
-                        axis: .vertical
-                    )
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .lineLimit(1...4)
-                    Text("Names to listen harder for, separated by commas. Names on the Mac's screen are added to these on their own.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Voice typing")
-                } footer: {
-                    Text("Hold to talk and your words are turned into text here on the iPhone, then typed on the Mac. The sound itself never leaves this phone.")
-                }
-
-#if DEBUG
-                Section("Debug log") {
-                    if debugLog.lines.isEmpty {
-                        Text("No events yet")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ScrollView {
-                            Text(debugLog.lines.joined(separator: "\n"))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        .frame(height: 220)
-                    }
-                }
-#endif
+                pairing
+                trackpad
+                layout
+                airMouse
             }
             .navigationTitle("Settings")
             .onAppear { Haptics.prepare() }
@@ -1975,6 +1784,158 @@ private struct RemoteSettingsSheet: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var pairing: some View {
+        Section("Pairing") {
+            if let name = model.awaitingMacName {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Waiting for \(name)")
+                        .font(.headline)
+                    Text("Click Allow on the Mac to finish pairing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Cancel", action: Haptics.tap { model.cancelPairing() })
+                        .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            } else if model.isPairingVisible {
+                PairingCameraPreview(capture: model.pairingCapture)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 240)
+                    .overlay(alignment: .top) {
+                        Text("Hold about 10 in (25 cm) from the code")
+                            .font(.caption2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.65), in: Capsule())
+                            .foregroundStyle(.white)
+                            .padding(.top, 8)
+                    }
+                    .listRowInsets(EdgeInsets())
+
+                Button("Cancel scanner", action: Haptics.tap { model.cancelPairing() })
+            } else {
+                Button("Scan Mac QR Code", action: Haptics.tap { model.startPairing() })
+            }
+
+            LabeledContent("Link", value: model.linkStatus)
+            if model.trustedMacs.count > 1 {
+                Picker("Mac", selection: Haptics.feel(.step, Binding(
+                    get: { model.selectedMac?.deviceID },
+                    set: { if let id = $0 { model.selectMac(id) } }
+                ))) {
+                    ForEach(model.trustedMacs, id: \.deviceID) { mac in
+                        Text(mac.displayName).tag(Optional(mac.deviceID))
+                    }
+                }
+            } else if let trustedMacName = model.trustedMacName {
+                LabeledContent("Trusted Mac", value: trustedMacName)
+            }
+            // Once a link is up the row above says all there is to say. Before
+            // then this is the only place a pairing problem is spelled out.
+            if !model.isPaired {
+                Text(model.latestAction)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var trackpad: some View {
+        Section {
+            SettingSlider(
+                title: "Side to side",
+                readout: multiplier(model.trackpadSensitivityX),
+                value: Binding(
+                    get: { model.trackpadSensitivityX },
+                    set: { model.setTrackpadSensitivity(x: $0) }
+                ),
+                range: 0.5...6
+            )
+            SettingSlider(
+                title: "Up and down",
+                readout: multiplier(model.trackpadSensitivityY),
+                value: Binding(
+                    get: { model.trackpadSensitivityY },
+                    set: { model.setTrackpadSensitivity(y: $0) }
+                ),
+                range: 0.5...6
+            )
+            SettingSlider(
+                title: "Scrolling",
+                readout: multiplier(model.trackpadScrollSensitivity),
+                value: Binding(
+                    get: { model.trackpadScrollSensitivity },
+                    set: { model.setTrackpadSensitivity(scroll: $0) }
+                ),
+                range: 0.5...6
+            )
+            SettingSlider(
+                title: "Glide after a flick",
+                readout: model.scrollMomentum == 0 ? "Off" : "\(Int(model.scrollMomentum * 100))%",
+                value: Binding(
+                    get: { model.scrollMomentum },
+                    set: { model.setScrollMomentum($0) }
+                ),
+                range: 0...1,
+                step: 0.05
+            )
+        } header: {
+            Text("Trackpad speed")
+        }
+    }
+
+    private var layout: some View {
+        Section {
+            Toggle(
+                "Left-handed sideways layout",
+                isOn: Haptics.feel(.press, Binding(
+                    get: { model.mirrorHorizontalLayout },
+                    set: { model.setMirrorHorizontalLayout($0) }
+                ))
+            )
+        } footer: {
+            Text("Holding the phone sideways, puts the trackpad on the left and the keys on the right.")
+        }
+    }
+
+    private var airMouse: some View {
+        Section {
+            Toggle(
+                "Point the phone to move the cursor",
+                isOn: Haptics.feel(.press, Binding(
+                    get: { model.airMouseEnabled },
+                    set: { model.setAirMouseEnabled($0) }
+                ))
+            )
+            // The toggle already says on or off, so this speaks up only when
+            // something else is standing in the way.
+            if let problem = model.airMouseState.problem {
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            SettingSlider(
+                title: "Pointer speed",
+                readout: multiplier(model.airMouseSensitivity / 1_000),
+                value: Binding(
+                    get: { model.airMouseSensitivity },
+                    set: { model.setAirMouseSensitivity($0) }
+                ),
+                range: 500...6_000,
+                step: 100
+            )
+            .disabled(!model.airMouseEnabled)
+        } header: {
+            Text("Air mouse")
+        } footer: {
+            Text("Aims once Settings is closed. Tap the trackpad to click while you aim.")
+        }
+    }
+
 }
 
 @main

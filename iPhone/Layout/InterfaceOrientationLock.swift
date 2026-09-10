@@ -12,23 +12,27 @@ enum InterfaceOrientationLock {
         return (RemoteLayoutMode(rawValue: stored) ?? .vertical).orientations
     }()
 
-    /// Changing the mask also asks the window to rotate now rather than at the
-    /// next natural rotation.
+    /// A layout change has nothing else in motion, so the root controller
+    /// re-reads the delegate and UIKit turns the screen at once.
     static func apply(_ mask: UIInterfaceOrientationMask) {
         guard mask != self.mask else { return }
         self.mask = mask
 
         for scene in UIApplication.shared.connectedScenes {
             guard let windowScene = scene as? UIWindowScene else { continue }
-            // The controllers re-read the delegate first; asked the other way
-            // round, the geometry request is refused against the old mask.
             for window in windowScene.windows {
                 window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             }
-            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-                IPhoneDebugLog.emit("orientationUpdateFailed", ["reason": error.localizedDescription])
-            }
         }
+    }
+
+    /// For a sheet on its way in or out.  UIKit pins the orientation to the
+    /// current one while a presentation runs, so a turn asked for now is
+    /// undone and then redone once the sheet lands: two extra rotations.  Left
+    /// alone, UIKit re-reads the delegate as the transition ends and turns
+    /// once, so all this does is make sure it reads the new mask.
+    static func applyAfterPresentation(_ mask: UIInterfaceOrientationMask) {
+        self.mask = mask
     }
 }
 
