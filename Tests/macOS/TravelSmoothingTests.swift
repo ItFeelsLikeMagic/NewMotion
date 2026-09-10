@@ -51,9 +51,9 @@ final class TravelSmoothingTests: XCTestCase {
         XCTAssertEqual(travel(sink.events).x, 30)
     }
 
-    func testScrollGlidesWhenAskedAndKeepsItsWholeDistance() {
+    func testScrollGlidesAndKeepsItsWholeDistance() {
         let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink, scroll: true)
+        let smoothing = SmoothedTravelSink(wrapping: sink)
 
         try? smoothing.send(.scroll(delta: MacScrollDelta(x: 0, y: 24)))
         XCTAssertTrue(sink.events.isEmpty)
@@ -69,7 +69,7 @@ final class TravelSmoothingTests: XCTestCase {
 
     func testCursorAndScrollGlideWithoutBlockingEachOther() {
         let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink, scroll: true, minimumSmoothed: 0)
+        let smoothing = SmoothedTravelSink(wrapping: sink, minimumSmoothed: 0)
 
         try? smoothing.send(.pointer(delta: MacPointerDelta(x: 16, y: 0)))
         try? smoothing.send(.scroll(delta: MacScrollDelta(x: 0, y: 16)))
@@ -111,15 +111,5 @@ final class TravelSmoothingTests: XCTestCase {
 
         try? smoothing.send(.pointer(delta: MacPointerDelta(x: 3, y: 0)))
         XCTAssertTrue(sink.events.isEmpty)
-    }
-
-    func testScrollPassesStraightThroughByDefault() {
-        let sink = MockInputEventSink()
-        let smoothing = SmoothedTravelSink(wrapping: sink)
-
-        // One flick in, one event out, undivided: apps accelerate a whole
-        // scroll further than several small ones.
-        try? smoothing.send(.scroll(delta: MacScrollDelta(x: 0, y: 24)))
-        XCTAssertEqual(sink.events, [.scroll(delta: MacScrollDelta(x: 0, y: 24))])
     }
 }
