@@ -12,11 +12,11 @@ enum MacOverlayStyle {
     /// How much of a tile's glass is drawn at all. Apple's glass comes in two
     /// strengths and no dial, so this fades a tile, edge and blur together,
     /// towards nothing; the letters stay solid.
-    static let glassOpacity: Double = 0.5
+    static let glassOpacity: Double = 0.9
     /// A scrim between a tile's glass and its letters. Clear glass shows
     /// whatever is behind it straight through, and some wallpapers swallow the
     /// type.
-    static let backing: Double = 0.15
+    static let backing: Double = 0.4
     /// Keycaps, not labels: the picker is read out of the corner of an eye
     /// while a thumb is already moving, so a tile is big enough to hit with a
     /// glance and square enough to read as a key.
@@ -43,7 +43,14 @@ enum MacOverlayStyle {
     /// one. The spare room costs nothing, and the panel is never resized.
     static let spareRoom: CGFloat = 60
     /// Long enough for a line of dictation without reaching across a display.
-    static let maximumWidth: CGFloat = 460
+    /// It stays inside the picker's own width, so the pane is never resized
+    /// to carry it.
+    static let maximumWidth: CGFloat = 620
+    /// The dictation card is read from across a desk while someone is still
+    /// talking, so its words are set larger than the card's other writing and
+    /// given room for two full lines of them.
+    static let transcriptFontSize: CGFloat = 24
+    static let transcriptMinHeight: CGFloat = 84
 
     /// The pane the card floats in, taken from the picker because the picker
     /// is the largest thing the card can be.
