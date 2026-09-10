@@ -477,6 +477,26 @@ final class BluetoothPairingTests: XCTestCase {
         XCTAssertEqual(adapter.scannedFor.last, [Self.beacon])
     }
 
+    func testADeniedPermissionAndADeadRadioLookDifferentEvenThoughBothStopTheLink() {
+        let adapter = FakeCentralAdapter()
+        let link = BLEMessageLink(adapter: adapter)
+        var seen: [BLEPeripheralManagerState] = []
+        link.onRadioState = { seen.append($0) }
+        link.start()
+
+        adapter.state = .unauthorized
+        adapter.emitStateChange(.unauthorized)
+        XCTAssertEqual(link.state, .unavailable)
+        XCTAssertEqual(link.radioState, .unauthorized)
+
+        adapter.state = .poweredOff
+        adapter.emitStateChange(.poweredOff)
+        XCTAssertEqual(link.state, .unavailable)
+        XCTAssertEqual(link.radioState, .poweredOff)
+
+        XCTAssertEqual(seen, [.unauthorized, .poweredOff])
+    }
+
     func testANewBeaconLeavesAStoppedLinkStopped() {
         let adapter = FakeCentralAdapter()
         let link = BLEMessageLink(adapter: adapter)
