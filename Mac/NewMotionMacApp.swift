@@ -73,7 +73,6 @@ final class MacRemoteAppModel: ObservableObject {
     /// switch is flipped in System Settings, so the grant is noticed by asking
     /// again; once granted the poll stops and stays off the input path.
     private var accessibilityTimer: Timer?
-    private let pointerSmoothing: SmoothedTravelSink
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
     private let link: BLEMessageLink
@@ -121,9 +120,10 @@ final class MacRemoteAppModel: ObservableObject {
     @Published private(set) var pairingError: String? { didSet { publishDebugState() } }
     @Published private(set) var pairingQRImage: NSImage? { didSet { publishDebugState() } }
     @Published private(set) var pairingExpiry: Date? { didSet { publishDebugState() } }
-    @Published private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
+    /// Debug-surface only since the menu bar stopped showing it, so it stays
+    /// unpublished: no menu-bar rebuild for a line nothing on screen reads.
+    private(set) var lastApplicationMessage: String? { didSet { publishDebugState() } }
     @Published private(set) var lastPairingFailure: String? { didSet { publishDebugState() } }
-    @Published var smoothScroll = UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
     /// Cursor traffic is counted, not narrated.  Publishing a label per packet
     /// rebuilt the whole debug snapshot and invalidated the SwiftUI surface
     /// sixty times a second, on the same actor that applies the packets.
@@ -165,11 +165,7 @@ final class MacRemoteAppModel: ObservableObject {
         let trust = SystemAccessibilityTrust()
         let sink = CGEventInputSink(trust: trust, keyPost: latency.keyPost)
         self.inputSink = sink
-        let smoothing = SmoothedTravelSink(
-            wrapping: sink,
-            scroll: UserDefaults.standard.object(forKey: "scrollSmoothing") as? Bool ?? false
-        )
-        self.pointerSmoothing = smoothing
+        let smoothing = SmoothedTravelSink(wrapping: sink)
         let injector = injector ?? SafeInputInjector(sink: smoothing, accessibility: trust)
         let inert = MacHostRuntime.isInert
         let adapter = centralAdapter ?? (inert
@@ -280,14 +276,6 @@ final class MacRemoteAppModel: ObservableObject {
     var isPaused: Bool {
         if case .paused = status { return true }
         return false
-    }
-
-    /// Smoothing is a feel setting, so it applies at once and survives a
-    /// restart.
-    func setSmoothScroll(_ on: Bool) {
-        smoothScroll = on
-        UserDefaults.standard.set(on, forKey: "scrollSmoothing")
-        pointerSmoothing.smoothsScroll = on
     }
 
     func togglePause() {
@@ -1236,20 +1224,21 @@ struct MacRemoteStatusView: View {
             Text(model.status.title)
                 .foregroundStyle(model.isPaused ? .orange : .secondary)
 
-            LabeledContent("Accessibility", value: model.accessibility.rawValue)
-                .font(.caption)
-            Text((Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            // A granted Accessibility grant is the normal case and says nothing
+            // worth a row. The path only matters when the grant is missing,
+            // because it names the copy System Settings has to be pointed at.
             if model.accessibility != .granted {
+                LabeledContent("Accessibility", value: model.accessibility.rawValue)
+                    .font(.caption)
+                Text((Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                 Text("Turn on this copy in System Settings. It switches on here by itself, no refresh needed. Do not enable a /tmp or DerivedData build.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            LabeledContent("Connection", value: model.linkState.label)
-                .font(.caption)
             Label(model.pairingProgress.title,
                   systemImage: model.pairingProgress.isAuthenticated ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
                 .font(.caption)
@@ -1267,18 +1256,6 @@ struct MacRemoteStatusView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let probe = model.lastApplicationMessage {
-                Text(probe)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Toggle("Smooth scroll", isOn: Binding(
-                get: { model.smoothScroll },
-                set: { model.setSmoothScroll($0) }
-            ))
-            .font(.caption)
-            .help("Off by default: splitting a scroll makes apps accelerate it less, so the page moves a shorter distance for the same flick.")
 
             Button(model.isPaused ? "Resume Remote Control" : "Pause Remote Control") {
                 model.togglePause()
@@ -1328,7 +1305,7 @@ struct MacRemoteStatusView: View {
                         forget: { model.forget(deviceID: device.deviceID) }
                     )
                 }
-                Text("Open the phone app to reconnect. Forgetting one needs a new QR code to undo.")
+                Text("Open the phone app to reconnect.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
