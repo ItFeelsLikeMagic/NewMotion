@@ -1,6 +1,7 @@
 # Publishes install.sh to GitHub Pages so the one-liner has a stable, short URL
-# that never mentions a branch. The file here is a copy of the one in the repo
-# root; that root copy stays the only one anyone edits.
+# that never mentions a branch, and privacy.html so the App Store listing has a
+# stable privacy policy URL. The files here are copies of the ones in the repo
+# root; those root copies stay the only ones anyone edits.
 name: Pages
 
 on:
@@ -8,6 +9,7 @@ on:
     branches: [main]
     paths:
       - install.sh
+      - privacy.html
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -33,6 +35,7 @@ jobs:
         run: |
           mkdir -p site
           cp install.sh site/install.sh
+          cp privacy.html site/privacy.html
           cat > site/index.html <<'HTML'
           <!doctype html>
           <meta charset="utf-8">

@@ -78,6 +78,8 @@ on, and your own Apple signing team).
 - The Mac refuses to type anything while macOS reports a secure input session,
   so nothing is injected into a password field.
 
+The full policy: [NewMotion Privacy Policy](https://itfeelslikemagic.github.io/NewMotion/privacy.html).
+
 ## Requirements
 
 - macOS 15 or later, Apple silicon
