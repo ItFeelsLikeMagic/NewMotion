@@ -90,53 +90,42 @@ final class DeleteScrubTests: XCTestCase {
         XCTAssertEqual(DeleteScrubStep.restore.phase, .restore)
     }
 
-    // MARK: - Sliding up for words
+    // MARK: - The dial
 
-    func testSlidingUpEngagesWordsAndSlidingBackDisengages() {
-        var latch = DeleteGranularityLatch()
-        let travel = DeleteGranularityLatch.travel
+    func testSlidingUpTurnsTheDialAndSlidingBackTurnsItDown() {
+        var dial = SlideDial(range: 0...1)
+        let travel = SlideDial.travel
 
-        XCTAssertFalse(latch.advance(translationY: -travel + 1))
-        XCTAssertFalse(latch.isWord)
-        XCTAssertTrue(latch.advance(translationY: -travel))
-        XCTAssertTrue(latch.isWord)
-        XCTAssertFalse(latch.advance(translationY: -travel + 1))
-        XCTAssertTrue(latch.advance(translationY: 0))
-        XCTAssertFalse(latch.isWord)
+        XCTAssertFalse(dial.advance(translationY: -travel + 1))
+        XCTAssertEqual(dial.position, 0)
+        XCTAssertTrue(dial.advance(translationY: -travel))
+        XCTAssertEqual(dial.position, 1)
+        XCTAssertFalse(dial.advance(translationY: -travel + 1))
+        XCTAssertTrue(dial.advance(translationY: 0))
+        XCTAssertEqual(dial.position, 0)
     }
 
-    /// A slide across is the other thing this key does, so travel along it
-    /// must never change what a notch takes off.
-    func testSlidingSidewaysNeverChangesTheUnit() {
-        var latch = DeleteGranularityLatch()
+    /// A slide across is the other thing a dialled key does, so travel along
+    /// it must never turn the dial.
+    func testSlidingSidewaysNeverTurnsTheDial() {
+        var dial = SlideDial(range: 0...1)
 
-        XCTAssertFalse(latch.advance(translationY: 4))
-        XCTAssertFalse(latch.advance(translationY: -8))
-        XCTAssertFalse(latch.isWord)
+        XCTAssertFalse(dial.advance(translationY: 4))
+        XCTAssertFalse(dial.advance(translationY: -8))
+        XCTAssertEqual(dial.position, 0)
     }
 
-    /// The way back is one full travel from wherever the flip happened, not
-    /// from where the finger landed.
-    func testTheWayBackIsMeasuredFromTheFlip() {
-        var latch = DeleteGranularityLatch()
-        let travel = DeleteGranularityLatch.travel
+    /// The dial stops at its ends rather than counting past them, and the way
+    /// back is one full turn from where it stuck, not from where the finger
+    /// landed.
+    func testTheDialStopsAtItsEndsAndComesBackOnOneTurn() {
+        var dial = SlideDial(range: 0...1)
+        let travel = SlideDial.travel
 
-        XCTAssertTrue(latch.advance(translationY: -travel * 3))
-        XCTAssertFalse(latch.advance(translationY: -travel * 2.5))
-        XCTAssertTrue(latch.advance(translationY: -travel * 2))
-        XCTAssertFalse(latch.isWord)
-    }
-
-    /// Every press starts back on characters, so a word slide from an earlier
-    /// press can never carry into the next one.
-    func testResetReturnsToCharacters() {
-        var latch = DeleteGranularityLatch()
-        XCTAssertTrue(latch.advance(translationY: -DeleteGranularityLatch.travel))
-
-        latch.reset()
-
-        XCTAssertFalse(latch.isWord)
-        XCTAssertTrue(latch.advance(translationY: -DeleteGranularityLatch.travel))
+        XCTAssertTrue(dial.advance(translationY: -travel * 3))
+        XCTAssertFalse(dial.advance(translationY: -travel * 2.5))
+        XCTAssertTrue(dial.advance(translationY: -travel * 2))
+        XCTAssertEqual(dial.position, 0)
     }
 }
 
@@ -144,7 +133,7 @@ final class DeleteScrubTests: XCTestCase {
 /// finger landing and the finger lifting.
 final class DeleteScrubPressTests: XCTestCase {
     private let width = SlideNotchCounter.baseStepWidth
-    private let travel = DeleteGranularityLatch.travel
+    private let travel = SlideDial.travel
 
     /// Touch-down says so before anything has been asked for, so the Mac can
     /// start waking a field that takes seconds to answer.

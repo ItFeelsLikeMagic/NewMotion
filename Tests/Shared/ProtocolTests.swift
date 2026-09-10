@@ -31,7 +31,7 @@ final class ProtocolTests: XCTestCase {
             .ping(PingPayload()),
             .pong(PongPayload()),
             .mouseDoubleClick(MouseDoubleClickPayload(button: .left)),
-            .tabWalk(TabWalkPayload(phase: .begin, modifier: .command)),
+            .tabWalk(TabWalkPayload(phase: .begin, row: .apps)),
             .deleteScrub(DeleteScrubPayload(phase: .delete, granularity: .word)),
             .vocabulary(try VocabularyPayload(phrases: ["Ollama", "Testaflight"])),
             .spokenText(try SpokenTextPayload(text: "héllo there")),

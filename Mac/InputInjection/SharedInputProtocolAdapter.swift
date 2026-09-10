@@ -128,19 +128,44 @@ public enum SharedInputProtocolAdapter {
     /// passes the same policy checks and the held modifier is tracked for
     /// release like any other.
     public static func commands(for payload: TabWalkPayload) -> [RemoteInputCommand] {
-        let key = localModifier(payload.modifier)
+        let row = payload.row
+        let held = row.heldModifier.map(localModifier)
         switch payload.phase {
         case .begin:
-            return [.modifier(key: key, isDown: true), .hotkey(.tab)]
+            // Opening the walk takes its first step, which is what makes a
+            // plain tap the ordinary one-step flip.
+            return held.map { [.modifier(key: $0, isDown: true), .hotkey(step(row))] }
+                ?? [.hotkey(step(row))]
         case .next:
-            return [.hotkey(.tab)]
+            return [.hotkey(step(row))]
         case .previous:
-            return [.hotkey(.shiftTab)]
+            return [.hotkey(back(row))]
         case .commit:
-            return [.modifier(key: key, isDown: false)]
+            return held.map { [.modifier(key: $0, isDown: false)] } ?? []
         case .cancel:
-            return [.hotkey(.escape), .modifier(key: key, isDown: false)]
+            // A row that holds nothing has already applied every step it took
+            // and has no switcher to escape out of, so there is nothing here
+            // to undo and a stray Escape would land in whatever is in front.
+            return held.map { [.hotkey(.escape), .modifier(key: $0, isDown: false)] } ?? []
+        case .swap:
+            // The old row is dropped where it stands and the new one opened at
+            // its first step, which is a cancel and a begin without the gap
+            // between them.
+            var commands = payload.leaving?.heldModifier.map(localModifier).map {
+                [RemoteInputCommand.hotkey(.escape), .modifier(key: $0, isDown: false)]
+            } ?? []
+            if let held { commands.append(.modifier(key: held, isDown: true)) }
+            commands.append(.hotkey(step(row)))
+            return commands
         }
+    }
+
+    private static func step(_ row: TabWalkRow) -> MacAllowedHotkey {
+        row == .windows ? .nextWindow : .tab
+    }
+
+    private static func back(_ row: TabWalkRow) -> MacAllowedHotkey {
+        row == .windows ? .previousWindow : .shiftTab
     }
 
     private static func localModifier(_ modifier: HeldModifier) -> MacModifierKey {

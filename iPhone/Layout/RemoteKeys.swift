@@ -24,11 +24,14 @@ enum RemoteKeyMetrics {
 @MainActor
 struct RemoteKeys {
     let send: (RemoteHotkey) -> Void
-    let walk: (TabWalkPhase, HeldModifier) -> Void
+    let walk: (TabWalkPayload) -> Void
     let scrub: (DeleteScrubPhase, DeleteScrubGranularity) -> Void
     let picker: (KeyPickerPhase, HotkeyAction?) -> Void
 
-    var appSwitcher: some View { walkKey("⌘⇥", .command, "App switcher. Hold and slide to choose.") }
+    /// Hold to open the app switcher and slide across to choose; slide up and
+    /// the same press walks the front app's tabs, down and it walks its
+    /// windows.
+    var tabWalk: some View { TabWalkKey(walk: walk) }
 
     /// Hold and drag to pick up text.
     var select: some View { TextSelectionKey(send: send) }
@@ -36,8 +39,6 @@ struct RemoteKeys {
     /// Hold and slide to choose a Command shortcut off the grid the Mac draws.
     /// Its cells are the shared allowlist, so this key adds no new action.
     var commandPicker: some View { CommandPickerKey(picker: picker) }
-
-    var nextTab: some View { walkKey("⌃⇥", .control, "Next tab. Hold and slide to walk.") }
 
     var escape: some View { titledKey(.escape) }
 
@@ -55,28 +56,15 @@ struct RemoteKeys {
         key(hotkey) { Text(hotkey.buttonTitle) }
     }
 
-    private func walkKey(_ title: String, _ modifier: HeldModifier, _ spokenName: String) -> some View {
-        TabWalkButton(
-            title: title,
-            modifier: modifier,
-            spokenName: spokenName,
-            send: walk
-        )
-    }
-
-    /// Drawn like the hold-and-slide keys rather than with `.bordered`, whose
-    /// padding leaves a small cell too little room for a two-glyph label.
+    /// Wears the same face as the hold-and-slide keys, and wears it plainly:
+    /// the system's own button styling puts its shape and its padding on top
+    /// of whatever it is given, which is what made these keys read as a
+    /// different set from the held ones.
     private func key<Label: View>(_ hotkey: RemoteHotkey, @ViewBuilder label: () -> Label) -> some View {
         Button(action: Haptics.tap { send(hotkey) }) {
-            label()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+            label().keyFace()
         }
-        .background(Color(.secondarySystemFill))
-        .foregroundStyle(Color.accentColor)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .buttonStyle(.plain)
         .accessibilityLabel(hotkey.spokenName)
     }
 }

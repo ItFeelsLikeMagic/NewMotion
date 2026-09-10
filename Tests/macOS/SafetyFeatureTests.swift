@@ -192,19 +192,63 @@ final class SafetyFeatureTests: XCTestCase {
         XCTAssertTrue(injector.held.isEmpty)
     }
 
-    /// Control walks the front app's tabs through the same phases; only the
-    /// modifier it holds differs.
-    func testTheWalkHoldsWhicheverModifierTheMessageNames() {
-        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.begin, .control)), [
+    /// Tabs walk through the same phases as apps; only the modifier held
+    /// differs.
+    func testTheWalkHoldsWhicheverModifierTheRowNames() {
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.begin, .tabs)), [
             .modifier(key: .control, isDown: true),
             .hotkey(.tab)
         ])
-        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.previous, .control)), [
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.previous, .tabs)), [
             .hotkey(.shiftTab)
         ])
-        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.commit, .control)), [
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.commit, .tabs)), [
             .modifier(key: .control, isDown: false)
         ])
+    }
+
+    /// Windows hold nothing: each step is a whole Command chord of its own, so
+    /// there is nothing open between them, nothing for a lift to release, and
+    /// no switcher for a cancel to escape out of.
+    func testWalkingWindowsHoldsNothingOpen() {
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.begin, .windows)), [
+            .hotkey(.nextWindow)
+        ])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.previous, .windows)), [
+            .hotkey(.previousWindow)
+        ])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.commit, .windows)), [])
+        XCTAssertEqual(SharedInputProtocolAdapter.commands(for: walk(.cancel, .windows)), [])
+    }
+
+    /// A swap is a cancel and a begin without the gap between them: the row
+    /// being left is named in the message, so the Mac lets go of what it was
+    /// holding without keeping any state of its own about the walk.
+    func testASwapDropsTheOldRowAndOpensTheNewOneInOneGo() {
+        XCTAssertEqual(
+            SharedInputProtocolAdapter.commands(for: walk(.swap, .tabs, leaving: .apps)),
+            [
+                .hotkey(.escape),
+                .modifier(key: .command, isDown: false),
+                .modifier(key: .control, isDown: true),
+                .hotkey(.tab)
+            ]
+        )
+        XCTAssertEqual(
+            SharedInputProtocolAdapter.commands(for: walk(.swap, .windows, leaving: .apps)),
+            [
+                .hotkey(.escape),
+                .modifier(key: .command, isDown: false),
+                .hotkey(.nextWindow)
+            ]
+        )
+        XCTAssertEqual(
+            SharedInputProtocolAdapter.commands(for: walk(.swap, .apps, leaving: .windows)),
+            [
+                .modifier(key: .command, isDown: true),
+                .hotkey(.tab)
+            ]
+        )
     }
 
     func testCommitAndCancelBothReleaseCommand() {
@@ -495,8 +539,12 @@ private final class TestInputClock: InputSafetyClock {
 }
 
 
-private func walk(_ phase: TabWalkPhase, _ modifier: HeldModifier = .command) -> TabWalkPayload {
-    TabWalkPayload(phase: phase, modifier: modifier)
+private func walk(
+    _ phase: TabWalkPhase,
+    _ row: TabWalkRow = .apps,
+    leaving: TabWalkRow? = nil
+) -> TabWalkPayload {
+    TabWalkPayload(phase: phase, row: row, leaving: leaving)
 }
 
 private final class StubKeyboardLayout: KeyboardLayoutLookup, @unchecked Sendable {

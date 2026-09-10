@@ -26,7 +26,7 @@ struct DeleteScrubKey: View {
 
     var body: some View {
         label
-            .heldKeyStyle(isHeld: press.hasBegun)
+            .keyFace(isHeld: press.hasBegun)
             // The count is always in the tree and only fades, because swapping
             // it in and out rebuilds the surface below: the removed view leaves
             // the window, which reads as a cancelled press, and the slide dies

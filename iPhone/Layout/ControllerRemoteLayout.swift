@@ -4,8 +4,8 @@ import SwiftUI
 /// The sideways layout: every key under one thumb, the whole trackpad under
 /// the other.  Mirrored, the two swap sides for a left-handed hold.
 struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
-    /// Enough width for the top row's five keys and their gaps; the trackpad
-    /// takes the rest.
+    /// Enough width for a row's four keys and their gaps; the trackpad takes
+    /// the rest.
     private static var keyColumnShare: Double { 0.42 }
 
     @ObservedObject var pushToTalk: PushToTalkController
@@ -55,12 +55,15 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
     /// margins the whole screen used to carry.
     private func keyColumn(width: Double, screenEdge: Edge) -> some View {
         VStack(spacing: RemoteKeyMetrics.spacing) {
-            // The app switcher, held and dragged, sits beside the hold bar so
-            // a drag starts from where the thumb already rests, with escape
-            // next to it as the way out of whatever that drag opened.  The
-            // picker slides across a whole grid, so it takes the far end,
-            // where a slide has the most room before it leaves the phone.
-            // A hold takes both rows away and puts the two chord bars there.
+            // The walk key, held and dragged, sits beside the hold bar so a
+            // drag starts from where the thumb already rests, with escape next
+            // to it as the way out of whatever that drag opened.  The picker
+            // slides across a whole grid, so it takes the far end of the same
+            // row, where a slide has the most room before it leaves the phone.
+            // Copy and paste sit together on the row below, because the pair
+            // of them is one habit and the thumb should not have to hunt for
+            // the second half of it.  A hold takes both rows away and puts the
+            // two chord bars there.
             if pushToTalk.isHolding {
                 // Exactly the row's height, so the microphone's top edge does
                 // not move out from under the thumb the moment it lands.
@@ -69,9 +72,8 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
             } else {
                 HStack(spacing: RemoteKeyMetrics.spacing) {
                     slot { keys.commandPicker }
-                    slot { keys.copy }
-                    slot { keys.paste }
-                    slot { keys.appSwitcher }
+                    slot { keys.returnKey }
+                    slot { keys.tabWalk }
                     slot { keys.escape }
                 }
             }
@@ -88,9 +90,9 @@ struct ControllerRemoteLayout<Trackpad: View, Controls: View>: View {
                     .frame(height: RemoteKeyMetrics.keyHeight)
             } else {
                 HStack(spacing: RemoteKeyMetrics.spacing) {
-                    slot { keys.nextTab }
+                    slot { keys.copy }
+                    slot { keys.paste }
                     slot { keys.select }
-                    slot { keys.returnKey }
                     slot { keys.delete }
                 }
             }

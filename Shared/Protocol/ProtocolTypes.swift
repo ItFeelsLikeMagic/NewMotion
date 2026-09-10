@@ -684,28 +684,65 @@ public struct TranscriptPreviewPayload: Codable, Equatable, Sendable {
     }
 }
 
-/// Holding a modifier and walking with Tab: Command for the app switcher,
-/// Control for the tab bar of whatever is in front. It is a held gesture, not
-/// a chord, because the modifier stays down from `begin` until `commit` so the
-/// phone can step along the row first. The Mac tracks that held modifier in
-/// its safety layer and releases it on disconnect, lock, or sleep.
+/// Walking along a row of things and taking one: the app switcher, the front
+/// app's tabs, or the front app's windows. For the first two it is a held
+/// gesture rather than a chord, because the modifier stays down from `begin`
+/// until `commit` so the phone can step along the row first. The Mac tracks
+/// that held modifier in its safety layer and releases it on disconnect,
+/// lock, or sleep.
 public enum TabWalkPhase: UInt8, Codable, CaseIterable, Equatable, Sendable {
     case begin = 1
     case next = 2
     case previous = 3
     case commit = 4
     case cancel = 5
+    /// The finger changed which row it is walking without lifting. One
+    /// message rather than a cancel and a begin, so the Mac lets go of the old
+    /// row and takes up the new one in one go and the card never blinks.
+    case swap = 6
+}
+
+/// What a walk steps through. It decides which modifier is held open and
+/// which key a step presses; nothing else about the gesture changes.
+public enum TabWalkRow: UInt8, Codable, CaseIterable, Equatable, Sendable {
+    case apps = 1
+    case tabs = 2
+    case windows = 3
+
+    /// What the Mac holds down for the length of the walk, and releases on
+    /// disconnect, lock, or sleep. Windows holds nothing: each of its steps is
+    /// a whole Command chord of its own, so there is nothing to keep open
+    /// between them and nothing a lost lift could strand.
+    public var heldModifier: HeldModifier? {
+        switch self {
+        case .apps: return .command
+        case .tabs: return .control
+        case .windows: return nil
+        }
+    }
+
+    /// What the row is called on a card someone is reading mid-press.
+    public var displayName: String {
+        switch self {
+        case .apps: return "Apps"
+        case .tabs: return "Tabs"
+        case .windows: return "Windows"
+        }
+    }
 }
 
 public struct TabWalkPayload: Codable, Equatable, Sendable {
     public let phase: TabWalkPhase
-    /// The modifier held open for the whole walk. Which one it is decides what
-    /// the walk steps through; nothing else about the gesture changes.
-    public let modifier: HeldModifier
+    public let row: TabWalkRow
+    /// The row a `swap` is leaving, so the Mac can let go of whatever that row
+    /// held without keeping any state of its own about the walk. Nothing else
+    /// carries it.
+    public let leaving: TabWalkRow?
 
-    public init(phase: TabWalkPhase, modifier: HeldModifier) {
+    public init(phase: TabWalkPhase, row: TabWalkRow, leaving: TabWalkRow? = nil) {
         self.phase = phase
-        self.modifier = modifier
+        self.row = row
+        self.leaving = leaving
     }
 }
 
