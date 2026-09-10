@@ -616,7 +616,9 @@ final class FakeCentralAdapter: MacCentralManagerAdapter {
     var cancelledConnections: [UUID] = []
     var discoverServicesCount = 0
     var preconnected: [BLEDiscoveredPeripheral] = []
+    var activateCount = 0
 
+    func activate() { activateCount += 1 }
     func scan(for serviceUUIDs: [UUID]) {
         scanCount += 1
         scannedFor.append(serviceUUIDs)

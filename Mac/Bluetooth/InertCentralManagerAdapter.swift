@@ -24,6 +24,7 @@ public final class InertCentralManagerAdapter: MacCentralManagerAdapter {
 
     public init() {}
 
+    public func activate() {}
     public func scan(for serviceUUIDs: [UUID]) {}
     public func stopScan() {}
     public func connectedPeripherals(for serviceUUID: UUID) -> [BLEDiscoveredPeripheral] { [] }
