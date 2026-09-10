@@ -31,7 +31,7 @@ struct TextSelectionKey: View {
 
     var body: some View {
         Image(systemName: "character.cursor.ibeam")
-            .heldKeyStyle(isHeld: isHeld)
+            .keyFace(isHeld: isHeld)
             .holdSlide("text_selection", spokenName: "Select. Hold and drag to select text.", onPhase: handle)
     }
 

@@ -396,6 +396,88 @@ final class OverlayPresenterTests: XCTestCase {
         XCTAssertEqual(draws, 0)
     }
 
+    // MARK: - The walk card
+
+    /// A tap on the walk key is the ordinary one-step app flip, and it must
+    /// not flash the card any more than a tap on delete does.
+    func testATapNeverFlashesTheWalkCard() {
+        let (presenter, clock) = make()
+        var draws = 0
+        presenter.onChange = { _ in draws += 1 }
+
+        presenter.beginWalk(row: .apps)
+        XCTAssertEqual(presenter.content, .nothing)
+
+        presenter.endWalk()
+        clock.fire(.walkOpen)
+        XCTAssertEqual(presenter.content, .nothing)
+        XCTAssertEqual(draws, 0)
+    }
+
+    func testAHeldWalkKeyShowsItsRowOnceTheDelayHasPassed() {
+        let (presenter, clock) = make()
+        presenter.beginWalk(row: .apps)
+
+        clock.fire(.walkOpen)
+        XCTAssertEqual(presenter.content, .walk(row: .apps))
+
+        presenter.endWalk()
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// The finger slid up or down. The card relights on the row the walk has
+    /// moved to, and a step inside the delay opens it straight away.
+    func testASwapRelightsTheCardAndOpensItAheadOfTheDelay() {
+        let (presenter, _) = make()
+        presenter.beginWalk(row: .apps)
+
+        presenter.updateWalk(row: .tabs)
+        XCTAssertEqual(presenter.content, .walk(row: .tabs))
+
+        presenter.updateWalk(row: .windows)
+        XCTAssertEqual(presenter.content, .walk(row: .windows))
+    }
+
+    /// A step belonging to no press has no card to light.
+    func testAStepWithNoWalkBehindItShowsNothing() {
+        let (presenter, _) = make()
+        presenter.updateWalk(row: .tabs)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// A phone that suspends mid-press sends no lift, and the card would sit
+    /// there for the rest of the session.
+    func testAWalkThatIsNeverEndedTimesOut() {
+        let (presenter, clock) = make()
+        presenter.beginWalk(row: .tabs)
+        clock.fire(.walkOpen)
+        XCTAssertEqual(presenter.content, .walk(row: .tabs))
+
+        clock.fire(.walk)
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
+    /// Two keys cannot be under one thumb, but a card left behind by a lost
+    /// lift could still be, and the newer press is the one being looked at.
+    func testAHeldWalkKeyOutranksTheTranscriptAndTheHint() {
+        let (presenter, clock) = make()
+        presenter.showHint("hint")
+        presenter.showTranscript("hello")
+        presenter.beginWalk(row: .windows)
+        clock.fire(.walkOpen)
+
+        XCTAssertEqual(presenter.content, .walk(row: .windows))
+    }
+
+    func testDisconnectClearsAHeldWalkKeyToo() {
+        let (presenter, clock) = make()
+        presenter.beginWalk(row: .apps)
+        clock.fire(.walkOpen)
+
+        presenter.clearAll()
+        XCTAssertEqual(presenter.content, .nothing)
+    }
+
     /// The picker is the only card that freezes the cursor, and a held delete
     /// key must not: the phone is still sending notches, not travel.
     func testAPickerOutranksAHeldDeleteKeyAndTheDeleteKeyDoesNotFreezeTheCursor() {

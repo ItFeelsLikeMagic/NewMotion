@@ -105,14 +105,19 @@ struct HoldSlideSurface: UIViewRepresentable {
     }
 }
 
-/// The shared look of a key that is held: it fills the cell it is given and
-/// lights up while the finger is down.
+/// The shared look of every key on the pad: it fills the cell the layout gives
+/// it and lights up while a finger is down.  One face for the tapped keys and
+/// the held ones both, because two of them cannot drift into different sizes
+/// or different corners.
 extension View {
-    func heldKeyStyle(isHeld: Bool) -> some View {
-        frame(maxWidth: .infinity, minHeight: 44)
+    func keyFace(isHeld: Bool = false) -> some View {
+        lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(isHeld ? Color.accentColor : Color(.secondarySystemFill))
-            .foregroundStyle(isHeld ? Color.white : Color.primary)
+            .foregroundStyle(isHeld ? Color.white : Color.accentColor)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
     }
 
     /// The shared behaviour of a key that is held and dragged: touches come

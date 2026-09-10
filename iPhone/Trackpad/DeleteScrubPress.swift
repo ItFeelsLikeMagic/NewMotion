@@ -19,7 +19,8 @@ public struct DeleteScrubPress: Equatable, Sendable {
     /// True once the key has gone down, which is what a lift has to close.
     public private(set) var hasBegun = false
     private var tracker = DeleteScrubTracker()
-    private var latch = DeleteGranularityLatch()
+    /// Rest takes a character off; one slide up takes a whole word.
+    private var dial = SlideDial(range: 0...1)
     /// A press that changed the unit was about the unit, not about deleting,
     /// so it must not also rub a character out when the finger lifts.
     private var hasChangedUnit = false
@@ -31,10 +32,10 @@ public struct DeleteScrubPress: Equatable, Sendable {
     /// True once the finger has travelled sideways at all, whether or not the
     /// count came back to where it started.
     public var hasStepped: Bool { tracker.hasStepped }
-    public var isWord: Bool { latch.isWord }
-    public var granularity: DeleteScrubGranularity { latch.isWord ? .word : .character }
+    public var isWord: Bool { dial.position == 1 }
+    public var granularity: DeleteScrubGranularity { isWord ? .word : .character }
     /// The plain key a tap on this press would send.
-    public var hotkey: RemoteHotkey { latch.isWord ? .deleteWordBackward : .deleteBackward }
+    public var hotkey: RemoteHotkey { isWord ? .deleteWordBackward : .deleteBackward }
 
     /// Touch-down.  The press announces itself before anything has been asked
     /// for, because that is when the Mac starts waking the focused field and a
@@ -52,7 +53,7 @@ public struct DeleteScrubPress: Equatable, Sendable {
     public mutating func move(translationX: Double, translationY: Double) -> [Message] {
         guard hasBegun else { return [] }
         var messages: [Message] = []
-        if latch.advance(translationY: translationY) {
+        if dial.advance(translationY: translationY) {
             hasChangedUnit = true
             // A flip on its own erases nothing, so without this the Mac would
             // never hear that the key has changed what a notch takes off, and

@@ -37,12 +37,19 @@ struct HeldRemoteInput: Equatable {
                 buttons.remove(button)
             }
         case let .tabWalk(value):
-            // The walk holds its modifier from the first Tab until it is
-            // committed or cancelled; the steps between change nothing.
+            // The walk holds its modifier from the first step until it is
+            // committed or cancelled; the steps between change nothing. A row
+            // that holds nothing leaves nothing here to strand.
             switch value.phase {
-            case .begin: modifiers.insert(HeldModifiers(value.modifier))
-            case .commit, .cancel: modifiers.remove(HeldModifiers(value.modifier))
-            case .next, .previous: break
+            case .begin:
+                insert(value.row)
+            case .commit, .cancel:
+                remove(value.row)
+            case .swap:
+                if let leaving = value.leaving { remove(leaving) }
+                insert(value.row)
+            case .next, .previous:
+                break
             }
         case .pointerDelta, .scrollDelta, .motionPointerDelta, .mouseDoubleClick,
              .textInput, .spokenText, .hotkey, .deleteScrub, .heartbeat,
@@ -50,6 +57,16 @@ struct HeldRemoteInput: Equatable {
              .acknowledgement, .connectionStatus, .error, .ping, .pong:
             break
         }
+    }
+
+    private mutating func insert(_ row: TabWalkRow) {
+        guard let modifier = row.heldModifier else { return }
+        modifiers.insert(HeldModifiers(modifier))
+    }
+
+    private mutating func remove(_ row: TabWalkRow) {
+        guard let modifier = row.heldModifier else { return }
+        modifiers.remove(HeldModifiers(modifier))
     }
 
     /// Forgets everything without releasing it.  Only correct when the link is

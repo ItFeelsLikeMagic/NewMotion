@@ -1246,21 +1246,21 @@ final class NewMotionFeatureModel: ObservableObject {
         keyboard.type(text)
     }
 
-    /// The walk holds its modifier open on the Mac between begin and commit,
+    /// The walk holds a modifier open on the Mac between begin and commit,
     /// so a dropped phase would strand it.  These go reliable like every other
     /// input message, and the Mac releases the modifier on disconnect
     /// regardless.
-    func sendTabWalk(_ phase: TabWalkPhase, holding modifier: HeldModifier) {
+    func sendTabWalk(_ payload: TabWalkPayload) {
         guard isControllable else {
-            latestAction = "Pair before walking tabs"
+            latestAction = "Pair before walking"
             return
         }
-        guard inputUplink.send(.tabWalk(TabWalkPayload(phase: phase, modifier: modifier))) else {
-            latestAction = "Tab walk send failed"
+        guard inputUplink.send(.tabWalk(payload)) else {
+            latestAction = "Walk send failed"
             return
         }
-        latestAction = "Tab walk \(modifier) \(phase)"
-        IPhoneDebugLog.emit("tab_walk", ["modifier": "\(modifier)", "phase": "\(phase)"])
+        latestAction = "Walk \(payload.row) \(payload.phase)"
+        IPhoneDebugLog.emit("tab_walk", ["row": "\(payload.row)", "phase": "\(payload.phase)"])
     }
 
     func sendHotkey(_ hotkey: RemoteHotkey) {
@@ -1529,73 +1529,6 @@ extension RemoteHotkey {
     }
 }
 
-/// Hold a modifier open on the Mac, slide to step along whatever that modifier
-/// walks, lift to pick.  Command walks apps, Control walks the front app's
-/// tabs.  A plain tap is the ordinary one-step flip, because begin already
-/// takes that step.
-struct TabWalkButton: View {
-    /// Travel per app.  Half a thumb's width: far enough that a wobble while
-    /// holding does not step, close enough to cross a full switcher in one
-    /// slide.
-    static let stepWidth: Double = 22
-
-    let title: String
-    let modifier: HeldModifier
-    let spokenName: String
-    let send: (TabWalkPhase, HeldModifier) -> Void
-    @State private var isHeld = false
-    @State private var steps = 0
-
-    var body: some View {
-        Text(title)
-            .heldKeyStyle(isHeld: isHeld)
-            .holdSlide("tab_walk", spokenName: spokenName, onPhase: handle)
-    }
-
-    private func handle(_ phase: HoldSlidePhase) {
-        switch phase {
-        case .began:
-            guard !isHeld else { return }
-            isHeld = true
-            steps = 0
-            Haptics.play(.press)
-            step(.begin)
-        case let .moved(translationX, _):
-            guard isHeld else { return }
-            step(to: Int((translationX / Self.stepWidth).rounded(.towardZero)))
-        case .ended:
-            finish(.commit)
-        case .cancelled:
-            finish(.cancel)
-        }
-    }
-
-    private func step(to target: Int) {
-        guard steps != target else { return }
-        while steps < target {
-            steps += 1
-            step(.next)
-        }
-        while steps > target {
-            steps -= 1
-            step(.previous)
-        }
-        Haptics.play(.step)
-    }
-
-    private func step(_ phase: TabWalkPhase) {
-        send(phase, modifier)
-    }
-
-    private func finish(_ phase: TabWalkPhase) {
-        guard isHeld else { return }
-        isHeld = false
-        steps = 0
-        Haptics.play(.release)
-        step(phase)
-    }
-}
-
 struct NewMotionControlView: View {
     @StateObject private var model = NewMotionFeatureModel()
     @Environment(\.scenePhase) private var scenePhase
@@ -1676,7 +1609,7 @@ private struct RemoteControlScreen: View {
     private var keys: RemoteKeys {
         RemoteKeys(
             send: { model.sendHotkey($0) },
-            walk: { model.sendTabWalk($0, holding: $1) },
+            walk: { model.sendTabWalk($0) },
             scrub: { model.sendDeleteScrub($0, granularity: $1) },
             picker: { model.sendKeyPicker($0, cell: $1) }
         )

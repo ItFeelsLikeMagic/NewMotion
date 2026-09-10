@@ -33,4 +33,12 @@ public struct SlideNotchCounter: Equatable, Sendable {
         anchor += Double(travelled) * stepWidth
         return travelled
     }
+
+    /// Puts the anchor under the finger without counting the travel to it.
+    /// For a key whose press starts over part way through, so the travel it
+    /// already spent is not charged to the count that follows.
+    public mutating func reanchor(at translation: Double) {
+        guard translation.isFinite else { return }
+        anchor = translation
+    }
 }

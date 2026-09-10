@@ -13,6 +13,8 @@ public enum MacOverlayContent: Equatable, Sendable {
     case arrows(lit: HotkeyAction?)
     /// A delete key is held. `granularity` is the unit it will take off next.
     case delete(granularity: DeleteScrubGranularity)
+    /// The walk key is held. `row` is what its steps are walking through.
+    case walk(row: TabWalkRow)
     /// The words the phone is hearing, on their way to being typed. Empty
     /// while the talk button is down and nothing has been said yet. `armed` is
     /// the bar the finger is sitting on, which is what letting go would do.
@@ -34,6 +36,9 @@ public enum MacOverlayTimeout: Hashable, Sendable {
     case delete
     /// The wait between a delete key going down and its card appearing.
     case deleteOpen
+    case walk
+    /// The wait between the walk key going down and its card appearing.
+    case walkOpen
 }
 
 /// Runs a block after a delay, at most one outstanding per kind: the newest
@@ -98,6 +103,11 @@ public final class MacOverlayPresenter {
     /// flashes the card, while a real hold is still on screen before the finger
     /// has travelled a notch.
     public static let deleteOpenDelay: TimeInterval = 0.15
+    /// The walk key runs on the delete key's two waits, for the delete key's
+    /// two reasons: a tap is a whole press and must not flash the card, and a
+    /// phone that suspends mid-press sends no lift.
+    public static let walkOpenDelay = deleteOpenDelay
+    public static let walkTimeout = deleteTimeout
 
     /// What should be drawn. Only ever assigned when it actually differs, so
     /// a highlight that repeats the lit cell costs no redraw.
@@ -120,6 +130,10 @@ public final class MacOverlayPresenter {
     private var deleteUnit: DeleteScrubGranularity?
     /// What the press is set to before its card is allowed on screen.
     private var pendingDeleteUnit: DeleteScrubGranularity?
+    /// Set once the press has waited out `walkOpenDelay`, or stepped, which
+    /// proves the finger is holding. Nil means no card.
+    private var walkRow: TabWalkRow?
+    private var pendingWalkRow: TabWalkRow?
     private var transcript: String?
     private var transcriptArmed = TranscriptPreviewArmed.none
     private var hint: String?
@@ -129,6 +143,7 @@ public final class MacOverlayPresenter {
     private var transcriptGeneration: UInt64 = 0
     private var hintGeneration: UInt64 = 0
     private var deleteGeneration: UInt64 = 0
+    private var walkGeneration: UInt64 = 0
     /// When the recent plain deletes landed, newest last.
     private var deletePresses: [TimeInterval] = []
 
@@ -226,6 +241,33 @@ public final class MacOverlayPresenter {
         endDelete(generation: deleteGeneration)
     }
 
+    /// The walk key went down. Armed rather than shown, the way a delete key
+    /// is: a tap on this key is the ordinary one-step app flip, and it would
+    /// otherwise flash the card every time.
+    public func beginWalk(row: TabWalkRow) {
+        walkRow = nil
+        pendingWalkRow = row
+        armWalk()
+        refresh()
+    }
+
+    /// A step, or the finger changing which row it walks. Either one is a
+    /// finger plainly still down, so it opens the card ahead of the delay
+    /// rather than waiting it out.
+    public func updateWalk(row: TabWalkRow) {
+        guard walkRow != nil || pendingWalkRow != nil else { return }
+        pendingWalkRow = nil
+        walkRow = row
+        armWalk()
+        refresh()
+    }
+
+    /// The lift, however it came: a commit, a cancel, or the silence that
+    /// stands in for one. A press that never opened its card leaves nothing.
+    public func endWalk() {
+        endWalk(generation: walkGeneration)
+    }
+
     /// The words the phone has heard so far, none of them yet while the talk
     /// button is down and nobody has spoken. Empty puts the card up listening
     /// rather than taking it down; `clearTranscript` is the only way down.
@@ -290,6 +332,8 @@ public final class MacOverlayPresenter {
         litArrow = nil
         deleteUnit = nil
         pendingDeleteUnit = nil
+        walkRow = nil
+        pendingWalkRow = nil
         transcript = nil
         transcriptArmed = .none
         hint = nil
@@ -300,6 +344,7 @@ public final class MacOverlayPresenter {
         _ = bump(&transcriptGeneration)
         _ = bump(&hintGeneration)
         _ = bump(&deleteGeneration)
+        _ = bump(&walkGeneration)
         refresh()
     }
 
@@ -316,6 +361,34 @@ public final class MacOverlayPresenter {
         deleteUnit = nil
         pendingDeleteUnit = nil
         _ = bump(&deleteGeneration)
+        refresh()
+    }
+
+    /// Starts both of the walk card's waits over: the one that opens it and
+    /// the one that gives up on a phone that has gone quiet mid-press.
+    private func armWalk() {
+        let generation = bump(&walkGeneration)
+        scheduler.schedule(.walkOpen, after: Self.walkOpenDelay) { [weak self] in
+            self?.openWalk(generation: generation)
+        }
+        scheduler.schedule(.walk, after: Self.walkTimeout) { [weak self] in
+            self?.endWalk(generation: generation)
+        }
+    }
+
+    private func openWalk(generation: UInt64) {
+        guard generation == walkGeneration, let pending = pendingWalkRow else { return }
+        pendingWalkRow = nil
+        walkRow = pending
+        refresh()
+    }
+
+    private func endWalk(generation: UInt64) {
+        guard generation == walkGeneration else { return }
+        guard walkRow != nil || pendingWalkRow != nil else { return }
+        walkRow = nil
+        pendingWalkRow = nil
+        _ = bump(&walkGeneration)
         refresh()
     }
 
@@ -386,6 +459,10 @@ public final class MacOverlayPresenter {
         // A held key outranks the words: the finger is on the delete key, so
         // whatever was dictated a moment ago is not what is being looked at.
         if let deleteUnit { return .delete(granularity: deleteUnit) }
+        // Beside the delete card and below it only because two keys cannot be
+        // held by one thumb: whichever card is up, its key is the one under a
+        // finger.
+        if let walkRow { return .walk(row: walkRow) }
         // Asked on every derivation, not only when a partial arrives, so a
         // redraw for any reason blanks the words. If nothing redraws at all,
         // the 2 second idle timeout is what takes them down.

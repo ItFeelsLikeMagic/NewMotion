@@ -32,6 +32,8 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
                 // make room for it, so the pad gives up the height instead:
                 // it is the only thing here that stretches, so it shrinks by
                 // exactly what the bar takes and nothing below it moves.
+                // Cancel gets a row of its own below, which exists only while
+                // a hold is on.
                 if pushToTalk.isHolding {
                     chordBar(.send)
                 }
@@ -40,23 +42,10 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
 
                 if pushToTalk.isHolding {
                     chordBar(.cancel)
-                } else {
-                    pickerRow
                 }
             }
             .padding(RemoteKeyMetrics.contentPadding)
         }
-    }
-
-    /// The picker is a grid, not a key: it wants more room to slide across
-    /// than a cluster cell gives it, and it belongs to neither thumb.  A row
-    /// of its own under both clusters is the widest space left, and either
-    /// thumb reaches it without leaving the phone.  It lends that row to the
-    /// Cancel bar for as long as a hold is on.
-    private var pickerRow: some View {
-        keys.commandPicker
-            .frame(maxWidth: .infinity)
-            .frame(height: RemoteKeyMetrics.keyHeight)
     }
 
     /// A key's height, the whole width the keys had: the bar is a target for a
@@ -69,17 +58,20 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
     /// The inner column of each cluster is the one a thumb finds first, so
     /// return and delete sit against the hold bar on the right and copy and
     /// paste on the left.  The three keys that are held and dragged take the
-    /// outer half, where a thumb has room to travel without leaving the phone.
+    /// outer half, where a thumb has room to travel without leaving the phone,
+    /// the picker among them: it slides across a whole grid, so it wants that
+    /// room more than any of them, and it sits above the walk key so the two
+    /// slides share one corner of the pad.
     /// A hold clears both clusters out of the row and the microphone spreads
     /// across it, keeping the height it had so the thumb's target holds still.
     private var thumbRow: some View {
         HStack(alignment: .top, spacing: RemoteKeyMetrics.spacing) {
             if !pushToTalk.isHolding {
                 cluster {
-                    slot { keys.escape }
+                    slot { keys.commandPicker }
                     slot { keys.copy }
                 } bottom: {
-                    slot { keys.appSwitcher }
+                    slot { keys.tabWalk }
                     slot { keys.paste }
                 }
             }
@@ -90,7 +82,7 @@ struct VerticalRemoteLayout<Trackpad: View, Controls: View>: View {
             if !pushToTalk.isHolding {
                 cluster {
                     slot { keys.returnKey }
-                    slot { keys.nextTab }
+                    slot { keys.escape }
                 } bottom: {
                     slot { keys.delete }
                     slot { keys.select }

@@ -761,8 +761,16 @@ final class MacRemoteAppModel: ObservableObject {
             for command in SharedInputProtocolAdapter.commands(for: value) {
                 if injector.submit(command) != .applied { applied = false }
             }
+            // The card follows the press whether or not the keys landed: a
+            // walk the safety layer blocked is still a finger holding a key,
+            // and a card left up would outlive it.
+            switch value.phase {
+            case .begin: overlay.beginWalk(row: value.row)
+            case .next, .previous, .swap: overlay.updateWalk(row: value.row)
+            case .commit, .cancel: overlay.endWalk()
+            }
             lastApplicationMessage = applied
-                ? "tabWalk \(value.modifier) \(value.phase)"
+                ? "tabWalk \(value.row) \(value.phase)"
                 : "tabWalk blocked"
         case let .keyPicker(value):
             try dispatchKeyPicker(value)

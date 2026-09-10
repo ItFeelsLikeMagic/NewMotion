@@ -34,6 +34,7 @@ struct MacOverlayView: View {
         case picker(HotkeyAction?)
         case arrows(HotkeyAction?)
         case delete(DeleteScrubGranularity)
+        case walk(TabWalkRow)
         case transcript(TranscriptPreviewArmed)
         case hint(String)
     }
@@ -44,6 +45,7 @@ struct MacOverlayView: View {
         case let .picker(cell): return .picker(cell)
         case let .arrows(lit): return .arrows(lit)
         case let .delete(granularity): return .delete(granularity)
+        case let .walk(row): return .walk(row)
         case let .transcript(_, armed): return .transcript(armed)
         case let .hint(text): return .hint(text)
         }
@@ -60,6 +62,8 @@ struct MacOverlayView: View {
             arrows(lit: lit)
         case let .delete(granularity):
             deleteUnits(lit: granularity)
+        case let .walk(row):
+            walkRows(lit: row)
         case let .transcript(text, armed):
             transcript(text, armed: armed)
         case let .hint(text):
@@ -146,6 +150,28 @@ struct MacOverlayView: View {
                 .modifier(Slab(shape: Capsule(), isLit: false))
         }
     }
+
+    /// The rows the walk key can step along, stacked the way the finger moves:
+    /// up on the phone is Tabs, so Tabs sits on top and Windows at the bottom.
+    /// Names rather than key caps, because what someone wants to know mid-press
+    /// is what they are picking from, not which chord the Mac is holding down
+    /// to do it.
+    private func walkRows(lit: TabWalkRow) -> some View {
+        VStack(spacing: MacOverlayStyle.tileSpacing) {
+            ForEach(Self.walkOrder, id: \.self) { row in
+                tile(cap: nil, name: row.displayName, isLit: row == lit)
+            }
+            Text("Slide across to walk, lift to choose")
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .modifier(Slab(shape: Capsule(), isLit: false))
+        }
+    }
+
+    /// Top to bottom on the card is up to down under the thumb.
+    private static let walkOrder: [TabWalkRow] = [.tabs, .apps, .windows]
 
     /// One key of the grid.
     /// What sits large on a tile: a key as printed on the keyboard, or a

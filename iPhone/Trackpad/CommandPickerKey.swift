@@ -28,7 +28,7 @@ struct CommandPickerKey: View {
 
     var body: some View {
         Text("⌘")
-            .heldKeyStyle(isHeld: isHeld)
+            .keyFace(isHeld: isHeld)
             // The name is always in the tree and only fades, because swapping
             // it in and out rebuilds the surface below: the removed view
             // leaves the window, which reads as a cancelled press, and the
