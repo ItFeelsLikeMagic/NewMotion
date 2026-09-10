@@ -92,6 +92,8 @@ final class MacRemoteAppModel: ObservableObject {
     /// switch is flipped in System Settings, so the grant is noticed by asking
     /// again; once granted the poll stops and stays off the input path.
     private var accessibilityTimer: Timer?
+    /// Set on launch and cleared by the one ask, which waits its turn.
+    private var accessibilityPromptOwed = false
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
     private let link: BLEMessageLink
@@ -236,7 +238,10 @@ final class MacRemoteAppModel: ObservableObject {
             MainActor.assumeIsolated { self?.handleLinkError(error) }
         }
         link.onRadioState = { [weak self] state in
-            MainActor.assumeIsolated { self?.radio = state }
+            MainActor.assumeIsolated {
+                self?.radio = state
+                self?.askForAccessibilityOnceBluetoothIsAnswered()
+            }
         }
         handleLinkState(link.state)
         radio = link.radioState
@@ -288,8 +293,11 @@ final class MacRemoteAppModel: ObservableObject {
         // A fresh install has no Accessibility entry, so ask on launch rather
         // than letting the first press from the phone be refused.  macOS shows
         // its own dialog, and only ever once, which is why the poll apply()
-        // starts is what actually catches the grant.
-        apply(injector.refreshAccessibility(prompt: !inert))
+        // starts is what actually catches the grant.  The ask itself waits for
+        // Core Bluetooth's dialog to be answered first.
+        accessibilityPromptOwed = !inert
+        apply(injector.refreshAccessibility(prompt: false))
+        askForAccessibilityOnceBluetoothIsAnswered()
         // The inert adapter reports no radio, so under tests this is a no-op
         // until a test hands in a fake that is powered on.
         link.start()
@@ -346,6 +354,22 @@ final class MacRemoteAppModel: ObservableObject {
         } else {
             startAccessibilityPolling()
         }
+    }
+
+    /// Both dialogs used to arrive together, which leaves one of them answered
+    /// blind.  Core Bluetooth's is up for as long as the radio state is
+    /// unresolved, and it is the cheaper ask: one click, without leaving the
+    /// app, and a denial that costs a trip to Settings and a relaunch to undo.
+    /// This one hands the user to System Settings, so it goes second and
+    /// leaves nothing waiting behind it.
+    private func askForAccessibilityOnceBluetoothIsAnswered() {
+        guard accessibilityPromptOwed else { return }
+        switch radio {
+        case .unknown, .resetting: return
+        case .unsupported, .unauthorized, .poweredOff, .poweredOn: break
+        }
+        accessibilityPromptOwed = false
+        apply(injector.refreshAccessibility(prompt: true))
     }
 
     private func startAccessibilityPolling() {
