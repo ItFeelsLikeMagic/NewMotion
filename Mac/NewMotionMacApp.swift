@@ -20,26 +20,18 @@ private extension RemoteLinkState {
 }
 
 private extension BLEPeripheralManagerState {
-    var label: String {
-        switch self {
-        case .unknown, .resetting: return "Starting"
-        case .unsupported: return "Not available"
-        case .unauthorized: return "Not allowed"
-        case .poweredOff: return "Off"
-        case .poweredOn: return "On"
-        }
-    }
-
-    /// The link folds all of these into one unavailable state, so this is the
-    /// only place anyone is told which one they are looking at.
-    var hint: String? {
+    /// Nil while the radio is working or still coming up.  The link folds
+    /// every one of these into the same unavailable state, so the menu is the
+    /// only place the difference is named, and it is named only when someone
+    /// can act on it.
+    var problem: (state: String, fix: String)? {
         switch self {
         case .unauthorized:
-            return "Turn on NewMotion in System Settings, Privacy & Security, Bluetooth, then quit and reopen NewMotion. macOS asks for this once and does not ask again."
+            return ("Not allowed", "Turn on NewMotion in System Settings, Privacy & Security, Bluetooth, then quit and reopen NewMotion. macOS asks for this once and does not ask again.")
         case .poweredOff:
-            return "Turn Bluetooth on in Control Center or System Settings."
+            return ("Off", "Turn Bluetooth on in Control Center or System Settings.")
         case .unsupported:
-            return "This Mac has no Bluetooth radio the app can use."
+            return ("Not available", "This Mac has no Bluetooth radio the app can use.")
         case .unknown, .resetting, .poweredOn:
             return nil
         }
@@ -1277,12 +1269,10 @@ struct MacRemoteStatusView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            // Same rule as the grant above: a radio that is on says nothing
-            // worth a row, and these three states each name something to do.
-            if let hint = model.radio.hint {
-                LabeledContent("Bluetooth", value: model.radio.label)
+            if let problem = model.radio.problem {
+                LabeledContent("Bluetooth", value: problem.state)
                     .font(.caption)
-                Text(hint)
+                Text(problem.fix)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
