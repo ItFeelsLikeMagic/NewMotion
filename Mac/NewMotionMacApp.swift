@@ -58,6 +58,10 @@ enum MacHostRuntime {
 @MainActor
 final class MacRemoteAppModel: ObservableObject {
     private static let trustedDeviceService = "com.davidliao.newmotion.macos.trusted-devices"
+    /// Absent on a fresh install; that absence is what opens the first-run
+    /// window.  Set once the flow reaches its end and never cleared, so a
+    /// permission lost later is the menu's problem, not a second welcome.
+    private static let onboardingCompletedKey = "onboardingCompleted"
 
     /// One beat is 250 ms, so the watchdog tolerates three lost in a row.  A
     /// held button that outlives the phone is a nuisance for this long; a
@@ -96,7 +100,14 @@ final class MacRemoteAppModel: ObservableObject {
     private var accessibilityPromptOwed = false
     private let inputSink: CGEventInputSink
     private let lifecycle: MacLifecycleCoordinator
+    /// Held beside the link because the link never brings the radio up on
+    /// its own: that is the moment macOS asks for Bluetooth, and on a first
+    /// run the onboarding flow decides when that is.
+    private let centralAdapter: MacCentralManagerAdapter
     private let link: BLEMessageLink
+    private let defaults: UserDefaults
+    private var onboarding: MacOnboardingFlow?
+    private let onboardingWindow = MacOnboardingWindow()
     private let pairingOffer: MacPairingOfferController
     private let pairingCoordinator: MacPairingCoordinator?
     private let qrRenderer: MacPairingQRCodeRenderer
@@ -129,11 +140,15 @@ final class MacRemoteAppModel: ObservableObject {
     private var nextApplicationSequence: UInt64 = 1
 
     @Published private(set) var status: RemoteMenuBarStatus = .disconnected { didSet { publishDebugState() } }
-    @Published private(set) var accessibility: AccessibilityState = .unknown { didSet { publishDebugState() } }
+    @Published private(set) var accessibility: AccessibilityState = .unknown {
+        didSet { publishDebugState(); syncOnboarding() }
+    }
     @Published private(set) var linkState: RemoteLinkState = .unavailable { didSet { publishDebugState() } }
-    @Published private(set) var radio: BLEPeripheralManagerState = .unknown
+    @Published private(set) var radio: BLEPeripheralManagerState = .unknown { didSet { syncOnboarding() } }
     @Published private(set) var pairingState: MacPairingOfferState = .idle { didSet { publishDebugState() } }
-    @Published private(set) var pairingProgress: MacPairingProgress = .idle { didSet { publishDebugState() } }
+    @Published private(set) var pairingProgress: MacPairingProgress = .idle {
+        didSet { publishDebugState(); syncOnboarding() }
+    }
     /// Set while the Allow/Deny prompt is up for a phone with this name.
     @Published private(set) var pendingApprovalName: String?
     @Published private(set) var pairedDevices: [TrustedDeviceSummary] = [] { didSet { publishDebugState() } }
@@ -175,9 +190,11 @@ final class MacRemoteAppModel: ObservableObject {
     init(
         centralAdapter: MacCentralManagerAdapter? = nil,
         now: @escaping () -> Date = Date.init,
-        injector: SafeInputInjector? = nil
+        injector: SafeInputInjector? = nil,
+        defaults: UserDefaults = .standard
     ) {
         self.now = now
+        self.defaults = defaults
         let latency = MacLatencyProbes()
         self.latency = latency
         let vocabularyCache = VocabularyCache()
@@ -212,6 +229,7 @@ final class MacRemoteAppModel: ObservableObject {
             heartbeatTimeout: Self.heartbeatTimeout
         )
         self.lifecycle = MacLifecycleCoordinator(injector: injector)
+        self.centralAdapter = adapter
         self.link = link
         self.pairingOffer = pairingOffer
         self.pairingCoordinator = pairingCoordinator
@@ -290,12 +308,16 @@ final class MacRemoteAppModel: ObservableObject {
         }
 
         handleLifecycle(.startup)
-        // A fresh install has no Accessibility entry, so ask on launch rather
-        // than letting the first press from the phone be refused.  macOS shows
-        // its own dialog, and only ever once, which is why the poll apply()
-        // starts is what actually catches the grant.  The ask itself waits for
-        // Core Bluetooth's dialog to be answered first.
-        accessibilityPromptOwed = !inert
+        // A phone saved before the first-run flow existed is proof the setup
+        // happened; nobody who has paired should be walked through it.
+        if !pairedDevices.isEmpty { markOnboardingCompleted() }
+        let completed = onboardingCompleted
+        // Set up already: both asks go out on launch as they always have.
+        // Bluetooth first, and Accessibility once that dialog is answered,
+        // so neither is answered blind.  A first run hands both asks to the
+        // onboarding window, which puts a pane up before each one.
+        if completed { adapter.activate() }
+        accessibilityPromptOwed = !inert && completed
         apply(injector.refreshAccessibility(prompt: false))
         askForAccessibilityOnceBluetoothIsAnswered()
         // The inert adapter reports no radio, so under tests this is a no-op
@@ -303,6 +325,78 @@ final class MacRemoteAppModel: ObservableObject {
         link.start()
         publishDebugState()
         startDebugServerIfNeeded()
+        // This runs inside the app's first body evaluation, before AppKit has
+        // finished launching; a window ordered front that early stays behind
+        // whatever launched the app.  So the window waits for the launch.
+        if !inert, !completed {
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didFinishLaunchingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.showOnboarding() }
+            }
+        }
+    }
+
+    var onboardingCompleted: Bool { defaults.bool(forKey: Self.onboardingCompletedKey) }
+
+    private func markOnboardingCompleted() {
+        defaults.set(true, forKey: Self.onboardingCompletedKey)
+    }
+
+    /// Brings the radio up, which is the moment macOS asks for Bluetooth.
+    /// Once is enough; the adapter ignores a repeat.
+    func requestBluetoothPermission() {
+        centralAdapter.activate()
+    }
+
+    /// The system dialog, and nothing else: the Settings trip in
+    /// `requestAccessibility()` is for a second ask, not the first.
+    func promptForAccessibility() {
+        apply(injector.refreshAccessibility(prompt: true))
+    }
+
+    /// Opens the first-run window, on a fresh install and from the menu's
+    /// "Set Up Again".  Steps already granted are skipped by the flow itself.
+    func showOnboarding() {
+        guard !MacHostRuntime.isInert else { return }
+        let flow = MacOnboardingFlow(actions: MacOnboardingActions(
+            askBluetooth: { [weak self] in self?.requestBluetoothPermission() },
+            askAccessibility: { [weak self] in self?.promptForAccessibility() },
+            offerPairing: { [weak self] in self?.issuePairingOffer() },
+            openBluetoothSettings: { [weak self] in self?.requestBluetooth() },
+            openAccessibilitySettings: { [weak self] in self?.openPrivacySettings(anchor: "Privacy_Accessibility") }
+        ))
+        flow.onFinished = { [weak self] in self?.markOnboardingCompleted() }
+        onboarding = flow
+        onboardingWindow.show(
+            MacOnboardingView(
+                flow: flow,
+                model: self,
+                close: { [weak self] in self?.closeOnboarding() },
+                bringToFront: { [weak self] in self?.onboardingWindow.bringToFront() },
+                standAside: { [weak self] aside in self?.onboardingWindow.standsAside = aside }
+            ),
+            onClose: { [weak self] in self?.closeOnboarding() }
+        )
+        flow.begin(with: onboardingInputs)
+    }
+
+    /// Closing mid-flow leaves the key unset, so the window is back on the
+    /// next launch; only reaching the end marks the setup done.
+    private func closeOnboarding() {
+        onboarding?.cancel()
+        onboarding = nil
+        onboardingWindow.close()
+    }
+
+    private var onboardingInputs: MacOnboardingInputs {
+        MacOnboardingInputs(radio: radio, accessibility: accessibility, pairingProgress: pairingProgress)
+    }
+
+    private func syncOnboarding() {
+        onboarding?.update(onboardingInputs)
     }
 
     var isPaused: Bool {
@@ -595,6 +689,9 @@ final class MacRemoteAppModel: ObservableObject {
         pendingHello = hello
         pendingApprovalName = name
         pairingProgress = .awaitingApproval(deviceName: name)
+        // The setup window asks inline while it is up; the floating prompt
+        // is for the phone that scans while the menu is closed.
+        guard !onboardingWindow.isShowing else { return }
         approvalWindow.show(
             deviceName: name,
             onAllow: { [weak self] in self?.allowPendingPhone() },
@@ -1383,6 +1480,8 @@ struct MacRemoteStatusView: View {
             // someone who does not want to wait for the daily check.
             Button("Check for Updates") { updates.checkForUpdates() }
                 .disabled(!updates.canCheckForUpdates)
+
+            Button("Set Up Again…") { model.showOnboarding() }
 
             // This app has no Dock icon and no menu bar of its own, so this is
             // the only way out of it that is not Activity Monitor.

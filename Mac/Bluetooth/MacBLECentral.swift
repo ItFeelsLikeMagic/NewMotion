@@ -33,6 +33,10 @@ public protocol MacCentralManagerAdapter: AnyObject {
     var onReadyToWriteWithoutResponse: (() -> Void)? { get set }
     var onWriteComplete: ((Error?) -> Void)? { get set }
 
+    /// Brings the radio up.  macOS raises its Bluetooth permission dialog the
+    /// moment a central manager exists, so the manager is not created until
+    /// something is ready for that dialog to appear.  Safe to call again.
+    func activate()
     func scan(for serviceUUIDs: [UUID])
     func stopScan()
     func connectedPeripherals(for serviceUUID: UUID) -> [BLEDiscoveredPeripheral]

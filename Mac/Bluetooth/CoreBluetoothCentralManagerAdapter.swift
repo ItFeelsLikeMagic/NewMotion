@@ -21,7 +21,10 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
     public var onWriteComplete: ((Error?) -> Void)?
 
     private let callbackQueue: DispatchQueue
-    private var manager: CBCentralManager!
+    /// Nil until `activate()`.  Every call that needs it is gated on a
+    /// powered-on state or a cached peripheral, neither of which exists
+    /// before the manager does.
+    private var manager: CBCentralManager?
     private var peripherals: [UUID: CBPeripheral] = [:]
     private var services: [UUID: [UUID: CBService]] = [:]
     private var characteristics: [UUID: [UUID: CBCharacteristic]] = [:]
@@ -29,11 +32,15 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
     public init(callbackQueue: DispatchQueue = .main) {
         self.callbackQueue = callbackQueue
         super.init()
+    }
+
+    public func activate() {
+        guard manager == nil else { return }
         manager = CBCentralManager(delegate: self, queue: callbackQueue)
     }
 
     public func scan(for serviceUUIDs: [UUID]) {
-        guard state == .poweredOn else { return }
+        guard state == .poweredOn, let manager else { return }
         manager.scanForPeripherals(
             withServices: serviceUUIDs.map { CBUUID(string: $0.uuidString) },
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -41,11 +48,12 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
     }
 
     public func stopScan() {
-        guard state == .poweredOn else { return }
+        guard state == .poweredOn, let manager else { return }
         manager.stopScan()
     }
 
     public func connectedPeripherals(for serviceUUID: UUID) -> [BLEDiscoveredPeripheral] {
+        guard let manager else { return [] }
         let found = manager.retrieveConnectedPeripherals(
             withServices: [CBUUID(string: serviceUUID.uuidString)]
         )
@@ -57,12 +65,12 @@ public final class CoreBluetoothCentralManagerAdapter: NSObject, MacCentralManag
 
     public func connect(peripheralID: UUID) {
         guard let peripheral = peripherals[peripheralID] else { return }
-        manager.connect(peripheral, options: nil)
+        manager?.connect(peripheral, options: nil)
     }
 
     public func cancelConnection(peripheralID: UUID) {
         guard let peripheral = peripherals[peripheralID] else { return }
-        manager.cancelPeripheralConnection(peripheral)
+        manager?.cancelPeripheralConnection(peripheral)
     }
 
     public func discoverServices(peripheralID: UUID, serviceUUID: UUID) {
