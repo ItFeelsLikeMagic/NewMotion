@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NewMotion Support</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    color: #1c1c1e;
+    background: #fff;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  .date { color: #6b6b70; margin-top: 0; }
+  a { color: #0b62d0; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8ea; background: #131315; }
+    .date { color: #9b9ba1; }
+    a { color: #6fa8ff; }
+  }
+</style>
+</head>
+<body>
+
+<h1>NewMotion Support</h1>
+<p class="date">Help for the iPhone app and the Mac companion</p>
+
+<h2>Get help</h2>
+<p>Ask a question, report a bug, or request a feature by opening an issue at
+<a href="https://github.com/ItFeelsLikeMagic/NewMotion/issues">github.com/ItFeelsLikeMagic/NewMotion/issues</a>.
+Every issue is read and answered there.</p>
+
+<h2>Getting started</h2>
+<ol>
+  <li>Install the Mac companion. Paste this into Terminal:<br>
+    <code>curl -fsSL https://itfeelslikemagic.github.io/NewMotion/install.sh | sh</code><br>
+    Or download <code>NewMotion.dmg</code> from
+    <a href="https://github.com/ItFeelsLikeMagic/NewMotion/releases">Releases</a>
+    and drag it into Applications.</li>
+  <li>Open NewMotion on the Mac and follow its setup screens.</li>
+  <li>Open the iPhone app and scan the QR code the Mac shows. After that the
+    phone reconnects on its own.</li>
+</ol>
+
+<h2>Common problems</h2>
+<p><strong>The phone will not connect.</strong> Make sure Bluetooth is on for
+both devices and NewMotion is running in the Mac menu bar. Keep the phone
+within a few meters of the Mac.</p>
+<p><strong>The pointer does not move or nothing types.</strong> Open System
+Settings on the Mac, go to Privacy and Security, then Accessibility, and turn
+NewMotion on.</p>
+<p><strong>Typing stops in some fields.</strong> NewMotion never types into a
+password field. This is on purpose.</p>
+<p><strong>Dictation does nothing.</strong> Allow microphone and speech access
+for NewMotion in the iPhone Settings app.</p>
+
+<h2>Uninstall the Mac companion</h2>
+<ol>
+  <li>Quit NewMotion from the menu bar.</li>
+  <li>Drag NewMotion from Applications to the Trash.</li>
+  <li>Remove it in System Settings under Privacy and Security, in both
+    Accessibility and Bluetooth.</li>
+</ol>
+
+<h2>Privacy</h2>
+<p>Read the <a href="privacy.html">NewMotion Privacy Policy</a>.</p>
+
+</body>
+</html>
