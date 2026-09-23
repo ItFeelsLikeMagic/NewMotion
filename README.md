@@ -14,7 +14,7 @@ Pair once by scanning a QR code. After that the phone reconnects on its own.
 **Mac companion.** Paste this into Terminal:
 
 ```sh
-curl -fsSL https://itfeelslikemagic.github.io/NewMotion/install.sh | sh
+curl -fsSL https://davlia.github.io/NewMotion/install.sh | sh
 ```
 
 It downloads the latest release, puts the app in Applications, and starts it.
@@ -22,7 +22,7 @@ Read [`install.sh`](install.sh) first if you would rather not pipe a script
 into a shell.
 
 By hand: download `NewMotion.dmg` from
-[Releases](https://github.com/ItFeelsLikeMagic/NewMotion/releases), open it,
+[Releases](https://github.com/davlia/NewMotion/releases), open it,
 and drag NewMotion into Applications. A `NewMotion.zip` sits beside it with
 the same app inside.
 
@@ -47,7 +47,7 @@ log. The Mac refuses to type while macOS reports a secure input session, so
 nothing lands in a password field.
 
 Full policy: [NewMotion Privacy
-Policy](https://itfeelslikemagic.github.io/NewMotion/privacy.html).
+Policy](https://davlia.github.io/NewMotion/privacy.html).
 
 ## Build it
 

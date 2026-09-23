@@ -42,8 +42,8 @@ jobs:
           <!doctype html>
           <meta charset="utf-8">
           <title>NewMotion</title>
-          <meta http-equiv="refresh" content="0; url=https://github.com/ItFeelsLikeMagic/NewMotion">
-          <a href="https://github.com/ItFeelsLikeMagic/NewMotion">NewMotion</a>
+          <meta http-equiv="refresh" content="0; url=https://github.com/davlia/NewMotion">
+          <a href="https://github.com/davlia/NewMotion">NewMotion</a>
           HTML
 
       - uses: actions/upload-pages-artifact@v3

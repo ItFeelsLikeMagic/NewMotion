@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 
 DIST_DIR="$ROOT_DIR/build/dist"
 DERIVED_DATA="${NEWMOTION_DERIVED_DATA:-$ROOT_DIR/DerivedData}"
-REPO=ItFeelsLikeMagic/NewMotion
+REPO=davlia/NewMotion
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'HELP'

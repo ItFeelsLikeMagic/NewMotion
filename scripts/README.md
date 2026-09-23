@@ -88,7 +88,7 @@ commits, which is thinner than the install help the last release carried.
 [`install.sh`](../install.sh) installs from the newest release's
 `NewMotion.dmg`, so publishing the release is the step that hands people the
 build. The one-liner people paste points at
-`https://itfeelslikemagic.github.io/NewMotion/install.sh`, a copy that
+`https://davlia.github.io/NewMotion/install.sh`, a copy that
 [`.github/workflows/pages.yml`](../.github/workflows/pages.yml) republishes
 whenever the root `install.sh` changes on `main`. Edit the root copy only.
 

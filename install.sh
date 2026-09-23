@@ -1,15 +1,15 @@
 #!/bin/sh
 # Install NewMotion for Mac.
 #
-#   curl -fsSL https://itfeelslikemagic.github.io/NewMotion/install.sh | sh
+#   curl -fsSL https://davlia.github.io/NewMotion/install.sh | sh
 #
 # Downloads the latest release, checks that Apple notarized it and that we
 # signed it, then puts it in Applications and starts it.
 set -eu
 
-REPO=ItFeelsLikeMagic/NewMotion
+REPO=davlia/NewMotion
 TEAM_ID=4B8P47VZGT
-SCRIPT_URL="https://itfeelslikemagic.github.io/NewMotion/install.sh"
+SCRIPT_URL="https://davlia.github.io/NewMotion/install.sh"
 DMG_URL="https://github.com/$REPO/releases/latest/download/NewMotion.dmg"
 RELEASES_URL="https://github.com/$REPO/releases"
 ISSUES_URL="https://github.com/$REPO/issues"

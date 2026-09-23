@@ -25,7 +25,7 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>NewMotion uses Bluetooth to connect to your paired iPhone.</string>
 	<key>SUFeedURL</key>
-	<string>https://github.com/ItFeelsLikeMagic/NewMotion/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/davlia/NewMotion/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>D93sAQNfBGDhmHBEis9ekaCy6JRTGi4nLoaOGSB18SU=</string>
 	<key>SUEnableAutomaticChecks</key>
